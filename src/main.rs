@@ -3,9 +3,10 @@ mod search;
 mod tui;
 
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, Clear, ClearType},
 };
 use ratatui::prelude::*;
 use std::io::{self, stdout};
@@ -18,10 +19,16 @@ fn main() -> io::Result<()> {
         .and_then(|p| p.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "~/.claude/projects".to_string());
 
-    // Initialize terminal
+    // Initialize terminal with proper setup
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        Clear(ClearType::All),
+        cursor::Hide
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
 
     // Create app
     let mut app = tui::App::new(search_path);
@@ -66,7 +73,11 @@ fn main() -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
+    execute!(
+        stdout(),
+        cursor::Show,
+        LeaveAlternateScreen
+    )?;
 
     // Resume if requested
     if let (Some(session_id), Some(file_path)) = (&app.resume_id, &app.resume_file_path) {
