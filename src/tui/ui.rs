@@ -199,11 +199,15 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Line::raw(""),
     ];
 
-    // Content - truncate if too long
-    let content = if msg.content.len() > 2000 {
-        format!("{}...\n(truncated)", &msg.content[..2000])
-    } else {
-        msg.content.clone()
+    // Content - truncate if too long (character-safe for UTF-8)
+    let content = {
+        let char_count = msg.content.chars().count();
+        if char_count > 2000 {
+            let truncated: String = msg.content.chars().take(2000).collect();
+            format!("{}...\n(truncated)", truncated)
+        } else {
+            msg.content.clone()
+        }
     };
 
     for line in content.lines() {
