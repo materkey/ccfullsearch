@@ -81,6 +81,7 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::Message;
     use chrono::TimeZone;
 
     fn make_match(session_id: &str, timestamp_mins: i64) -> RipgrepMatch {

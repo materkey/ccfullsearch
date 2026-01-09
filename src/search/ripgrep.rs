@@ -89,28 +89,44 @@ pub fn extract_project_from_path(path: &str) -> String {
 }
 
 /// Extract context around query match in content
-pub fn extract_context(content: &str, query: &str, context_len: usize) -> String {
+/// Uses character-safe slicing to handle UTF-8 properly
+pub fn extract_context(content: &str, query: &str, context_chars: usize) -> String {
     let content_lower = content.to_lowercase();
     let query_lower = query.to_lowercase();
 
-    // Find the position of the query (case-insensitive)
-    if let Some(pos) = content_lower.find(&query_lower) {
-        let start = pos.saturating_sub(context_len);
-        let end = (pos + query.len() + context_len).min(content.len());
+    // Find the character position of the query (case-insensitive)
+    if let Some(byte_pos) = content_lower.find(&query_lower) {
+        // Convert byte position to character position
+        let char_pos = content[..byte_pos].chars().count();
+        let total_chars = content.chars().count();
+        let query_char_len = query.chars().count();
 
-        let mut result = String::new();
-        if start > 0 {
-            result.push_str("...");
+        // Calculate character boundaries
+        let start_char = char_pos.saturating_sub(context_chars);
+        let end_char = (char_pos + query_char_len + context_chars).min(total_chars);
+
+        // Extract substring using character indices
+        let result: String = content
+            .chars()
+            .skip(start_char)
+            .take(end_char - start_char)
+            .collect();
+
+        let mut output = String::new();
+        if start_char > 0 {
+            output.push_str("...");
         }
-        result.push_str(&content[start..end]);
-        if end < content.len() {
-            result.push_str("...");
+        output.push_str(&result);
+        if end_char < total_chars {
+            output.push_str("...");
         }
-        result
+        output
     } else {
-        // If not found, return truncated content
-        if content.len() > context_len * 2 {
-            format!("{}...", &content[..context_len * 2])
+        // If not found, return truncated content (character-safe)
+        let total_chars = content.chars().count();
+        if total_chars > context_chars * 2 {
+            let truncated: String = content.chars().take(context_chars * 2).collect();
+            format!("{}...", truncated)
         } else {
             content.to_string()
         }
@@ -224,5 +240,25 @@ mod tests {
         let context = extract_context(content, "hello", 10);
 
         assert!(context.to_lowercase().contains("hello"), "Should find case-insensitive");
+    }
+
+    #[test]
+    fn test_extract_context_cyrillic() {
+        let content = "Сделаю: 1. Preview режим 2. Индикатор compacted";
+
+        let context = extract_context(content, "Preview", 5);
+
+        assert!(context.contains("Preview"), "Should find match in Cyrillic text");
+        // Should not panic on UTF-8 boundaries
+    }
+
+    #[test]
+    fn test_extract_context_cyrillic_truncate() {
+        let content = "Привет мир это тестовая строка на русском языке";
+
+        // Should truncate without panicking on UTF-8 boundaries
+        let context = extract_context(content, "nonexistent", 10);
+
+        assert!(!context.is_empty(), "Should return truncated content");
     }
 }
