@@ -1,4 +1,4 @@
-use crate::search::{group_by_session, search_with_options, RipgrepMatch, SessionGroup};
+use crate::search::{group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ pub struct App {
     pub searching: bool,
     pub typing: bool,
     pub error: Option<String>,
-    pub search_path: String,
+    pub search_paths: Vec<String>,
     pub last_query: String,
     pub results_query: String,
     pub last_keystroke: Option<Instant>,
@@ -26,6 +26,8 @@ pub struct App {
     pub should_quit: bool,
     pub resume_id: Option<String>,
     pub resume_file_path: Option<String>,
+    /// Session source for resume (CLI or Desktop)
+    pub resume_source: Option<SessionSource>,
     /// Flag to force a full terminal redraw (clears diff optimization artifacts)
     pub needs_full_redraw: bool,
     /// Regex search mode (Ctrl+R to toggle)
@@ -34,20 +36,20 @@ pub struct App {
     last_regex_mode: bool,
     /// Channel to receive search results from background thread
     search_rx: Receiver<SearchResult>,
-    /// Channel to send search requests to background thread (query, path, regex_mode)
-    search_tx: Sender<(String, String, bool)>,
+    /// Channel to send search requests to background thread (query, paths, regex_mode)
+    search_tx: Sender<(String, Vec<String>, bool)>,
 }
 
 impl App {
-    pub fn new(search_path: String) -> Self {
+    pub fn new(search_paths: Vec<String>) -> Self {
         // Create channels for async search
         let (result_tx, result_rx) = mpsc::channel::<SearchResult>();
-        let (query_tx, query_rx) = mpsc::channel::<(String, String, bool)>();
+        let (query_tx, query_rx) = mpsc::channel::<(String, Vec<String>, bool)>();
 
         // Spawn background search thread
         thread::spawn(move || {
-            while let Ok((query, path, use_regex)) = query_rx.recv() {
-                let result = search_with_options(&query, &path, use_regex)
+            while let Ok((query, paths, use_regex)) = query_rx.recv() {
+                let result = search_multiple_paths(&query, &paths, use_regex)
                     .map(|r| (query, use_regex, r));
                 let _ = result_tx.send(result);
             }
@@ -63,7 +65,7 @@ impl App {
             searching: false,
             typing: false,
             error: None,
-            search_path,
+            search_paths,
             last_query: String::new(),
             results_query: String::new(),
             last_keystroke: None,
@@ -71,6 +73,7 @@ impl App {
             should_quit: false,
             resume_id: None,
             resume_file_path: None,
+            resume_source: None,
             needs_full_redraw: false,
             regex_mode: false,
             last_regex_mode: false,
@@ -181,13 +184,14 @@ impl App {
         // Extract values first to avoid borrow issues
         let resume_info = self.selected_match().and_then(|m| {
             m.message.as_ref().map(|msg| {
-                (msg.session_id.clone(), m.file_path.clone())
+                (msg.session_id.clone(), m.file_path.clone(), m.source)
             })
         });
 
-        if let Some((session_id, file_path)) = resume_info {
+        if let Some((session_id, file_path, source)) = resume_info {
             self.resume_id = Some(session_id);
             self.resume_file_path = Some(file_path);
+            self.resume_source = Some(source);
             self.should_quit = true;
         }
     }
@@ -247,7 +251,7 @@ impl App {
         self.last_query = self.input.clone();
         self.last_regex_mode = self.regex_mode;
         self.searching = true;
-        let _ = self.search_tx.send((self.input.clone(), self.search_path.clone(), self.regex_mode));
+        let _ = self.search_tx.send((self.input.clone(), self.search_paths.clone(), self.regex_mode));
     }
 }
 
@@ -257,9 +261,9 @@ mod tests {
 
     #[test]
     fn test_app_new() {
-        let app = App::new("/test/path".to_string());
+        let app = App::new(vec!["/test/path".to_string()]);
 
-        assert_eq!(app.search_path, "/test/path");
+        assert_eq!(app.search_paths, vec!["/test/path".to_string()]);
         assert!(app.input.is_empty());
         assert!(app.groups.is_empty());
         assert!(!app.should_quit);
@@ -267,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_on_key() {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         app.on_key('h');
         app.on_key('e');
@@ -281,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_on_backspace() {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
         app.input = "hello".to_string();
 
         app.on_backspace();
@@ -291,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_navigation_empty_groups() {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Should not panic with empty groups
         app.on_up();
@@ -304,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_expand_collapse() {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Setup some groups
         app.groups = vec![SessionGroup {
@@ -322,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_preview_toggle() {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Without groups, preview should not toggle
         app.on_tab();

@@ -1,6 +1,34 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Source of the Claude session
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionSource {
+    /// Claude Code CLI sessions stored in ~/.claude/projects/
+    ClaudeCodeCLI,
+    /// Claude Desktop app sessions stored in ~/Library/Application Support/Claude/
+    ClaudeDesktop,
+}
+
+impl SessionSource {
+    /// Detect session source from file path
+    pub fn from_path(path: &str) -> Self {
+        if path.contains("local-agent-mode-sessions") {
+            SessionSource::ClaudeDesktop
+        } else {
+            SessionSource::ClaudeCodeCLI
+        }
+    }
+
+    /// Returns display name for the source
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SessionSource::ClaudeCodeCLI => "CLI",
+            SessionSource::ClaudeDesktop => "Desktop",
+        }
+    }
+}
+
 /// Represents a message from Claude Code JSONL session
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
@@ -185,5 +213,25 @@ mod tests {
         let content = Message::extract_content(&raw);
 
         assert!(content.contains("File contents here"));
+    }
+
+    // SessionSource tests
+
+    #[test]
+    fn test_session_source_from_cli_path() {
+        let path = "/Users/user/.claude/projects/-Users-user-myproject/abc123.jsonl";
+        assert_eq!(SessionSource::from_path(path), SessionSource::ClaudeCodeCLI);
+    }
+
+    #[test]
+    fn test_session_source_from_desktop_path() {
+        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_session/audit.jsonl";
+        assert_eq!(SessionSource::from_path(path), SessionSource::ClaudeDesktop);
+    }
+
+    #[test]
+    fn test_session_source_display_name() {
+        assert_eq!(SessionSource::ClaudeCodeCLI.display_name(), "CLI");
+        assert_eq!(SessionSource::ClaudeDesktop.display_name(), "Desktop");
     }
 }

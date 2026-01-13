@@ -124,18 +124,20 @@ fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(list, area);
 }
 
-fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool) -> ListItem<'a> {
+/// Build the header text for a session group (testable function)
+fn build_group_header_text(group: &SessionGroup, expanded: bool) -> String {
     let first_match = group.first_match();
-    let (date_str, branch) = if let Some(m) = first_match {
+    let (date_str, branch, source) = if let Some(m) = first_match {
+        let source = m.source.display_name();
         if let Some(ref msg) = m.message {
             let date = msg.timestamp.format("%Y-%m-%d %H:%M").to_string();
             let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
-            (date, branch)
+            (date, branch, source)
         } else {
-            ("-".to_string(), "-".to_string())
+            ("-".to_string(), "-".to_string(), source)
         }
     } else {
-        ("-".to_string(), "-".to_string())
+        ("-".to_string(), "-".to_string(), "CLI")
     };
 
     let project = extract_project_from_path(&group.file_path);
@@ -146,15 +148,20 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
         &group.session_id
     };
 
-    let header_text = format!(
-        "{} {} | {} | {} | {} ({} messages)",
+    format!(
+        "{} [{}] {} | {} | {} | {} ({} messages)",
         expand_indicator,
+        source,
         date_str,
         project,
         branch,
         session_display,
         group.matches.len()
-    );
+    )
+}
+
+fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool) -> ListItem<'a> {
+    let header_text = build_group_header_text(group, expanded);
 
     let style = if selected && !expanded {
         Style::default()
@@ -382,13 +389,13 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{Message, RipgrepMatch, SessionGroup};
+    use crate::search::{Message, RipgrepMatch, SessionGroup, SessionSource};
     use chrono::{TimeZone, Utc};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn make_test_app_with_groups() -> App {
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         let msg = Message {
             session_id: "test-session".to_string(),
@@ -402,6 +409,7 @@ mod tests {
         let m = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(msg),
+            source: SessionSource::ClaudeCodeCLI,
         };
 
         app.groups = vec![SessionGroup {
@@ -492,7 +500,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let app = App::new("/test".to_string());
+        let app = App::new(vec!["/test".to_string()]);
 
         terminal
             .draw(|frame| render(frame, &app))
@@ -585,7 +593,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         let msg = Message {
             session_id: "test-session".to_string(),
@@ -599,6 +607,7 @@ mod tests {
         let m = RipgrepMatch {
             file_path: "/path/to/session.jsonl".to_string(),
             message: Some(msg),
+            source: SessionSource::ClaudeCodeCLI,
         };
 
         app.groups = vec![SessionGroup {
@@ -618,7 +627,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Create multiple groups
         for i in 0..3 {
@@ -634,6 +643,7 @@ mod tests {
             let m = RipgrepMatch {
                 file_path: format!("/path/to/projects/-Users-test-projects-app{}/session.jsonl", i),
                 message: Some(msg),
+                source: SessionSource::ClaudeCodeCLI,
             };
 
             app.groups.push(SessionGroup {
@@ -664,7 +674,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Create a large content message (simulating tool_result with many lines)
         let large_content = (0..100)
@@ -694,11 +704,13 @@ mod tests {
         let large_match = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(large_msg),
+            source: SessionSource::ClaudeCodeCLI,
         };
 
         let small_match = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(small_msg),
+            source: SessionSource::ClaudeCodeCLI,
         };
 
         // Single group with both messages
@@ -772,7 +784,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Create messages with varying sizes: large, small, medium, tiny
         let sizes = vec![
@@ -795,6 +807,7 @@ mod tests {
             matches.push(RipgrepMatch {
                 file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
                 message: Some(msg),
+                source: SessionSource::ClaudeCodeCLI,
             });
         }
 
@@ -858,7 +871,7 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Realistic adb logcat output (what the user was viewing)
         let tool_output = r#"12-11 15:25:07.603   211   215 E android.system.suspend@1.0-service: Error opening kernel wakelock stats for: wakeup34: Permission denied
@@ -896,10 +909,12 @@ mod tests {
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(large_msg),
+                    source: SessionSource::ClaudeCodeCLI,
                 },
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
+                    source: SessionSource::ClaudeCodeCLI,
                 },
             ],
         }];
@@ -969,7 +984,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new("/test".to_string());
+        let mut app = App::new(vec!["/test".to_string()]);
 
         // Content with ANSI escape sequences (simulating adb logcat output)
         let ansi_content = "\x1b[31mE/AndroidRuntime\x1b[0m: FATAL EXCEPTION: main\n\
@@ -1005,10 +1020,12 @@ mod tests {
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(ansi_msg),
+                    source: SessionSource::ClaudeCodeCLI,
                 },
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
+                    source: SessionSource::ClaudeCodeCLI,
                 },
             ],
         }];
@@ -1042,5 +1059,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_build_group_header_shows_cli_source() {
+        let msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "Test content".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        let m = RipgrepMatch {
+            file_path: "/Users/test/.claude/projects/-Users-test-myapp/session.jsonl".to_string(),
+            message: Some(msg),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        let group = SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: m.file_path.clone(),
+            matches: vec![m],
+        };
+
+        let text = build_group_header_text(&group, false);
+        assert!(text.contains("[CLI]"), "Header should contain [CLI] indicator, got: {}", text);
+    }
+
+    #[test]
+    fn test_build_group_header_shows_desktop_source() {
+        let msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "Test content".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        let m = RipgrepMatch {
+            file_path: "/Users/test/Library/Application Support/Claude/local-agent-mode-sessions/uuid/uuid/local_123/audit.jsonl".to_string(),
+            message: Some(msg),
+            source: SessionSource::ClaudeDesktop,
+        };
+
+        let group = SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: m.file_path.clone(),
+            matches: vec![m],
+        };
+
+        let text = build_group_header_text(&group, false);
+        assert!(text.contains("[Desktop]"), "Header should contain [Desktop] indicator, got: {}", text);
     }
 }

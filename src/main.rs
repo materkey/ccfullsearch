@@ -13,11 +13,29 @@ use std::io::{self, stdout};
 use std::time::Duration;
 
 fn main() -> io::Result<()> {
-    // Get default search path
-    let search_path = dirs::home_dir()
+    // Get search paths for both CLI and Desktop sessions
+    let mut search_paths = Vec::new();
+
+    // Claude Code CLI sessions
+    if let Some(cli_path) = dirs::home_dir()
         .map(|h| h.join(".claude").join("projects"))
         .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "~/.claude/projects".to_string());
+    {
+        search_paths.push(cli_path);
+    }
+
+    // Claude Desktop sessions (macOS)
+    if let Some(desktop_path) = dirs::home_dir()
+        .map(|h| h.join("Library/Application Support/Claude/local-agent-mode-sessions"))
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+    {
+        search_paths.push(desktop_path);
+    }
+
+    // Fallback if no paths found
+    if search_paths.is_empty() {
+        search_paths.push("~/.claude/projects".to_string());
+    }
 
     // Initialize terminal with proper setup
     enable_raw_mode()?;
@@ -31,7 +49,7 @@ fn main() -> io::Result<()> {
     terminal.clear()?;
 
     // Create app
-    let mut app = tui::App::new(search_path);
+    let mut app = tui::App::new(search_paths);
 
     // Main loop
     loop {
@@ -92,8 +110,8 @@ fn main() -> io::Result<()> {
     )?;
 
     // Resume if requested
-    if let (Some(session_id), Some(file_path)) = (&app.resume_id, &app.resume_file_path) {
-        if let Err(e) = resume::resume(session_id, file_path) {
+    if let (Some(session_id), Some(file_path), Some(source)) = (&app.resume_id, &app.resume_file_path, &app.resume_source) {
+        if let Err(e) = resume::resume(session_id, file_path, *source) {
             eprintln!("Error resuming session: {}", e);
             std::process::exit(1);
         }

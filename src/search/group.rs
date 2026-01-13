@@ -81,7 +81,7 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::Message;
+    use crate::search::{Message, SessionSource};
     use chrono::TimeZone;
 
     fn make_match(session_id: &str, timestamp_mins: i64) -> RipgrepMatch {
@@ -95,6 +95,7 @@ mod tests {
                 branch: None,
                 line_number: 1,
             }),
+            source: SessionSource::ClaudeCodeCLI,
         }
     }
 
@@ -243,6 +244,7 @@ mod tests {
             RipgrepMatch {
                 file_path: "/path/to/session.jsonl".to_string(),
                 message: None, // Should be skipped
+                source: SessionSource::ClaudeCodeCLI,
             },
             make_match("session-1", 0),
         ];

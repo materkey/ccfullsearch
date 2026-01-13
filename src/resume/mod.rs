@@ -95,8 +95,18 @@ fn extract_project_path(file_path: &str) -> Option<String> {
     None
 }
 
-/// Resume a Claude Code session using exec
-pub fn resume(session_id: &str, file_path: &str) -> Result<(), String> {
+use crate::search::SessionSource;
+
+/// Resume a Claude session based on its source
+pub fn resume(session_id: &str, file_path: &str, source: SessionSource) -> Result<(), String> {
+    match source {
+        SessionSource::ClaudeCodeCLI => resume_cli(session_id, file_path),
+        SessionSource::ClaudeDesktop => resume_desktop(),
+    }
+}
+
+/// Resume a Claude Code CLI session using exec
+fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
     // Ensure session file's parent directory exists
     ensure_project_dir(file_path)?;
 
@@ -140,6 +150,16 @@ pub fn resume(session_id: &str, file_path: &str) -> Result<(), String> {
         .exec();
 
     Err(format!("Failed to exec claude: {}", err))
+}
+
+/// Open Claude Desktop app for Desktop sessions
+fn resume_desktop() -> Result<(), String> {
+    // On macOS, use `open` to launch Claude Desktop
+    let err = Command::new("open")
+        .args(["-a", "Claude"])
+        .exec();
+
+    Err(format!("Failed to open Claude Desktop: {}", err))
 }
 
 /// Decode the original project path from the .claude/projects folder name

@@ -1,4 +1,4 @@
-use super::Message;
+use super::{Message, SessionSource};
 use regex::RegexBuilder;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 pub struct RipgrepMatch {
     pub file_path: String,
     pub message: Option<Message>,
+    pub source: SessionSource,
 }
 
 /// Search for query in JSONL files using ripgrep
@@ -17,8 +18,35 @@ pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, Strin
     search_with_options(query, search_path, false)
 }
 
-/// Search with explicit regex mode option
-pub fn search_with_options(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+/// Search with explicit regex mode option (single path)
+#[cfg(test)]
+fn search_with_options(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+    search_multiple_paths(query, &[search_path.to_string()], use_regex)
+}
+
+/// Search multiple paths with explicit regex mode option
+pub fn search_multiple_paths(query: &str, search_paths: &[String], use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+    let mut all_results = Vec::new();
+
+    for search_path in search_paths {
+        if search_path.is_empty() {
+            continue;
+        }
+
+        // Check if path exists
+        if !std::path::Path::new(search_path).exists() {
+            continue;
+        }
+
+        let results = search_single_path(query, search_path, use_regex)?;
+        all_results.extend(results);
+    }
+
+    Ok(all_results)
+}
+
+/// Search a single path
+fn search_single_path(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
     let mut args = vec![
         "--json".to_string(),
         "--glob".to_string(), "*.jsonl".to_string(),
@@ -93,8 +121,9 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
 
     // Parse the JSONL line content
     let message = Message::from_jsonl(line_text.trim(), line_number);
+    let source = SessionSource::from_path(&file_path);
 
-    Some(RipgrepMatch { file_path, message })
+    Some(RipgrepMatch { file_path, message, source })
 }
 
 /// Extract project name from file path
