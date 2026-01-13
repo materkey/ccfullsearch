@@ -1,4 +1,4 @@
-use crate::search::{extract_context, extract_project_from_path, RipgrepMatch, SessionGroup};
+use crate::search::{extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup};
 use crate::tui::App;
 use ratatui::{
     layout::{Constraint, Layout},
@@ -29,9 +29,24 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Style::default().fg(Color::White)
     };
+    let search_title = if app.regex_mode {
+        "Search [Regex]"
+    } else {
+        "Search"
+    };
+    let title_style = if app.regex_mode {
+        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
     let input = Paragraph::new(format!("{}_", app.input))
         .style(input_style)
-        .block(Block::default().borders(Borders::ALL).title("Search"));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(search_title)
+                .title_style(title_style),
+        );
     frame.render_widget(input, input_area);
 
     // Status
@@ -62,17 +77,29 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Help
     let help_text = if app.preview_mode {
-        "[Tab/Enter] Close preview  [Esc] Quit"
+        "[Tab/Enter] Close preview  [Ctrl+R] Regex  [Esc] Quit"
     } else if !app.groups.is_empty() {
-        "[↑↓] Navigate  [→←] Expand/Collapse  [Tab] Preview  [Enter] Resume  [Esc] Quit"
+        "[↑↓] Navigate  [→←] Expand/Collapse  [Tab] Preview  [Enter] Resume  [Ctrl+R] Regex  [Esc] Quit"
     } else {
-        "[↑↓] Navigate  [Tab] Preview  [Enter] Resume  [Esc] Quit"
+        "[↑↓] Navigate  [Tab] Preview  [Enter] Resume  [Ctrl+R] Regex  [Esc] Quit"
     };
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, help_area);
 }
 
 fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Clear the area by filling with spaces - more reliable than Clear widget
+    // This handles wide Unicode characters better
+    let buf = frame.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(Style::default());
+            }
+        }
+    }
+
     let mut items: Vec<ListItem> = vec![];
 
     for (i, group) in app.groups.iter().enumerate() {
@@ -152,7 +179,9 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str) -> ListIt
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
         };
         let role_str = if msg.role == "user" { "User:" } else { "Claude:" };
-        let content = extract_context(&msg.content, query, 30);
+        // Sanitize content before extracting context to remove ANSI codes
+        let sanitized = sanitize_content(&msg.content);
+        let content = extract_context(&sanitized, query, 30);
         (role_str.to_string(), role_style, content)
     } else {
         ("???:".to_string(), Style::default(), String::new())
@@ -177,18 +206,147 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str) -> ListIt
     ListItem::new(line)
 }
 
+/// Truncate content around the first query match so the match is visible
+/// If content is shorter than max_chars, returns it unchanged
+/// If query is not found, truncates from the beginning
+fn truncate_around_query(content: &str, query: &str, max_chars: usize) -> String {
+    let char_count = content.chars().count();
+
+    if char_count <= max_chars {
+        return content.to_string();
+    }
+
+    // Find the first occurrence of query (case-insensitive)
+    let content_lower = content.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    if let Some(byte_pos) = content_lower.find(&query_lower) {
+        // Convert byte position to character position
+        let match_char_pos = content[..byte_pos].chars().count();
+
+        // Calculate how much context to show before and after
+        let context_before = max_chars / 3; // ~33% before match
+        let context_after = max_chars - context_before; // ~67% after match
+
+        let start_char = match_char_pos.saturating_sub(context_before);
+        let end_char = (match_char_pos + context_after).min(char_count);
+
+        let truncated: String = content
+            .chars()
+            .skip(start_char)
+            .take(end_char - start_char)
+            .collect();
+
+        let mut result = String::new();
+        if start_char > 0 {
+            result.push_str("...\n");
+        }
+        result.push_str(&truncated);
+        if end_char < char_count {
+            result.push_str("\n...(truncated)");
+        }
+        result
+    } else {
+        // Query not found, truncate from beginning
+        let truncated: String = content.chars().take(max_chars).collect();
+        format!("{}...\n(truncated)", truncated)
+    }
+}
+
+/// Highlight query matches in a line, returning a Line with styled spans
+fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
+    if query.is_empty() {
+        return Line::raw(text.to_string());
+    }
+
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let highlight_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+
+    // Find all occurrences of query (case-insensitive)
+    let mut search_start = 0;
+    while let Some(pos) = text_lower[search_start..].find(&query_lower) {
+        let match_start = search_start + pos;
+        let match_end = match_start + query.len();
+
+        // Add text before the match
+        if match_start > last_end {
+            spans.push(Span::raw(text[last_end..match_start].to_string()));
+        }
+
+        // Add highlighted match (preserving original case)
+        spans.push(Span::styled(
+            text[match_start..match_end].to_string(),
+            highlight_style,
+        ));
+
+        last_end = match_end;
+        search_start = match_end;
+    }
+
+    // Add remaining text after last match
+    if last_end < text.len() {
+        spans.push(Span::raw(text[last_end..].to_string()));
+    }
+
+    if spans.is_empty() {
+        Line::raw(text.to_string())
+    } else {
+        Line::from(spans)
+    }
+}
+
 fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Clear the area by filling with spaces - more reliable than Clear widget
+    // This handles wide Unicode characters better
+    let buf = frame.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(Style::default());
+            }
+        }
+    }
+
     let Some(m) = app.selected_match() else {
+        // Render empty block if no match selected
+        let empty = Paragraph::new("")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(98, 98, 255)))
+                    .title("Preview"),
+            )
+            .style(Style::default().bg(Color::Reset));
+        frame.render_widget(empty, area);
         return;
     };
 
     let Some(ref msg) = m.message else {
+        let empty = Paragraph::new("")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(98, 98, 255)))
+                    .title("Preview"),
+            )
+            .style(Style::default().bg(Color::Reset));
+        frame.render_widget(empty, area);
         return;
     };
 
     let project = extract_project_from_path(&m.file_path);
     let date_str = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
     let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
+    let query = &app.results_query;
 
     let mut lines = vec![
         Line::from(format!("Session: {}", msg.session_id)),
@@ -199,19 +357,13 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Line::raw(""),
     ];
 
-    // Content - truncate if too long (character-safe for UTF-8)
-    let content = {
-        let char_count = msg.content.chars().count();
-        if char_count > 2000 {
-            let truncated: String = msg.content.chars().take(2000).collect();
-            format!("{}...\n(truncated)", truncated)
-        } else {
-            msg.content.clone()
-        }
-    };
+    // Content - sanitize to remove ANSI escape codes, then truncate around query match
+    let sanitized = sanitize_content(&msg.content);
+    let content = truncate_around_query(&sanitized, query, 2000);
 
+    // Add content lines with query highlighting
     for line in content.lines() {
-        lines.push(Line::raw(line.to_string()));
+        lines.push(highlight_line(line, query));
     }
 
     let preview = Paragraph::new(lines)
@@ -221,7 +373,674 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .border_style(Style::default().fg(Color::Rgb(98, 98, 255)))
                 .title("Preview"),
         )
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(Color::White).bg(Color::Reset))
+        .wrap(ratatui::widgets::Wrap { trim: false });
 
     frame.render_widget(preview, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::{Message, RipgrepMatch, SessionGroup};
+    use chrono::{TimeZone, Utc};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_test_app_with_groups() -> App {
+        let mut app = App::new("/test".to_string());
+
+        let msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "Test content for preview".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        let m = RipgrepMatch {
+            file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
+            message: Some(msg),
+        };
+
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: m.file_path.clone(),
+            matches: vec![m],
+        }];
+        app.results_query = "test".to_string();
+
+        app
+    }
+
+    #[test]
+    fn test_truncate_around_query_short_content() {
+        let content = "Short content with adb in it";
+        let result = truncate_around_query(content, "adb", 100);
+        assert_eq!(result, content); // No truncation needed
+    }
+
+    #[test]
+    fn test_truncate_around_query_centers_on_match() {
+        // Create long content with "adb" in the middle
+        let prefix = "x".repeat(500);
+        let suffix = "y".repeat(500);
+        let content = format!("{}adb{}", prefix, suffix);
+
+        let result = truncate_around_query(&content, "adb", 100);
+
+        // Result should contain "adb"
+        assert!(result.contains("adb"), "Result should contain the query");
+        // Result should be truncated
+        assert!(result.contains("..."), "Result should show truncation");
+    }
+
+    #[test]
+    fn test_truncate_around_query_at_end() {
+        // Create long content with "adb" at the end
+        let prefix = "x".repeat(1000);
+        let content = format!("{}adb", prefix);
+
+        let result = truncate_around_query(&content, "adb", 100);
+
+        assert!(result.contains("adb"), "Result should contain the query");
+    }
+
+    #[test]
+    fn test_truncate_around_query_not_found() {
+        let content = "x".repeat(500);
+        let result = truncate_around_query(&content, "notfound", 100);
+
+        // Should truncate from beginning
+        assert!(result.len() <= 120); // 100 chars + "...\n(truncated)"
+        assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn test_highlight_line_basic() {
+        let line = highlight_line("Hello world", "world");
+        assert_eq!(line.spans.len(), 2); // "Hello " and "world"
+    }
+
+    #[test]
+    fn test_highlight_line_case_insensitive() {
+        let line = highlight_line("Hello WORLD", "world");
+        assert_eq!(line.spans.len(), 2); // "Hello " and "WORLD"
+    }
+
+    #[test]
+    fn test_highlight_line_multiple_matches() {
+        let line = highlight_line("adb shell adb devices", "adb");
+        assert_eq!(line.spans.len(), 4); // "adb", " shell ", "adb", " devices"
+    }
+
+    #[test]
+    fn test_highlight_line_no_match() {
+        let line = highlight_line("Hello world", "xyz");
+        assert_eq!(line.spans.len(), 1); // just "Hello world"
+    }
+
+    #[test]
+    fn test_highlight_line_empty_query() {
+        let line = highlight_line("Hello world", "");
+        assert_eq!(line.spans.len(), 1);
+    }
+
+    #[test]
+    fn test_render_does_not_panic() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let app = App::new("/test".to_string());
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Render should not panic");
+    }
+
+    #[test]
+    fn test_render_with_groups() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let app = make_test_app_with_groups();
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Render with groups should not panic");
+    }
+
+    #[test]
+    fn test_render_preview_mode() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        app.preview_mode = true;
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Preview mode render should not panic");
+    }
+
+    #[test]
+    fn test_render_toggle_preview_clears_area() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+
+        // First render normal mode
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Normal render should not panic");
+
+        // Toggle to preview
+        app.preview_mode = true;
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Preview render should not panic");
+
+        // Toggle back to normal
+        app.preview_mode = false;
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Toggle back render should not panic");
+
+        // The buffer should have valid content without artifacts
+        let buffer = terminal.backend().buffer();
+
+        // Check that there are no obvious artifacts (NUL or other control chars)
+        for cell in buffer.content() {
+            let ch = cell.symbol();
+            // Valid chars: printable chars (including Unicode), whitespace
+            // Invalid: NUL bytes, control characters
+            for c in ch.chars() {
+                assert!(
+                    !c.is_control() || c.is_whitespace(),
+                    "Unexpected control character in buffer: {:?} (U+{:04X})",
+                    ch,
+                    c as u32
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_expanded_group() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        app.expanded = true;
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Expanded group render should not panic");
+    }
+
+    #[test]
+    fn test_render_with_cyrillic_content() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        let msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "Сделаю: 1. Preview режим 2. Индикатор compacted".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        let m = RipgrepMatch {
+            file_path: "/path/to/session.jsonl".to_string(),
+            message: Some(msg),
+        };
+
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: m.file_path.clone(),
+            matches: vec![m],
+        }];
+        app.preview_mode = true;
+
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("Cyrillic content render should not panic");
+    }
+
+    #[test]
+    fn test_render_navigation_clears_properly() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        // Create multiple groups
+        for i in 0..3 {
+            let msg = Message {
+                session_id: format!("session-{}", i),
+                role: "user".to_string(),
+                content: format!("Content for session {}", i),
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
+                branch: Some("main".to_string()),
+                line_number: 1,
+            };
+
+            let m = RipgrepMatch {
+                file_path: format!("/path/to/projects/-Users-test-projects-app{}/session.jsonl", i),
+                message: Some(msg),
+            };
+
+            app.groups.push(SessionGroup {
+                session_id: format!("session-{}", i),
+                file_path: m.file_path.clone(),
+                matches: vec![m],
+            });
+        }
+
+        // Navigate through groups
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        app.on_down();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        app.on_down();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        app.on_up();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // All renders should succeed without artifacts
+    }
+
+    /// Test for bug: navigating from large content to small content in preview mode
+    /// leaves artifacts (scattered characters) on screen.
+    /// Reproduces: "when i press down in preview mode after large blocks
+    /// when message is became little sometimes appeared non updatable characters"
+    #[test]
+    fn test_preview_large_to_small_content_no_artifacts() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        // Create a large content message (simulating tool_result with many lines)
+        let large_content = (0..100)
+            .map(|i| format!("Line {}: This is a long line of text that fills the terminal width with content", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let large_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "assistant".to_string(),
+            content: large_content,
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        // Create a small content message
+        let small_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "Short".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 2,
+        };
+
+        let large_match = RipgrepMatch {
+            file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
+            message: Some(large_msg),
+        };
+
+        let small_match = RipgrepMatch {
+            file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
+            message: Some(small_msg),
+        };
+
+        // Single group with both messages
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: large_match.file_path.clone(),
+            matches: vec![large_match, small_match],
+        }];
+        app.results_query = "test".to_string();
+
+        // Enter preview mode on large content
+        app.preview_mode = true;
+        app.expanded = true;
+        app.sub_cursor = 0; // Start on large message
+
+        // Render with large content
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Navigate down to small content
+        app.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Check buffer for artifacts
+        let buffer = terminal.backend().buffer();
+
+        // The preview area starts after header (2), input (3), status (1) = line 6
+        // and occupies most of the screen. After rendering small content,
+        // lines below the small content should be empty (spaces), not have leftover chars.
+
+        // Check that there are no unexpected characters in the buffer
+        for cell in buffer.content() {
+            let ch = cell.symbol();
+            for c in ch.chars() {
+                // Valid: printable chars, whitespace
+                // Invalid: control chars (except whitespace), NUL
+                assert!(
+                    !c.is_control() || c.is_whitespace(),
+                    "Artifact found in buffer: {:?} (U+{:04X})",
+                    ch,
+                    c as u32
+                );
+            }
+        }
+
+        // Additional check: after small content, most lines should be empty
+        // Get lines 15-23 (should be mostly empty after small "Short" content)
+        let mut non_empty_lines_after_content = 0;
+        for y in 15..23 {
+            let mut line_content = String::new();
+            for x in 0..80 {
+                let cell = buffer.cell((x, y)).unwrap();
+                line_content.push_str(cell.symbol());
+            }
+            let trimmed = line_content.trim();
+            if !trimmed.is_empty() && trimmed != "│" && !trimmed.chars().all(|c| c == '│' || c == ' ') {
+                non_empty_lines_after_content += 1;
+            }
+        }
+
+        // Should have very few non-empty lines after the small content
+        assert!(
+            non_empty_lines_after_content <= 2,
+            "Found {} non-empty lines after small content - possible artifacts",
+            non_empty_lines_after_content
+        );
+    }
+
+    /// Test navigating through multiple messages of varying sizes in preview mode
+    #[test]
+    fn test_preview_navigation_varying_sizes_no_artifacts() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        // Create messages with varying sizes: large, small, medium, tiny
+        let sizes = vec![
+            ("Large message with lots of content\n".repeat(50), "assistant"),
+            ("Tiny".to_string(), "user"),
+            ("Medium sized message with some content\n".repeat(10), "assistant"),
+            ("X".to_string(), "user"),
+        ];
+
+        let mut matches = Vec::new();
+        for (i, (content, role)) in sizes.iter().enumerate() {
+            let msg = Message {
+                session_id: "test-session".to_string(),
+                role: role.to_string(),
+                content: content.to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
+                branch: Some("main".to_string()),
+                line_number: i + 1,
+            };
+            matches.push(RipgrepMatch {
+                file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
+                message: Some(msg),
+            });
+        }
+
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
+            matches,
+        }];
+        app.results_query = "test".to_string();
+        app.preview_mode = true;
+        app.expanded = true;
+
+        // Navigate through all messages, checking buffer after each
+        for i in 0..4 {
+            app.sub_cursor = i;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+
+            let buffer = terminal.backend().buffer();
+
+            // Check for control character artifacts
+            for cell in buffer.content() {
+                let ch = cell.symbol();
+                for c in ch.chars() {
+                    assert!(
+                        !c.is_control() || c.is_whitespace(),
+                        "Artifact at message {} in buffer: {:?} (U+{:04X})",
+                        i,
+                        ch,
+                        c as u32
+                    );
+                }
+            }
+        }
+
+        // Navigate backwards and check again
+        for i in (0..4).rev() {
+            app.sub_cursor = i;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+
+            let buffer = terminal.backend().buffer();
+
+            for cell in buffer.content() {
+                let ch = cell.symbol();
+                for c in ch.chars() {
+                    assert!(
+                        !c.is_control() || c.is_whitespace(),
+                        "Artifact (reverse nav) at message {} in buffer: {:?} (U+{:04X})",
+                        i,
+                        ch,
+                        c as u32
+                    );
+                }
+            }
+        }
+    }
+
+    /// Test with realistic tool_use content (like adb logcat output)
+    /// This simulates the actual content that caused the bug
+    #[test]
+    fn test_preview_realistic_tool_output_no_artifacts() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        // Realistic adb logcat output (what the user was viewing)
+        let tool_output = r#"12-11 15:25:07.603   211   215 E android.system.suspend@1.0-service: Error opening kernel wakelock stats for: wakeup34: Permission denied
+12-11 15:25:07.603   211   215 E android.system.suspend@1.0-service: Error opening kernel wakelock stats for: wakeup35: Permission denied
+12-11 15:26:16.284  6931  6931 E AndroidRuntime: FATAL EXCEPTION: main
+12-11 15:26:16.284  6931  6931 E AndroidRuntime: Process: com.avito.android.dev, PID: 6931
+12-11 15:26:16.284  6931  6931 E AndroidRuntime: java.lang.RuntimeException: Unable to start activity
+12-11 15:26:16.284  6931  6931 E AndroidRuntime:        at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3449)
+12-11 15:26:16.284  6931  6931 E AndroidRuntime:        at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3601)
+12-11 15:26:16.284  6931  6931 E AndroidRuntime:        at android.app.servertransaction.LaunchActivityItem.execute(LaunchActivityItem.java:85)"#;
+
+        let large_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "assistant".to_string(),
+            content: format!("[tool_result]\n{}\n[/tool_result]", tool_output.repeat(5)),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        // Small follow-up message (Cyrillic like in user's session)
+        let small_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "assistant".to_string(),
+            content: "Вижу ключевую строку.".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 2,
+        };
+
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: "/path/to/session.jsonl".to_string(),
+            matches: vec![
+                RipgrepMatch {
+                    file_path: "/path/to/session.jsonl".to_string(),
+                    message: Some(large_msg),
+                },
+                RipgrepMatch {
+                    file_path: "/path/to/session.jsonl".to_string(),
+                    message: Some(small_msg),
+                },
+            ],
+        }];
+        app.results_query = "test".to_string();
+        app.preview_mode = true;
+        app.expanded = true;
+
+        // Render large tool output
+        app.sub_cursor = 0;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Store what the buffer looked like with large content (for debugging)
+        let _large_buffer_snapshot: Vec<String> = {
+            let buffer = terminal.backend().buffer();
+            (0..30)
+                .map(|y| {
+                    (0..100)
+                        .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+
+        // Navigate to small content
+        app.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Check for leftover content from the large render
+        // Lines 15-25 should be mostly empty (small content only takes a few lines)
+        for y in 15..25 {
+            let mut line_content = String::new();
+            for x in 1..99 {
+                // Skip border columns
+                let cell = buffer.cell((x, y)).unwrap();
+                line_content.push_str(cell.symbol());
+            }
+            let trimmed = line_content.trim();
+
+            // Check if this line has content that looks like leftover from tool output
+            if trimmed.contains("android") || trimmed.contains("Exception") || trimmed.contains("12-11") {
+                panic!(
+                    "Leftover content from large render on line {}: {:?}",
+                    y, trimmed
+                );
+            }
+        }
+
+        // Verify the buffer doesn't contain control characters
+        for cell in buffer.content() {
+            let ch = cell.symbol();
+            for c in ch.chars() {
+                assert!(
+                    !c.is_control() || c.is_whitespace(),
+                    "Control char artifact: {:?} (U+{:04X})",
+                    ch,
+                    c as u32
+                );
+            }
+        }
+    }
+
+    /// Test with content containing ANSI escape sequences (like tool output)
+    #[test]
+    fn test_preview_ansi_content_no_artifacts() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new("/test".to_string());
+
+        // Content with ANSI escape sequences (simulating adb logcat output)
+        let ansi_content = "\x1b[31mE/AndroidRuntime\x1b[0m: FATAL EXCEPTION: main\n\
+            \x1b[33mProcess: com.example.app\x1b[0m\n\
+            \x1b[32mjava.lang.NullPointerException\x1b[0m\n\
+            \x1b[34m    at com.example.MainActivity.onCreate\x1b[0m\n\
+            \x1b[2J\x1b[H\n\
+            \x1b[?25l\x1b[?25h\n\
+            Normal text after escapes";
+
+        let ansi_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "assistant".to_string(),
+            content: ansi_content.to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+        };
+
+        let small_msg = Message {
+            session_id: "test-session".to_string(),
+            role: "user".to_string(),
+            content: "ok".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 2,
+        };
+
+        app.groups = vec![SessionGroup {
+            session_id: "test-session".to_string(),
+            file_path: "/path/to/session.jsonl".to_string(),
+            matches: vec![
+                RipgrepMatch {
+                    file_path: "/path/to/session.jsonl".to_string(),
+                    message: Some(ansi_msg),
+                },
+                RipgrepMatch {
+                    file_path: "/path/to/session.jsonl".to_string(),
+                    message: Some(small_msg),
+                },
+            ],
+        }];
+        app.results_query = "test".to_string();
+        app.preview_mode = true;
+        app.expanded = true;
+
+        // Render ANSI content
+        app.sub_cursor = 0;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Navigate to small content
+        app.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Check buffer - no ANSI artifacts should remain
+        let buffer = terminal.backend().buffer();
+        for cell in buffer.content() {
+            let ch = cell.symbol();
+            for c in ch.chars() {
+                assert!(
+                    !c.is_control() || c.is_whitespace(),
+                    "ANSI artifact in buffer: {:?} (U+{:04X})",
+                    ch,
+                    c as u32
+                );
+                // Also check for escape character specifically
+                assert!(
+                    c != '\x1b',
+                    "ESC character found in buffer - ANSI sequence not stripped"
+                );
+            }
+        }
+    }
 }

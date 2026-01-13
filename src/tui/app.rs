@@ -1,14 +1,17 @@
-use crate::search::{group_by_session, search, RipgrepMatch, SessionGroup};
-use ratatui::widgets::ListState;
+use crate::search::{group_by_session, search_with_options, RipgrepMatch, SessionGroup};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 300;
+
+/// Result from background search thread
+type SearchResult = Result<(String, bool, Vec<RipgrepMatch>), String>;
 
 pub struct App {
     pub input: String,
     pub results: Vec<RipgrepMatch>,
     pub groups: Vec<SessionGroup>,
-    pub list_state: ListState,
     pub group_cursor: usize,
     pub sub_cursor: usize,
     pub expanded: bool,
@@ -23,18 +26,37 @@ pub struct App {
     pub should_quit: bool,
     pub resume_id: Option<String>,
     pub resume_file_path: Option<String>,
+    /// Flag to force a full terminal redraw (clears diff optimization artifacts)
+    pub needs_full_redraw: bool,
+    /// Regex search mode (Ctrl+R to toggle)
+    pub regex_mode: bool,
+    /// Track last regex mode used for search
+    last_regex_mode: bool,
+    /// Channel to receive search results from background thread
+    search_rx: Receiver<SearchResult>,
+    /// Channel to send search requests to background thread (query, path, regex_mode)
+    search_tx: Sender<(String, String, bool)>,
 }
 
 impl App {
     pub fn new(search_path: String) -> Self {
-        let mut list_state = ListState::default();
-        list_state.select(Some(0));
+        // Create channels for async search
+        let (result_tx, result_rx) = mpsc::channel::<SearchResult>();
+        let (query_tx, query_rx) = mpsc::channel::<(String, String, bool)>();
+
+        // Spawn background search thread
+        thread::spawn(move || {
+            while let Ok((query, path, use_regex)) = query_rx.recv() {
+                let result = search_with_options(&query, &path, use_regex)
+                    .map(|r| (query, use_regex, r));
+                let _ = result_tx.send(result);
+            }
+        });
 
         Self {
             input: String::new(),
             results: vec![],
             groups: vec![],
-            list_state,
             group_cursor: 0,
             sub_cursor: 0,
             expanded: false,
@@ -49,6 +71,11 @@ impl App {
             should_quit: false,
             resume_id: None,
             resume_file_path: None,
+            needs_full_redraw: false,
+            regex_mode: false,
+            last_regex_mode: false,
+            search_rx: result_rx,
+            search_tx: query_tx,
         }
     }
 
@@ -69,12 +96,19 @@ impl App {
             return;
         }
 
+        let old_cursor = (self.group_cursor, self.sub_cursor);
+
         if self.expanded && self.sub_cursor > 0 {
             self.sub_cursor -= 1;
         } else if self.group_cursor > 0 {
             self.group_cursor -= 1;
             self.sub_cursor = 0;
             self.expanded = false;
+        }
+
+        // Force full redraw in preview mode when selection changed
+        if self.preview_mode && (self.group_cursor, self.sub_cursor) != old_cursor {
+            self.needs_full_redraw = true;
         }
     }
 
@@ -83,10 +117,16 @@ impl App {
             return;
         }
 
+        let old_cursor = (self.group_cursor, self.sub_cursor);
+
         if self.expanded {
             if let Some(group) = self.selected_group() {
                 if self.sub_cursor < group.matches.len().saturating_sub(1) {
                     self.sub_cursor += 1;
+                    // Force full redraw in preview mode
+                    if self.preview_mode {
+                        self.needs_full_redraw = true;
+                    }
                     return;
                 }
             }
@@ -96,6 +136,11 @@ impl App {
             self.group_cursor += 1;
             self.sub_cursor = 0;
             self.expanded = false;
+        }
+
+        // Force full redraw in preview mode when selection changed
+        if self.preview_mode && (self.group_cursor, self.sub_cursor) != old_cursor {
+            self.needs_full_redraw = true;
         }
     }
 
@@ -113,6 +158,17 @@ impl App {
     pub fn on_tab(&mut self) {
         if !self.groups.is_empty() && self.selected_match().is_some() {
             self.preview_mode = !self.preview_mode;
+            // Force full redraw when toggling preview mode
+            self.needs_full_redraw = true;
+        }
+    }
+
+    pub fn on_toggle_regex(&mut self) {
+        self.regex_mode = !self.regex_mode;
+        // Trigger re-search if we have a query
+        if !self.input.is_empty() {
+            self.last_keystroke = Some(Instant::now());
+            self.typing = true;
         }
     }
 
@@ -146,39 +202,52 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        // Check for search results from background thread
+        while let Ok(result) = self.search_rx.try_recv() {
+            match result {
+                Ok((query, use_regex, results)) => {
+                    // Only apply results if query and regex mode match current state
+                    // (ignore stale results from old queries or mode changes)
+                    if query == self.input && use_regex == self.regex_mode {
+                        self.results_query = query;
+                        self.groups = group_by_session(results.clone());
+                        self.results = results;
+                        self.group_cursor = 0;
+                        self.sub_cursor = 0;
+                        self.expanded = false;
+                        self.error = None;
+                        self.searching = false;
+                    }
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                    self.searching = false;
+                }
+            }
+        }
+
         // Check if debounce period passed
         if let Some(last) = self.last_keystroke {
             if last.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
                 self.last_keystroke = None;
                 self.typing = false;
 
-                if !self.input.is_empty() && self.input != self.last_query {
-                    self.do_search();
+                // Re-search if query changed or regex mode changed
+                let query_changed = self.input != self.last_query;
+                let mode_changed = self.regex_mode != self.last_regex_mode;
+                if !self.input.is_empty() && (query_changed || mode_changed) {
+                    self.start_search();
                 }
             }
         }
     }
 
-    pub fn do_search(&mut self) {
+    /// Start an async search in the background thread
+    fn start_search(&mut self) {
         self.last_query = self.input.clone();
+        self.last_regex_mode = self.regex_mode;
         self.searching = true;
-
-        match search(&self.input, &self.search_path) {
-            Ok(results) => {
-                self.results_query = self.input.clone();
-                self.groups = group_by_session(results.clone());
-                self.results = results;
-                self.group_cursor = 0;
-                self.sub_cursor = 0;
-                self.expanded = false;
-                self.error = None;
-            }
-            Err(e) => {
-                self.error = Some(e);
-            }
-        }
-
-        self.searching = false;
+        let _ = self.search_tx.send((self.input.clone(), self.search_path.clone(), self.regex_mode));
     }
 }
 

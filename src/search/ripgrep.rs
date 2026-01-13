@@ -1,4 +1,5 @@
 use super::Message;
+use regex::RegexBuilder;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -10,16 +11,30 @@ pub struct RipgrepMatch {
 }
 
 /// Search for query in JSONL files using ripgrep
+/// If use_regex is true, treats query as a regex pattern; otherwise uses literal string matching
+#[cfg(test)]
 pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, String> {
+    search_with_options(query, search_path, false)
+}
+
+/// Search with explicit regex mode option
+pub fn search_with_options(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+    let mut args = vec![
+        "--json".to_string(),
+        "--glob".to_string(), "*.jsonl".to_string(),
+        "--max-count".to_string(), "1000".to_string(),
+    ];
+
+    // Use fixed-strings for literal search, omit for regex
+    if !use_regex {
+        args.push("--fixed-strings".to_string());
+    }
+
+    args.push(query.to_string());
+    args.push(search_path.to_string());
+
     let output = Command::new("rg")
-        .args([
-            "--json",
-            "--glob", "*.jsonl",
-            "--fixed-strings",
-            "--max-count", "1000",
-            query,
-            search_path,
-        ])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -28,11 +43,31 @@ pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, Strin
     let reader = BufReader::new(&output.stdout[..]);
     let mut results = Vec::new();
 
+    // Build matcher: regex or literal (case-insensitive)
+    let regex_matcher = if use_regex {
+        RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    } else {
+        None
+    };
+    let query_lower = query.to_lowercase();
+
     for line in reader.lines() {
         if let Ok(line) = line {
             if let Some(m) = parse_ripgrep_json(&line) {
-                if m.message.is_some() {
-                    results.push(m);
+                // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
+                // This filters out false positives where query matched file path or metadata
+                if let Some(ref msg) = m.message {
+                    let matches = if let Some(ref re) = regex_matcher {
+                        re.is_match(&msg.content)
+                    } else {
+                        msg.content.to_lowercase().contains(&query_lower)
+                    };
+                    if matches {
+                        results.push(m);
+                    }
                 }
             }
         }
@@ -86,6 +121,86 @@ pub fn extract_project_from_path(path: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(".jsonl")
         .to_string()
+}
+
+/// Sanitize content by removing ANSI escape codes and control characters
+/// This prevents terminal corruption when displaying content that contains escape sequences
+pub fn sanitize_content(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        // Skip ANSI escape sequences starting with ESC
+        if c == '\x1b' {
+            match chars.peek() {
+                // CSI sequence: ESC [ ... (letter)
+                Some(&'[') => {
+                    chars.next(); // consume '['
+                    // Skip until we hit a letter (the terminator)
+                    // This handles colors, cursor movement, etc.
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                // OSC sequence: ESC ] ... (BEL or ESC \)
+                Some(&']') => {
+                    chars.next(); // consume ']'
+                    // Skip until BEL (\x07) or ST (ESC \)
+                    while let Some(next) = chars.next() {
+                        if next == '\x07' {
+                            break; // BEL terminator
+                        }
+                        if next == '\x1b' {
+                            // Check for ST (ESC \)
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                }
+                // DEC special: ESC ( or ESC ) followed by a char
+                Some(&'(') | Some(&')') => {
+                    chars.next(); // consume '(' or ')'
+                    chars.next(); // consume the character set selector
+                }
+                // SS2/SS3: ESC N or ESC O
+                Some(&'N') | Some(&'O') => {
+                    chars.next();
+                }
+                // Other single-char escapes: ESC followed by one char
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+
+        // Handle carriage return
+        if c == '\r' {
+            // If followed by \n, convert to just \n (CRLF -> LF)
+            if chars.peek() == Some(&'\n') {
+                // Let the next iteration handle the \n
+                continue;
+            }
+            // Standalone \r - replace with space to prevent cursor jumping back
+            result.push(' ');
+            continue;
+        }
+
+        // Skip control characters except newline and tab
+        if c.is_control() && c != '\n' && c != '\t' {
+            continue;
+        }
+
+        result.push(c);
+    }
+
+    result
 }
 
 /// Extract context around query match in content
@@ -175,6 +290,41 @@ mod tests {
     }
 
     #[test]
+    fn test_search_filters_metadata_matches() {
+        // Test that searching for "abc123" (which is in sessionId) does NOT return results
+        // because the actual message content doesn't contain "abc123"
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        // Search for sessionId which appears in metadata but NOT in message content
+        let results = search("abc123", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
+
+        assert!(results.is_empty(), "Should NOT match sessionId, only message content");
+    }
+
+    #[test]
+    fn test_search_matches_content_only() {
+        let temp_dir = TempDir::new().unwrap();
+        // Message content contains "warmup" but session ID contains "adb"
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Running warmup"}]},"sessionId":"adb-test-session","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        // Search for "adb" - should NOT match because it's only in sessionId
+        let adb_results = search("adb", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
+        assert!(adb_results.is_empty(), "Should NOT match 'adb' in sessionId");
+
+        // Search for "warmup" - should match because it's in content
+        let warmup_results = search("warmup", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
+        assert!(!warmup_results.is_empty(), "Should match 'warmup' in content");
+    }
+
+    #[test]
     fn test_parse_ripgrep_json_match() {
         let rg_json = r#"{"type":"match","data":{"path":{"text":"/path/to/session.jsonl"},"lines":{"text":"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello Claude\"}]},\"sessionId\":\"abc123\",\"timestamp\":\"2025-01-09T10:00:00Z\"}\n"},"line_number":1}}"#;
 
@@ -260,5 +410,131 @@ mod tests {
         let context = extract_context(content, "nonexistent", 10);
 
         assert!(!context.is_empty(), "Should return truncated content");
+    }
+
+    #[test]
+    fn test_sanitize_content_plain_text() {
+        let content = "Hello world";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_sanitize_content_ansi_color() {
+        // Red text: ESC[31m Hello ESC[0m
+        let content = "\x1b[31mHello\x1b[0m world";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_sanitize_content_ansi_cursor_movement() {
+        // Cursor movement sequences like ESC[2J (clear screen), ESC[H (home)
+        let content = "\x1b[2J\x1b[HHello world";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_sanitize_content_control_chars() {
+        // Control characters like backspace, bell
+        let content = "Hello\x08\x07 world";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_sanitize_content_preserves_newlines() {
+        let content = "Hello\nworld\ttab";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello\nworld\ttab");
+    }
+
+    #[test]
+    fn test_sanitize_content_complex_ansi() {
+        // Multiple ANSI codes: bold, color, reset
+        let content = "\x1b[1m\x1b[32mGreen Bold\x1b[0m Normal";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Green Bold Normal");
+    }
+
+    #[test]
+    fn test_sanitize_content_preserves_cyrillic() {
+        let content = "\x1b[31mПривет\x1b[0m мир";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Привет мир");
+    }
+
+    #[test]
+    fn test_sanitize_content_ansi_256_color() {
+        // 256 color: ESC[38;5;123m
+        let content = "\x1b[38;5;123mColored\x1b[0m text";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Colored text");
+    }
+
+    #[test]
+    fn test_sanitize_content_carriage_return() {
+        // Carriage return without newline overwrites text
+        let content = "Hello\rWorld";
+        let result = sanitize_content(content);
+        // Should strip \r to prevent cursor jumping back
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_sanitize_content_crlf_to_lf() {
+        // Windows line endings should become Unix line endings
+        let content = "Hello\r\nWorld";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hello\nWorld");
+    }
+
+    #[test]
+    fn test_sanitize_content_multiple_carriage_returns() {
+        // Multiple carriage returns in sequence - each becomes a space
+        let content = "First\r\r\rSecond";
+        let result = sanitize_content(content);
+        assert_eq!(result, "First   Second");
+    }
+
+    #[test]
+    fn test_sanitize_content_osc_sequence() {
+        // Operating System Command: ESC ] ... BEL
+        let content = "\x1b]0;Window Title\x07Normal text";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Normal text");
+    }
+
+    #[test]
+    fn test_sanitize_content_osc_st_terminator() {
+        // OSC with ST terminator: ESC ] ... ESC \
+        let content = "\x1b]0;Title\x1b\\Normal text";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Normal text");
+    }
+
+    #[test]
+    fn test_sanitize_content_cursor_position() {
+        // Cursor position: ESC[row;colH
+        let content = "\x1b[10;20HText at position";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Text at position");
+    }
+
+    #[test]
+    fn test_sanitize_content_private_csi() {
+        // Private CSI: ESC[?...
+        let content = "\x1b[?25lHidden cursor\x1b[?25h";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Hidden cursor");
+    }
+
+    #[test]
+    fn test_sanitize_content_dec_special() {
+        // DEC special: ESC ( or ESC )
+        let content = "\x1b(0Line drawing\x1b(B";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Line drawing");
     }
 }

@@ -4,7 +4,7 @@ mod tui;
 
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, Clear, ClearType},
 };
@@ -35,6 +35,12 @@ fn main() -> io::Result<()> {
 
     // Main loop
     loop {
+        // Force full redraw if needed (clears diff optimization artifacts)
+        if app.needs_full_redraw {
+            terminal.clear()?;
+            app.needs_full_redraw = false;
+        }
+
         // Draw
         terminal.draw(|frame| tui::render(frame, &app))?;
 
@@ -42,6 +48,12 @@ fn main() -> io::Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // Handle Ctrl+R for regex toggle
+                if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.on_toggle_regex();
                     continue;
                 }
 
