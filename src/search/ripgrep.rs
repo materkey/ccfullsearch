@@ -126,22 +126,49 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     Some(RipgrepMatch { file_path, message, source })
 }
 
-/// Extract project name from file path
-/// Path format: /Users/user/.claude/projects/-Users-user-projects-myapp/session.jsonl
+/// Extract project/session name from file path
+/// CLI format: /Users/user/.claude/projects/-Users-user-projects-myapp/session.jsonl
+/// Desktop format: .../local-agent-mode-sessions/.../local_xxx/.claude/projects/-sessions-cool-name/xxx.jsonl
+/// Desktop audit: .../local-agent-mode-sessions/.../local_xxx/audit.jsonl
 pub fn extract_project_from_path(path: &str) -> String {
-    // Find the project directory name (the part after "projects/")
+    // Check for Desktop session name in path (e.g., -sessions-wizardly-vibrant-dirac)
+    if let Some(sessions_idx) = path.find("-sessions-") {
+        let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
+        // Get the name (before the next /)
+        let name = after_sessions.split('/').next().unwrap_or("");
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+
+    // Check for CLI project name (e.g., -Users-user-projects-myapp)
     if let Some(projects_idx) = path.find("projects/") {
         let after_projects = &path[projects_idx + 9..]; // Skip "projects/"
 
         // Get the directory name (before the next /)
         let dir_name = after_projects.split('/').next().unwrap_or("");
 
-        // The project name is the last part after splitting by -
+        // The project name is the last part after splitting by -projects-
         // e.g., "-Users-user-projects-myapp" -> "myapp"
-        // e.g., "-Users-user-projects-my-cool-app" -> "my-cool-app"
         if let Some(last_projects_idx) = dir_name.rfind("-projects-") {
             return dir_name[last_projects_idx + 10..].to_string();
         }
+    }
+
+    // Desktop audit.jsonl fallback: extract session name from local_xxx part
+    if path.contains("local-agent-mode-sessions") {
+        // Path like: .../local_40338476-098c-4b67-b9be-4b05f12c3800/audit.jsonl
+        for part in path.split('/') {
+            if part.starts_with("local_") {
+                // Return shortened session ID
+                let session_id = part.trim_start_matches("local_");
+                if session_id.len() > 8 {
+                    return format!("Desktop:{}", &session_id[..8]);
+                }
+                return format!("Desktop:{}", session_id);
+            }
+        }
+        return "Desktop".to_string();
     }
 
     // Fallback: return basename without extension
@@ -391,6 +418,26 @@ mod tests {
         let project = extract_project_from_path(path);
 
         assert_eq!(project, "my-cool-app");
+    }
+
+    #[test]
+    fn test_extract_project_from_desktop_session_name() {
+        // Desktop nested path with session name
+        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_xxx/.claude/projects/-sessions-wizardly-vibrant-dirac/session.jsonl";
+
+        let project = extract_project_from_path(path);
+
+        assert_eq!(project, "wizardly-vibrant-dirac");
+    }
+
+    #[test]
+    fn test_extract_project_from_desktop_audit() {
+        // Desktop audit.jsonl without session name
+        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_40338476-098c-4b67-b9be-4b05f12c3800/audit.jsonl";
+
+        let project = extract_project_from_path(path);
+
+        assert_eq!(project, "Desktop:40338476");
     }
 
     #[test]
