@@ -42,6 +42,8 @@ pub struct Message {
 
 impl Message {
     /// Parse a JSONL line into a Message
+    /// Supports both Claude Code CLI format (sessionId, timestamp) and
+    /// Claude Desktop format (session_id, _audit_timestamp)
     pub fn from_jsonl(line: &str, line_number: usize) -> Option<Self> {
         let json: serde_json::Value = serde_json::from_str(line).ok()?;
 
@@ -61,14 +63,25 @@ impl Message {
             return None;
         }
 
-        let session_id = json.get("sessionId")?.as_str()?.to_string();
-        let timestamp_str = json.get("timestamp")?.as_str()?;
+        // Support both CLI format (sessionId) and Desktop format (session_id)
+        let session_id = json.get("sessionId")
+            .or_else(|| json.get("session_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())?;
+
+        // Support both CLI format (timestamp) and Desktop format (_audit_timestamp)
+        let timestamp_str = json.get("timestamp")
+            .or_else(|| json.get("_audit_timestamp"))
+            .and_then(|v| v.as_str())?;
         let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
             .ok()?
             .with_timezone(&Utc);
 
+        // Branch is CLI-only, Desktop doesn't have it
         let branch = json.get("branch")
+            .or_else(|| json.get("gitBranch"))
             .and_then(|b| b.as_str())
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
         Some(Message {
@@ -233,5 +246,29 @@ mod tests {
     fn test_session_source_display_name() {
         assert_eq!(SessionSource::ClaudeCodeCLI.display_name(), "CLI");
         assert_eq!(SessionSource::ClaudeDesktop.display_name(), "Desktop");
+    }
+
+    #[test]
+    fn test_parse_desktop_format_message() {
+        // Desktop format uses session_id (underscore) and _audit_timestamp
+        let jsonl = r#"{"type":"assistant","message":{"model":"claude-opus-4-5-20251101","id":"msg_01Q4WpB2jNfsHuijFwLGLFwN","type":"message","role":"assistant","content":[{"type":"text","text":"I'd love to help you analyze how you're spending your time!"}],"stop_reason":null,"stop_sequence":null},"parent_tool_use_id":null,"session_id":"0c2f5015-9457-491f-8f35-218d6c34ff68","uuid":"aa419e76-930a-4970-85c3-b5f03e85f6e0","_audit_timestamp":"2026-01-13T13:31:31.268Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse Desktop format message");
+
+        assert_eq!(msg.session_id, "0c2f5015-9457-491f-8f35-218d6c34ff68");
+        assert_eq!(msg.role, "assistant");
+        assert!(msg.content.contains("I'd love to help you analyze"));
+        assert!(msg.branch.is_none()); // Desktop doesn't have branch
+    }
+
+    #[test]
+    fn test_parse_desktop_user_message() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello from Desktop"}]},"session_id":"desktop-session-123","_audit_timestamp":"2026-01-13T10:00:00.000Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse Desktop user message");
+
+        assert_eq!(msg.session_id, "desktop-session-123");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "Hello from Desktop");
     }
 }
