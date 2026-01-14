@@ -155,12 +155,15 @@ pub fn extract_project_from_path(path: &str) -> String {
         }
     }
 
-    // Desktop audit.jsonl fallback: extract session name from local_xxx part
+    // Desktop audit.jsonl: try to read title from sibling JSON metadata file
     if path.contains("local-agent-mode-sessions") {
-        // Path like: .../local_40338476-098c-4b67-b9be-4b05f12c3800/audit.jsonl
+        if let Some(title) = read_desktop_session_title(path) {
+            return title;
+        }
+
+        // Fallback: extract from local_xxx part
         for part in path.split('/') {
             if part.starts_with("local_") {
-                // Return shortened session ID
                 let session_id = part.trim_start_matches("local_");
                 if session_id.len() > 8 {
                     return format!("Desktop:{}", &session_id[..8]);
@@ -177,6 +180,31 @@ pub fn extract_project_from_path(path: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(".jsonl")
         .to_string()
+}
+
+/// Read Desktop session title from the sibling JSON metadata file
+/// Path: .../local_xxx/audit.jsonl -> .../local_xxx.json
+fn read_desktop_session_title(audit_path: &str) -> Option<String> {
+    use std::path::Path;
+
+    let path = Path::new(audit_path);
+
+    // Get the parent directory (local_xxx)
+    let local_dir = path.parent()?;
+    let local_dir_name = local_dir.file_name()?.to_str()?;
+
+    // Build the JSON metadata file path (sibling of local_xxx directory)
+    let parent_of_local = local_dir.parent()?;
+    let json_path = parent_of_local.join(format!("{}.json", local_dir_name));
+
+    // Try to read and parse the JSON file
+    let content = std::fs::read_to_string(&json_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // Extract the title field
+    json.get("title")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Sanitize content by removing ANSI escape codes and control characters
