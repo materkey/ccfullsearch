@@ -38,6 +38,8 @@ pub struct Message {
     pub timestamp: DateTime<Utc>,
     pub branch: Option<String>,
     pub line_number: usize,
+    pub uuid: Option<String>,
+    pub parent_uuid: Option<String>,
 }
 
 impl Message {
@@ -84,6 +86,13 @@ impl Message {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        let uuid = json.get("uuid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let parent_uuid = json.get("parentUuid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Some(Message {
             session_id,
             role,
@@ -91,11 +100,19 @@ impl Message {
             timestamp,
             branch,
             line_number,
+            uuid,
+            parent_uuid,
         })
     }
 
     /// Extract text content from message content blocks
+    /// Handles both array format [{"type":"text","text":"..."}] and plain string format
     pub fn extract_content(raw: &serde_json::Value) -> String {
+        // Handle plain string content (e.g., user messages with "content": "text")
+        if let Some(s) = raw.as_str() {
+            return s.to_string();
+        }
+
         let mut parts: Vec<String> = Vec::new();
 
         if let Some(arr) = raw.as_array() {
@@ -259,6 +276,7 @@ mod tests {
         assert_eq!(msg.role, "assistant");
         assert!(msg.content.contains("I'd love to help you analyze"));
         assert!(msg.branch.is_none()); // Desktop doesn't have branch
+        assert_eq!(msg.uuid, Some("aa419e76-930a-4970-85c3-b5f03e85f6e0".to_string()));
     }
 
     #[test]
@@ -270,5 +288,45 @@ mod tests {
         assert_eq!(msg.session_id, "desktop-session-123");
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content, "Hello from Desktop");
+    }
+
+    #[test]
+    fn test_parse_string_content() {
+        // Some user messages have content as a plain string instead of array
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"Hello plain string"},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse plain string content");
+
+        assert_eq!(msg.content, "Hello plain string");
+        assert_eq!(msg.role, "user");
+    }
+
+    #[test]
+    fn test_parse_uuid_and_parent_uuid() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z","uuid":"uuid-111","parentUuid":"uuid-000"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse message with uuid");
+
+        assert_eq!(msg.uuid, Some("uuid-111".to_string()));
+        assert_eq!(msg.parent_uuid, Some("uuid-000".to_string()));
+    }
+
+    #[test]
+    fn test_parse_message_without_uuid() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse message without uuid");
+
+        assert_eq!(msg.uuid, None);
+        assert_eq!(msg.parent_uuid, None);
+    }
+
+    #[test]
+    fn test_extract_content_string() {
+        let raw: serde_json::Value = serde_json::json!("plain text content");
+
+        let content = Message::extract_content(&raw);
+
+        assert_eq!(content, "plain text content");
     }
 }
