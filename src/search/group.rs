@@ -94,6 +94,8 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, timestamp_mins as u32, 0).unwrap(),
                 branch: None,
                 line_number: 1,
+                uuid: None,
+                parent_uuid: None,
             }),
             source: SessionSource::ClaudeCodeCLI,
         }

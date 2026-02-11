@@ -111,7 +111,8 @@ fn main() -> io::Result<()> {
 
     // Resume if requested
     if let (Some(session_id), Some(file_path), Some(source)) = (&app.resume_id, &app.resume_file_path, &app.resume_source) {
-        if let Err(e) = resume::resume(session_id, file_path, *source) {
+        let uuid = app.resume_uuid.as_deref();
+        if let Err(e) = resume::resume(session_id, file_path, *source, uuid) {
             eprintln!("Error resuming session: {}", e);
             std::process::exit(1);
         }

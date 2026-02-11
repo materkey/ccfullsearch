@@ -28,6 +28,8 @@ pub struct App {
     pub resume_file_path: Option<String>,
     /// Session source for resume (CLI or Desktop)
     pub resume_source: Option<SessionSource>,
+    /// UUID of the selected message (for branch-aware resume)
+    pub resume_uuid: Option<String>,
     /// Flag to force a full terminal redraw (clears diff optimization artifacts)
     pub needs_full_redraw: bool,
     /// Regex search mode (Ctrl+R to toggle)
@@ -74,6 +76,7 @@ impl App {
             resume_id: None,
             resume_file_path: None,
             resume_source: None,
+            resume_uuid: None,
             needs_full_redraw: false,
             regex_mode: false,
             last_regex_mode: false,
@@ -184,14 +187,15 @@ impl App {
         // Extract values first to avoid borrow issues
         let resume_info = self.selected_match().and_then(|m| {
             m.message.as_ref().map(|msg| {
-                (msg.session_id.clone(), m.file_path.clone(), m.source)
+                (msg.session_id.clone(), m.file_path.clone(), m.source, msg.uuid.clone())
             })
         });
 
-        if let Some((session_id, file_path, source)) = resume_info {
+        if let Some((session_id, file_path, source, uuid)) = resume_info {
             self.resume_id = Some(session_id);
             self.resume_file_path = Some(file_path);
             self.resume_source = Some(source);
+            self.resume_uuid = uuid;
             self.should_quit = true;
         }
     }

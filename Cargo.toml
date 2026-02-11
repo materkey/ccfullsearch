@@ -12,6 +12,7 @@ chrono = { version = "0.4", features = ["serde"] }
 which = "7.0"
 dirs = "6.0"
 regex = "1.10"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.0"

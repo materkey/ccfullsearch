@@ -404,6 +404,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -602,6 +604,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -638,6 +642,8 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 branch: Some("main".to_string()),
                 line_number: 1,
+            uuid: None,
+            parent_uuid: None,
             };
 
             let m = RipgrepMatch {
@@ -689,6 +695,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         // Create a small content message
@@ -699,6 +707,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let large_match = RipgrepMatch {
@@ -803,6 +813,8 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 branch: Some("main".to_string()),
                 line_number: i + 1,
+                uuid: None,
+                parent_uuid: None,
             };
             matches.push(RipgrepMatch {
                 file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
@@ -890,6 +902,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         // Small follow-up message (Cyrillic like in user's session)
@@ -900,6 +914,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
+        uuid: None,
+        parent_uuid: None,
         };
 
         app.groups = vec![SessionGroup {
@@ -1002,6 +1018,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let small_msg = Message {
@@ -1011,6 +1029,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
+        uuid: None,
+        parent_uuid: None,
         };
 
         app.groups = vec![SessionGroup {
@@ -1070,6 +1090,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -1097,6 +1119,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
+        uuid: None,
+        parent_uuid: None,
         };
 
         let m = RipgrepMatch {
