@@ -248,14 +248,18 @@ impl App {
 
     /// Enter tree mode directly for a file path or session ID
     pub fn enter_tree_mode_direct(&mut self, target: &str) {
-        // If target looks like a file path (contains / or .jsonl), use directly
-        // Otherwise try to find it as a session ID in search paths
+        // If target looks like a file path, use directly
         let file_path = if target.contains('/') || target.ends_with(".jsonl") {
             target.to_string()
         } else {
             // Search for session ID in known paths
-            self.find_session_file(target)
-                .unwrap_or_else(|| target.to_string())
+            match self.find_session_file(target) {
+                Some(path) => path,
+                None => {
+                    self.error = Some(format!("Session not found: {}", target));
+                    return;
+                }
+            }
         };
         self.tree_mode_standalone = true;
         self.enter_tree_mode_for_file(&file_path);
@@ -280,19 +284,39 @@ impl App {
         });
     }
 
-    /// Search for a JSONL file by session ID across search paths
+    /// Search for a JSONL file by session ID across search paths.
+    /// Checks both CLI format (projects/<encoded>/<id>.jsonl) and
+    /// Desktop format (deep hierarchy with audit.jsonl containing session_id).
     fn find_session_file(&self, session_id: &str) -> Option<String> {
         use std::fs;
+        let target_filename = format!("{}.jsonl", session_id);
+
         for search_path in &self.search_paths {
             if let Ok(entries) = fs::read_dir(search_path) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
-                        if let Ok(files) = fs::read_dir(&path) {
-                            for file in files.flatten() {
-                                let fname = file.file_name().to_string_lossy().to_string();
-                                if fname.contains(session_id) && fname.ends_with(".jsonl") {
-                                    return Some(file.path().to_string_lossy().to_string());
+                        // CLI: ~/.claude/projects/<encoded-path>/<session-id>.jsonl
+                        let candidate = path.join(&target_filename);
+                        if candidate.exists() {
+                            return Some(candidate.to_string_lossy().to_string());
+                        }
+                        // Desktop: deeper hierarchy, recurse one more level
+                        if let Ok(subentries) = fs::read_dir(&path) {
+                            for subentry in subentries.flatten() {
+                                let subpath = subentry.path();
+                                if subpath.is_dir() {
+                                    let candidate = subpath.join(&target_filename);
+                                    if candidate.exists() {
+                                        return Some(candidate.to_string_lossy().to_string());
+                                    }
+                                    // Desktop local_<id>/audit.jsonl — check by reading first line
+                                    let audit = subpath.join("audit.jsonl");
+                                    if audit.exists() {
+                                        if Self::file_contains_session_id(&audit, session_id) {
+                                            return Some(audit.to_string_lossy().to_string());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -301,6 +325,21 @@ impl App {
             }
         }
         None
+    }
+
+    /// Quick check if a JSONL file contains the given session ID (reads first 5 lines).
+    fn file_contains_session_id(path: &std::path::Path, session_id: &str) -> bool {
+        use std::io::{BufRead, BufReader};
+        let Ok(file) = std::fs::File::open(path) else { return false };
+        let reader = BufReader::new(file);
+        for line in reader.lines().take(5) {
+            if let Ok(line) = line {
+                if line.contains(session_id) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn exit_tree_mode(&mut self) {
