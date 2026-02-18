@@ -352,7 +352,8 @@ impl SessionTree {
         // Build graph symbols
         let graph = build_graph_symbols(column, active_columns, is_last_child, !kids.is_empty());
 
-        let is_compaction = node.role.as_deref() == Some("compaction");
+        let is_compaction = node.role.as_deref() == Some("compaction")
+            || is_context_loss_message(&node.content_preview);
 
         rows.push(TreeRow {
             uuid: uuid.to_string(),
@@ -512,8 +513,9 @@ fn extract_preview(content: &serde_json::Value, max_chars: usize) -> String {
         String::new()
     };
 
-    // Sanitize: remove newlines, multiple spaces, ANSI codes
-    let sanitized = text
+    // Sanitize: strip XML tags, remove newlines, multiple spaces
+    let stripped = strip_xml_tags(&text);
+    let sanitized = stripped
         .replace('\n', " ")
         .replace('\r', "")
         .replace('\t', " ");
@@ -539,6 +541,36 @@ fn extract_preview(content: &serde_json::Value, max_chars: usize) -> String {
     } else {
         collapsed
     }
+}
+
+/// Strip XML/HTML-like tags from text, keeping only inner content.
+fn strip_xml_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                result.push(' '); // replace tag with space
+            }
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Detect messages related to context loss / auto-compaction by content.
+/// These are regular user/assistant messages but carry compaction metadata.
+fn is_context_loss_message(content_preview: &Option<String>) -> bool {
+    let Some(preview) = content_preview else {
+        return false;
+    };
+    let lower = preview.to_lowercase();
+    lower.contains("being continued from a previous conversation that ran out of context")
+        || lower.contains("/compact")
+        || lower.contains("compacted (ctrl+o to see full summary)")
 }
 
 #[cfg(test)]
