@@ -231,6 +231,21 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str, latest_ch
     ListItem::new(Line::from(spans))
 }
 
+/// Truncate a string to fit within max_width display columns.
+/// Uses char count as approximation (accurate for ASCII/Latin/Cyrillic).
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let char_count = s.chars().count();
+    if char_count <= max_width {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+}
+
 /// Truncate content around the first query match so the match is visible
 /// If content is shorter than max_chars, returns it unchanged
 /// If query is not found, truncates from the beginning
@@ -485,7 +500,7 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     let visible_height = area.height as usize;
-    let start = app.tree_scroll_offset;
+    let start = app.tree_scroll_offset.min(tree.rows.len().saturating_sub(1));
     let end = (start + visible_height).min(tree.rows.len());
 
     let mut items: Vec<ListItem> = Vec::new();
@@ -503,6 +518,9 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(Color::DarkGray)
         };
         spans.push(Span::styled(&row.graph_symbols, graph_style));
+
+        // Calculate prefix width (graph gutter) using char count for display width
+        let graph_width = row.graph_symbols.chars().count();
 
         // Compaction events get special rendering
         if row.is_compaction {
@@ -523,14 +541,10 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 compact_style,
             ));
 
-            let max_content = (area.width as usize)
-                .saturating_sub(row.graph_symbols.len() + 2 + 12 + 12);
-            let preview = if row.content_preview.chars().count() > max_content {
-                let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
-                format!("{}...", truncated)
-            } else {
-                row.content_preview.clone()
-            };
+            // ~(1) + space(1) + time(11) + spaces(2) + [COMPACT](10) = 25
+            let prefix_width = graph_width + 25;
+            let max_content = (area.width as usize).saturating_sub(prefix_width);
+            let preview = truncate_to_width(&row.content_preview, max_content);
             spans.push(Span::styled(preview, compact_style));
         } else {
             // Regular message rendering
@@ -552,22 +566,20 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             spans.push(Span::raw("  "));
 
             // Branch indicator
-            if row.is_branch_point {
+            let fork_width = if row.is_branch_point {
                 spans.push(Span::styled(
                     "[fork] ",
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ));
-            }
-
-            // Content preview
-            let max_content = (area.width as usize)
-                .saturating_sub(row.graph_symbols.len() + 2 + 12 + 2 + if row.is_branch_point { 7 } else { 0 });
-            let preview = if row.content_preview.chars().count() > max_content {
-                let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
-                format!("{}...", truncated)
+                7
             } else {
-                row.content_preview.clone()
+                0
             };
+
+            // Content preview — role(1) + space(1) + time(11) + spaces(2) + fork
+            let prefix_width = graph_width + 15 + fork_width;
+            let max_content = (area.width as usize).saturating_sub(prefix_width);
+            let preview = truncate_to_width(&row.content_preview, max_content);
 
             let content_style = if is_selected {
                 Style::default().fg(Color::Yellow)
@@ -1400,5 +1412,91 @@ mod tests {
 
         let text = build_group_header_text(&group, false);
         assert!(text.contains("[Desktop]"), "Header should contain [Desktop] indicator, got: {}", text);
+    }
+
+    #[test]
+    fn test_tree_mode_scroll_through_all_rows_no_crash() {
+        use crate::tree::SessionTree;
+        use std::io::Write as _;
+        use tempfile::TempDir;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        // Create a branched session with many messages
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            // Write 50 messages with some branches
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello start"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+            for i in 2..=40 {
+                let parent = if i == 21 { "u10".to_string() } else { format!("u{}", i - 1) }; // fork at u10
+                let content = format!("Message number {} with <xml-tag>some content</xml-tag> args>", i);
+                writeln!(f, r#"{{"type":"{}","message":{{"role":"{}","content":[{{"type":"text","text":"{}"}}]}},"uuid":"u{}","parentUuid":"{}","sessionId":"s1","timestamp":"2025-01-01T00:{:02}:00Z"}}"#,
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    content, i, parent, i
+                ).unwrap();
+            }
+        }
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+        let num_rows = tree.rows.len();
+        app.tree_mode = true;
+        app.session_tree = Some(tree);
+
+        // Scroll down through all rows
+        for _ in 0..num_rows {
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.on_down_tree();
+        }
+
+        // Scroll back up through all rows
+        for _ in 0..num_rows {
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.on_up_tree();
+        }
+
+        // Jump branch points
+        for _ in 0..5 {
+            app.on_right_tree();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+        for _ in 0..5 {
+            app.on_left_tree();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+
+        // Toggle preview mode at various positions
+        app.tree_cursor = 0;
+        app.on_tab_tree();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        app.on_tab_tree();
+
+        app.tree_cursor = num_rows / 2;
+        app.on_tab_tree();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        app.on_tab_tree();
+
+        app.tree_cursor = num_rows.saturating_sub(1);
+        app.on_tab_tree();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // Check buffer for artifacts
+        let buffer = terminal.backend().buffer();
+        for cell in buffer.content() {
+            let ch = cell.symbol();
+            for c in ch.chars() {
+                assert!(
+                    !c.is_control() || c.is_whitespace(),
+                    "Control char in tree buffer: {:?} (U+{:04X})",
+                    ch,
+                    c as u32
+                );
+            }
+        }
     }
 }
