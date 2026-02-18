@@ -1,4 +1,5 @@
 use crate::search::{group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -40,6 +41,8 @@ pub struct App {
     search_rx: Receiver<SearchResult>,
     /// Channel to send search requests to background thread (query, paths, regex_mode)
     search_tx: Sender<(String, Vec<String>, bool)>,
+    /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
+    pub latest_chains: HashMap<String, HashSet<String>>,
 }
 
 impl App {
@@ -82,6 +85,7 @@ impl App {
             last_regex_mode: false,
             search_rx: result_rx,
             search_tx: query_tx,
+            latest_chains: HashMap::new(),
         }
     }
 
@@ -153,6 +157,15 @@ impl App {
     pub fn on_right(&mut self) {
         if !self.groups.is_empty() && self.group_cursor < self.groups.len() {
             self.expanded = true;
+            // Precompute latest chain for the expanded group (for fork indicator)
+            if let Some(group) = self.groups.get(self.group_cursor) {
+                let fp = group.file_path.clone();
+                if !self.latest_chains.contains_key(&fp) {
+                    if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
+                        self.latest_chains.insert(fp, chain);
+                    }
+                }
+            }
         }
     }
 
@@ -224,6 +237,7 @@ impl App {
                         self.sub_cursor = 0;
                         self.expanded = false;
                         self.error = None;
+                        self.latest_chains.clear();
                         self.searching = false;
                     }
                 }

@@ -1,5 +1,6 @@
 use crate::search::{extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup};
 use crate::tui::App;
+use std::collections::HashSet;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -112,9 +113,10 @@ fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         // If expanded, show individual messages
         if is_expanded {
+            let latest_chain = app.latest_chains.get(&group.file_path);
             for (j, m) in group.matches.iter().enumerate() {
                 let is_match_selected = j == app.sub_cursor;
-                let sub_item = render_sub_match(m, is_match_selected, &app.results_query);
+                let sub_item = render_sub_match(m, is_match_selected, &app.results_query, latest_chain);
                 items.push(sub_item);
             }
         }
@@ -178,7 +180,7 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
     ListItem::new(format!("{}{}", prefix, header_text)).style(style)
 }
 
-fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str) -> ListItem<'a> {
+fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str, latest_chain: Option<&HashSet<String>>) -> ListItem<'a> {
     let (role_str, role_style, content) = if let Some(ref msg) = m.message {
         let role_style = if msg.role == "user" {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -194,6 +196,14 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str) -> ListIt
         ("???:".to_string(), Style::default(), String::new())
     };
 
+    // Determine if this message is on a fork (not on the latest chain)
+    let is_fork = latest_chain.map(|chain| {
+        m.message.as_ref()
+            .and_then(|msg| msg.uuid.as_deref())
+            .map(|uuid| !chain.contains(uuid))
+            .unwrap_or(false)
+    }).unwrap_or(false);
+
     let style = if selected {
         Style::default().fg(Color::Yellow).bg(Color::Rgb(75, 0, 130))
     } else {
@@ -203,14 +213,17 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str) -> ListIt
     let prefix = if selected { "    → " } else { "      " };
 
     // Build the line with styled spans
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(prefix, style),
-        Span::styled(role_str, role_style),
-        Span::raw(" "),
-        Span::styled(format!("\"{}\"", content), style),
-    ]);
+    ];
+    if is_fork {
+        spans.push(Span::styled("[fork] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+    }
+    spans.push(Span::styled(role_str, role_style));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(format!("\"{}\"", content), style));
 
-    ListItem::new(line)
+    ListItem::new(Line::from(spans))
 }
 
 /// Truncate content around the first query match so the match is visible

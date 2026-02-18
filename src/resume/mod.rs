@@ -128,7 +128,7 @@ fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
 }
 
 /// Build the set of uuids on the latest chain (from the last message backwards).
-fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
+pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     let file = fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
 
