@@ -1,4 +1,5 @@
 use crate::search::{group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource};
+use crate::tree::SessionTree;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -43,6 +44,20 @@ pub struct App {
     search_tx: Sender<(String, Vec<String>, bool)>,
     /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
     pub latest_chains: HashMap<String, HashSet<String>>,
+    /// Tree explorer mode
+    pub tree_mode: bool,
+    /// The loaded session tree
+    pub session_tree: Option<SessionTree>,
+    /// Cursor position in tree rows
+    pub tree_cursor: usize,
+    /// Vertical scroll offset for tree view
+    pub tree_scroll_offset: usize,
+    /// Whether tree is currently loading
+    pub tree_loading: bool,
+    /// Channel to receive loaded tree from background thread
+    tree_load_rx: Option<Receiver<Result<SessionTree, String>>>,
+    /// Whether tree mode was the initial mode (launched with --tree)
+    pub tree_mode_standalone: bool,
 }
 
 impl App {
@@ -86,6 +101,13 @@ impl App {
             search_rx: result_rx,
             search_tx: query_tx,
             latest_chains: HashMap::new(),
+            tree_mode: false,
+            session_tree: None,
+            tree_cursor: 0,
+            tree_scroll_offset: 0,
+            tree_loading: false,
+            tree_load_rx: None,
+            tree_mode_standalone: false,
         }
     }
 
@@ -213,6 +235,177 @@ impl App {
         }
     }
 
+    // --- Tree mode methods ---
+
+    /// Enter tree mode from search results (press 'b' on a session group)
+    pub fn enter_tree_mode(&mut self) {
+        let file_path = match self.selected_group() {
+            Some(group) => group.file_path.clone(),
+            None => return,
+        };
+        self.enter_tree_mode_for_file(&file_path);
+    }
+
+    /// Enter tree mode directly for a file path or session ID
+    pub fn enter_tree_mode_direct(&mut self, target: &str) {
+        // If target looks like a file path (contains / or .jsonl), use directly
+        // Otherwise try to find it as a session ID in search paths
+        let file_path = if target.contains('/') || target.ends_with(".jsonl") {
+            target.to_string()
+        } else {
+            // Search for session ID in known paths
+            self.find_session_file(target)
+                .unwrap_or_else(|| target.to_string())
+        };
+        self.tree_mode_standalone = true;
+        self.enter_tree_mode_for_file(&file_path);
+    }
+
+    fn enter_tree_mode_for_file(&mut self, file_path: &str) {
+        self.tree_mode = true;
+        self.tree_loading = true;
+        self.tree_cursor = 0;
+        self.tree_scroll_offset = 0;
+        self.session_tree = None;
+        self.preview_mode = false;
+        self.needs_full_redraw = true;
+
+        let fp = file_path.to_string();
+        let (tx, rx) = mpsc::channel();
+        self.tree_load_rx = Some(rx);
+
+        thread::spawn(move || {
+            let result = SessionTree::from_file(&fp);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Search for a JSONL file by session ID across search paths
+    fn find_session_file(&self, session_id: &str) -> Option<String> {
+        use std::fs;
+        for search_path in &self.search_paths {
+            if let Ok(entries) = fs::read_dir(search_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Ok(files) = fs::read_dir(&path) {
+                            for file in files.flatten() {
+                                let fname = file.file_name().to_string_lossy().to_string();
+                                if fname.contains(session_id) && fname.ends_with(".jsonl") {
+                                    return Some(file.path().to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn exit_tree_mode(&mut self) {
+        if self.tree_mode_standalone {
+            self.should_quit = true;
+            return;
+        }
+        self.tree_mode = false;
+        self.session_tree = None;
+        self.tree_loading = false;
+        self.tree_load_rx = None;
+        self.preview_mode = false;
+        self.needs_full_redraw = true;
+    }
+
+    pub fn on_up_tree(&mut self) {
+        if self.tree_cursor > 0 {
+            self.tree_cursor -= 1;
+            self.adjust_tree_scroll();
+            if self.preview_mode {
+                self.needs_full_redraw = true;
+            }
+        }
+    }
+
+    pub fn on_down_tree(&mut self) {
+        if let Some(ref tree) = self.session_tree {
+            if self.tree_cursor < tree.rows.len().saturating_sub(1) {
+                self.tree_cursor += 1;
+                self.adjust_tree_scroll();
+                if self.preview_mode {
+                    self.needs_full_redraw = true;
+                }
+            }
+        }
+    }
+
+    pub fn on_left_tree(&mut self) {
+        // Jump to previous branch point
+        if let Some(ref tree) = self.session_tree {
+            for i in (0..self.tree_cursor).rev() {
+                if tree.rows[i].is_branch_point {
+                    self.tree_cursor = i;
+                    self.adjust_tree_scroll();
+                    if self.preview_mode {
+                        self.needs_full_redraw = true;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn on_right_tree(&mut self) {
+        // Jump to next branch point
+        if let Some(ref tree) = self.session_tree {
+            for i in (self.tree_cursor + 1)..tree.rows.len() {
+                if tree.rows[i].is_branch_point {
+                    self.tree_cursor = i;
+                    self.adjust_tree_scroll();
+                    if self.preview_mode {
+                        self.needs_full_redraw = true;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn on_enter_tree(&mut self) {
+        if self.preview_mode {
+            self.preview_mode = false;
+            self.needs_full_redraw = true;
+            return;
+        }
+
+        if let Some(ref tree) = self.session_tree {
+            if let Some(row) = tree.rows.get(self.tree_cursor) {
+                self.resume_uuid = Some(row.uuid.clone());
+                self.resume_id = Some(tree.session_id.clone());
+                self.resume_file_path = Some(tree.file_path.clone());
+                self.resume_source = Some(tree.source);
+                self.should_quit = true;
+            }
+        }
+    }
+
+    pub fn on_tab_tree(&mut self) {
+        if let Some(ref tree) = self.session_tree {
+            if !tree.rows.is_empty() {
+                self.preview_mode = !self.preview_mode;
+                self.needs_full_redraw = true;
+            }
+        }
+    }
+
+    fn adjust_tree_scroll(&mut self) {
+        let visible = 20; // approximate visible height
+        if self.tree_cursor < self.tree_scroll_offset {
+            self.tree_scroll_offset = self.tree_cursor;
+        } else if self.tree_cursor >= self.tree_scroll_offset + visible {
+            self.tree_scroll_offset = self.tree_cursor.saturating_sub(visible) + 1;
+        }
+    }
+
     pub fn selected_group(&self) -> Option<&SessionGroup> {
         self.groups.get(self.group_cursor)
     }
@@ -223,6 +416,26 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        // Check for tree load results
+        if let Some(ref rx) = self.tree_load_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(tree) => {
+                        self.session_tree = Some(tree);
+                        self.tree_loading = false;
+                        self.needs_full_redraw = true;
+                    }
+                    Err(e) => {
+                        self.error = Some(format!("Tree load error: {}", e));
+                        self.tree_loading = false;
+                        self.tree_mode = false;
+                        self.needs_full_redraw = true;
+                    }
+                }
+                self.tree_load_rx = None;
+            }
+        }
+
         // Check for search results from background thread
         while let Ok(result) = self.search_rx.try_recv() {
             match result {

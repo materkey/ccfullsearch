@@ -1,5 +1,6 @@
 mod resume;
 mod search;
+mod tree;
 mod tui;
 
 use crossterm::{
@@ -13,6 +14,14 @@ use std::io::{self, stdout};
 use std::time::Duration;
 
 fn main() -> io::Result<()> {
+    // Parse CLI args
+    let args: Vec<String> = std::env::args().collect();
+    let tree_target = if let Some(pos) = args.iter().position(|a| a == "--tree") {
+        args.get(pos + 1).cloned()
+    } else {
+        None
+    };
+
     // Get search paths for both CLI and Desktop sessions
     let mut search_paths = Vec::new();
 
@@ -51,6 +60,11 @@ fn main() -> io::Result<()> {
     // Create app
     let mut app = tui::App::new(search_paths);
 
+    // Enter tree mode if --tree flag was provided
+    if let Some(target) = tree_target {
+        app.enter_tree_mode_direct(&target);
+    }
+
     // Main loop
     loop {
         // Force full redraw if needed (clears diff optimization artifacts)
@@ -69,25 +83,53 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                // Handle Ctrl+R for regex toggle
-                if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.on_toggle_regex();
-                    continue;
-                }
-
-                match key.code {
-                    KeyCode::Esc => {
-                        app.should_quit = true;
+                if app.tree_mode {
+                    // Tree mode key handling
+                    match key.code {
+                        KeyCode::Esc => app.exit_tree_mode(),
+                        KeyCode::Up => app.on_up_tree(),
+                        KeyCode::Down => app.on_down_tree(),
+                        KeyCode::Left => app.on_left_tree(),
+                        KeyCode::Right => app.on_right_tree(),
+                        KeyCode::Tab => app.on_tab_tree(),
+                        KeyCode::Enter => app.on_enter_tree(),
+                        KeyCode::Char('b') => app.exit_tree_mode(),
+                        KeyCode::Char('q') => {
+                            app.should_quit = true;
+                        }
+                        _ => {}
                     }
-                    KeyCode::Up => app.on_up(),
-                    KeyCode::Down => app.on_down(),
-                    KeyCode::Left => app.on_left(),
-                    KeyCode::Right => app.on_right(),
-                    KeyCode::Tab => app.on_tab(),
-                    KeyCode::Enter => app.on_enter(),
-                    KeyCode::Backspace => app.on_backspace(),
-                    KeyCode::Char(c) => app.on_key(c),
-                    _ => {}
+                } else {
+                    // Search mode key handling
+
+                    // Handle Ctrl+R for regex toggle
+                    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.on_toggle_regex();
+                        continue;
+                    }
+
+                    // Handle Ctrl+B for tree mode
+                    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        if !app.groups.is_empty() {
+                            app.enter_tree_mode();
+                        }
+                        continue;
+                    }
+
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Up => app.on_up(),
+                        KeyCode::Down => app.on_down(),
+                        KeyCode::Left => app.on_left(),
+                        KeyCode::Right => app.on_right(),
+                        KeyCode::Tab => app.on_tab(),
+                        KeyCode::Enter => app.on_enter(),
+                        KeyCode::Backspace => app.on_backspace(),
+                        KeyCode::Char(c) => app.on_key(c),
+                        _ => {}
+                    }
                 }
             }
         }

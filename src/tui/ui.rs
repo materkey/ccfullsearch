@@ -10,6 +10,11 @@ use ratatui::{
 };
 
 pub fn render(frame: &mut Frame, app: &App) {
+    if app.tree_mode {
+        render_tree_mode(frame, app);
+        return;
+    }
+
     let [header_area, input_area, status_area, list_area, help_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(3),
@@ -80,7 +85,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let help_text = if app.preview_mode {
         "[Tab/Enter] Close preview  [Ctrl+R] Regex  [Esc] Quit"
     } else if !app.groups.is_empty() {
-        "[↑↓] Navigate  [→←] Expand/Collapse  [Tab] Preview  [Enter] Resume  [Ctrl+R] Regex  [Esc] Quit"
+        "[↑↓] Navigate  [→←] Expand  [Tab] Preview  [Enter] Resume  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit"
     } else {
         "[↑↓] Navigate  [Tab] Preview  [Enter] Resume  [Ctrl+R] Regex  [Esc] Quit"
     };
@@ -392,6 +397,220 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Rgb(98, 98, 255)))
                 .title("Preview"),
+        )
+        .style(Style::default().fg(Color::White).bg(Color::Reset))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+
+    frame.render_widget(preview, area);
+}
+
+// --- Tree mode rendering ---
+
+fn render_tree_mode(frame: &mut Frame, app: &App) {
+    let [header_area, tree_area, help_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    // Header
+    let title = if let Some(ref tree) = app.session_tree {
+        let sid = if tree.session_id.len() > 8 {
+            &tree.session_id[..8]
+        } else {
+            &tree.session_id
+        };
+        let project = extract_project_from_path(&tree.file_path);
+        format!(
+            "Branch Tree: {} | {} | {} messages, {} branches",
+            project,
+            sid,
+            tree.rows.len(),
+            tree.branch_count()
+        )
+    } else if app.tree_loading {
+        "Branch Tree: Loading...".to_string()
+    } else {
+        "Branch Tree".to_string()
+    };
+
+    let header = Paragraph::new(title)
+        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+    frame.render_widget(header, header_area);
+
+    // Tree content
+    if app.preview_mode {
+        render_tree_preview(frame, app, tree_area);
+    } else {
+        render_tree(frame, app, tree_area);
+    }
+
+    // Help bar
+    let help_text = if app.preview_mode {
+        "[Tab/Enter] Close preview  [Esc] Back to search"
+    } else {
+        "[Up/Down] Navigate  [Left/Right] Jump branches  [Tab] Preview  [Enter] Resume  [b/Esc] Back"
+    };
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, help_area);
+}
+
+fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Clear area
+    let buf = frame.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(Style::default());
+            }
+        }
+    }
+
+    let Some(ref tree) = app.session_tree else {
+        if app.tree_loading {
+            let loading = Paragraph::new("  Loading session tree...")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(loading, area);
+        }
+        return;
+    };
+
+    if tree.rows.is_empty() {
+        let empty = Paragraph::new("  No displayable messages in this session")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let visible_height = area.height as usize;
+    let start = app.tree_scroll_offset;
+    let end = (start + visible_height).min(tree.rows.len());
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    for i in start..end {
+        let row = &tree.rows[i];
+        let is_selected = i == app.tree_cursor;
+
+        let mut spans = Vec::new();
+
+        // Graph gutter
+        let graph_style = if row.is_on_latest_chain {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(&row.graph_symbols, graph_style));
+
+        // Role indicator
+        let (role_char, role_style) = if row.role == "user" {
+            ("U", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        } else {
+            ("C", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        };
+        spans.push(Span::styled(role_char, role_style));
+        spans.push(Span::raw(" "));
+
+        // Timestamp (compact)
+        let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
+        spans.push(Span::styled(
+            time_str,
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::raw("  "));
+
+        // Branch indicator
+        if row.is_branch_point {
+            spans.push(Span::styled(
+                "[fork] ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        // Content preview
+        let max_content = (area.width as usize)
+            .saturating_sub(row.graph_symbols.len() + 2 + 12 + 2 + if row.is_branch_point { 7 } else { 0 });
+        let preview = if row.content_preview.chars().count() > max_content {
+            let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
+            format!("{}...", truncated)
+        } else {
+            row.content_preview.clone()
+        };
+
+        let content_style = if is_selected {
+            Style::default().fg(Color::Yellow)
+        } else if !row.is_on_latest_chain {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        spans.push(Span::styled(preview, content_style));
+
+        let item_style = if is_selected {
+            Style::default().bg(Color::Rgb(75, 0, 130))
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(Line::from(spans)).style(item_style));
+    }
+
+    let list = List::new(items).block(Block::default().borders(Borders::NONE));
+    frame.render_widget(list, area);
+}
+
+fn render_tree_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Clear area
+    let buf = frame.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(Style::default());
+            }
+        }
+    }
+
+    let Some(ref tree) = app.session_tree else {
+        return;
+    };
+
+    let Some(row) = tree.rows.get(app.tree_cursor) else {
+        return;
+    };
+
+    // Load full content for preview
+    let full_content = tree
+        .get_full_content(&row.uuid)
+        .unwrap_or_else(|| row.content_preview.clone());
+    let sanitized = sanitize_content(&full_content);
+
+    let date_str = row.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+    let chain_status = if row.is_on_latest_chain {
+        "latest chain"
+    } else {
+        "fork"
+    };
+
+    let mut lines = vec![
+        Line::from(format!("Session: {}", tree.session_id)),
+        Line::from(format!("Date: {} | Role: {} | {}", date_str, row.role, chain_status)),
+        Line::from(format!("UUID: {}", row.uuid)),
+        Line::from("─".repeat(60)),
+        Line::raw(""),
+    ];
+
+    for line in sanitized.lines() {
+        lines.push(Line::raw(line.to_string()));
+    }
+
+    let preview = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(98, 98, 255)))
+                .title("Message Preview"),
         )
         .style(Style::default().fg(Color::White).bg(Color::Reset))
         .wrap(ratatui::widgets::Wrap { trim: false });
