@@ -504,49 +504,80 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         };
         spans.push(Span::styled(&row.graph_symbols, graph_style));
 
-        // Role indicator
-        let (role_char, role_style) = if row.role == "user" {
-            ("U", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        } else {
-            ("C", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-        };
-        spans.push(Span::styled(role_char, role_style));
-        spans.push(Span::raw(" "));
+        // Compaction events get special rendering
+        if row.is_compaction {
+            let compact_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Rgb(255, 140, 0)).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(255, 140, 0)).add_modifier(Modifier::BOLD)
+            };
+            spans.push(Span::styled("~", compact_style));
+            spans.push(Span::raw(" "));
 
-        // Timestamp (compact)
-        let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
-        spans.push(Span::styled(
-            time_str,
-            Style::default().fg(Color::DarkGray),
-        ));
-        spans.push(Span::raw("  "));
+            let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
+            spans.push(Span::styled(time_str, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::raw("  "));
 
-        // Branch indicator
-        if row.is_branch_point {
             spans.push(Span::styled(
-                "[fork] ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                "[COMPACT] ",
+                compact_style,
             ));
+
+            let max_content = (area.width as usize)
+                .saturating_sub(row.graph_symbols.len() + 2 + 12 + 12);
+            let preview = if row.content_preview.chars().count() > max_content {
+                let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
+                format!("{}...", truncated)
+            } else {
+                row.content_preview.clone()
+            };
+            spans.push(Span::styled(preview, compact_style));
+        } else {
+            // Regular message rendering
+            // Role indicator
+            let (role_char, role_style) = if row.role == "user" {
+                ("U", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            } else {
+                ("C", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            };
+            spans.push(Span::styled(role_char, role_style));
+            spans.push(Span::raw(" "));
+
+            // Timestamp (compact)
+            let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
+            spans.push(Span::styled(
+                time_str,
+                Style::default().fg(Color::DarkGray),
+            ));
+            spans.push(Span::raw("  "));
+
+            // Branch indicator
+            if row.is_branch_point {
+                spans.push(Span::styled(
+                    "[fork] ",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            // Content preview
+            let max_content = (area.width as usize)
+                .saturating_sub(row.graph_symbols.len() + 2 + 12 + 2 + if row.is_branch_point { 7 } else { 0 });
+            let preview = if row.content_preview.chars().count() > max_content {
+                let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
+                format!("{}...", truncated)
+            } else {
+                row.content_preview.clone()
+            };
+
+            let content_style = if is_selected {
+                Style::default().fg(Color::Yellow)
+            } else if !row.is_on_latest_chain {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(preview, content_style));
         }
-
-        // Content preview
-        let max_content = (area.width as usize)
-            .saturating_sub(row.graph_symbols.len() + 2 + 12 + 2 + if row.is_branch_point { 7 } else { 0 });
-        let preview = if row.content_preview.chars().count() > max_content {
-            let truncated: String = row.content_preview.chars().take(max_content.saturating_sub(3)).collect();
-            format!("{}...", truncated)
-        } else {
-            row.content_preview.clone()
-        };
-
-        let content_style = if is_selected {
-            Style::default().fg(Color::Yellow)
-        } else if !row.is_on_latest_chain {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        spans.push(Span::styled(preview, content_style));
 
         let item_style = if is_selected {
             Style::default().bg(Color::Rgb(75, 0, 130))

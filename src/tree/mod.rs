@@ -31,6 +31,8 @@ pub struct TreeRow {
     pub graph_symbols: String,
     pub is_on_latest_chain: bool,
     pub is_branch_point: bool,
+    /// True if this is an auto-compaction (summary) event
+    pub is_compaction: bool,
 }
 
 /// The full parsed session tree.
@@ -113,6 +115,14 @@ impl SessionTree {
                     .map(|c| extract_preview(c, 120));
 
                 (role, preview)
+            } else if record_type == "summary" {
+                // Auto-compaction event — make it displayable
+                let summary_text = json
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(auto-compacted)")
+                    .to_string();
+                (Some("compaction".to_string()), Some(summary_text))
             } else {
                 (None, None)
             };
@@ -342,6 +352,8 @@ impl SessionTree {
         // Build graph symbols
         let graph = build_graph_symbols(column, active_columns, is_last_child, !kids.is_empty());
 
+        let is_compaction = node.role.as_deref() == Some("compaction");
+
         rows.push(TreeRow {
             uuid: uuid.to_string(),
             role: node.role.clone().unwrap_or_else(|| "?".to_string()),
@@ -351,6 +363,7 @@ impl SessionTree {
             graph_symbols: graph,
             is_on_latest_chain: is_on_latest,
             is_branch_point,
+            is_compaction,
         });
 
         if kids.is_empty() {
@@ -673,6 +686,47 @@ mod tests {
 
         let content = tree.get_full_content("u1").unwrap();
         assert_eq!(content, "Hello");
+    }
+
+    #[test]
+    fn test_compaction_event_visible() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("compact.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Hi there"}}]}},"uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"Discussed greeting","leafUuid":"u2","uuid":"s1sum","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Continue after compact"}}]}},"uuid":"u3","parentUuid":"s1sum","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Sure!"}}]}},"uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // Should have 5 rows: u1, u2, summary, u3, u4
+        assert_eq!(tree.rows.len(), 5);
+
+        // Find the compaction row
+        let compact_row = tree.rows.iter().find(|r| r.is_compaction).unwrap();
+        assert_eq!(compact_row.role, "compaction");
+        assert!(compact_row.content_preview.contains("Discussed greeting"));
+
+        // Non-compaction rows should not be marked
+        let user_rows: Vec<_> = tree.rows.iter().filter(|r| !r.is_compaction).collect();
+        assert_eq!(user_rows.len(), 4);
+    }
+
+    #[test]
+    fn test_compaction_without_uuid_not_displayed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("compact_no_uuid.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        // Summary without uuid — should be skipped entirely (no uuid = not in DAG)
+        writeln!(f, r#"{{"type":"summary","summary":"Some summary","leafUuid":"u1","sessionId":"s1"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+        // Only the user message should be visible
+        assert_eq!(tree.rows.len(), 1);
+        assert!(!tree.rows[0].is_compaction);
     }
 
     #[test]
