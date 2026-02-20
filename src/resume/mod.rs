@@ -300,18 +300,90 @@ fn resume_desktop() -> Result<(), String> {
     Err(format!("Failed to open Claude Desktop: {}", err))
 }
 
-/// Decode the original project path from the .claude/projects folder name
-/// Unlike extract_project_path, this doesn't check if the path exists
+/// Encode a path the same way Claude CLI does: replace any non-ASCII-alphanumeric
+/// character (except `-`) with `-`.
+fn encode_path_for_claude(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect()
+}
+
+/// Walk the filesystem to find the original directory whose Claude-encoded form
+/// matches `remaining_encoded` (the full encoded directory name without leading `-`).
+/// `full_target` is the original complete encoded name for round-trip validation.
+fn walk_fs_for_path(current_dir: &str, remaining_encoded: &str) -> Option<String> {
+    walk_fs_recursive(current_dir, remaining_encoded, remaining_encoded)
+}
+
+fn walk_fs_recursive(current_dir: &str, remaining_encoded: &str, full_target: &str) -> Option<String> {
+    if remaining_encoded.is_empty() {
+        // Validate: encoding this path must produce the original target
+        let encoded = encode_path_for_claude(current_dir);
+        if encoded.strip_prefix('-') == Some(full_target) {
+            return Some(current_dir.to_string());
+        }
+        return None;
+    }
+
+    let entries = fs::read_dir(current_dir).ok()?;
+    let mut dir_entries: Vec<_> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    dir_entries.sort_by_key(|e| e.file_name());
+
+    for entry in dir_entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let encoded = encode_path_for_claude(&name);
+
+        // Exact match: this is the last path component
+        if encoded == remaining_encoded {
+            let candidate = entry.path().to_string_lossy().to_string();
+            // Round-trip validation
+            let candidate_encoded = encode_path_for_claude(&candidate);
+            if candidate_encoded.strip_prefix('-') == Some(full_target) {
+                return Some(candidate);
+            }
+        }
+
+        // Prefix match: more components follow after a `-` separator (which represents `/`)
+        if remaining_encoded.starts_with(&encoded) {
+            let after = &remaining_encoded[encoded.len()..];
+            if let Some(rest) = after.strip_prefix('-') {
+                if let Some(result) = walk_fs_recursive(
+                    entry.path().to_str()?,
+                    rest,
+                    full_target,
+                ) {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Decode the original project path from the .claude/projects folder name.
+/// First tries walking the filesystem to find the exact directory (handles ambiguous
+/// encodings like spaces, parentheses, dots all becoming `-`).
+/// Falls back to naive string-based decoding.
 fn decode_project_path(file_path: &str) -> Option<String> {
     let path = Path::new(file_path);
     let claude_project_dir = path.parent()?;
     let dir_name = claude_project_dir.file_name()?.to_str()?;
 
-    // The directory name is like "-Users-user-Downloads-something"
-    // We need to convert it back to "/Users/user/Downloads/something"
-    // But directory names can contain dashes, so we try different strategies
+    // Strategy 1: Walk the filesystem to find the exact matching path.
+    // This handles ambiguous cases like `dc-vpn (1)` → `-dc-vpn--1-`
+    // where `--` is NOT a hidden directory but ` (` encoded.
+    let remaining = dir_name.strip_prefix('-').unwrap_or(dir_name);
+    if !remaining.is_empty() {
+        if let Some(found) = walk_fs_for_path("/", remaining) {
+            return Some(found);
+        }
+    }
 
-    // Strategy 1: If there's a "-projects-" marker, use it
+    // Strategy 2: If there's a "-projects-" marker, use it
     if let Some(projects_idx) = dir_name.rfind("-projects-") {
         let path_prefix = if dir_name.starts_with('-') {
             &dir_name[1..projects_idx]
@@ -323,7 +395,7 @@ fn decode_project_path(file_path: &str) -> Option<String> {
         return Some(format!("/{}/projects/{}", path_prefix, project_name));
     }
 
-    // Strategy 2: Just convert dashes to slashes (handle -- as /. for hidden dirs)
+    // Strategy 3: Just convert dashes to slashes (handle -- as /. for hidden dirs)
     let decoded = if dir_name.starts_with('-') {
         &dir_name[1..]
     } else {
@@ -520,36 +592,135 @@ mod tests {
         println!("Result for avito-android-2-outputs: {:?}", result);
     }
 
-    // Tests for decode_project_path (doesn't check if path exists)
+    // Tests for encode_path_for_claude
     #[test]
-    fn test_decode_project_path_simple() {
+    fn test_encode_path_simple() {
+        assert_eq!(encode_path_for_claude("/Users/user"), "-Users-user");
+    }
+
+    #[test]
+    fn test_encode_path_hidden_dir() {
+        assert_eq!(encode_path_for_claude("/Users/user/.claude"), "-Users-user--claude");
+    }
+
+    #[test]
+    fn test_encode_path_spaces_and_parens() {
+        assert_eq!(
+            encode_path_for_claude("/Users/user/Downloads/dc-vpn (1)"),
+            "-Users-user-Downloads-dc-vpn--1-"
+        );
+    }
+
+    #[test]
+    fn test_encode_path_underscores() {
+        assert_eq!(
+            encode_path_for_claude("/Users/user/my_project"),
+            "-Users-user-my-project"
+        );
+    }
+
+    // Tests for walk_fs_for_path (uses tempdir to avoid machine-specific paths)
+    #[test]
+    fn test_walk_fs_simple() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("alpha").join("beta");
+        fs::create_dir_all(&sub).unwrap();
+
+        let encoded = encode_path_for_claude(dir.path().to_str().unwrap());
+        let remaining = encoded.strip_prefix('-').unwrap();
+        let result = walk_fs_for_path("/", remaining);
+        assert_eq!(result, Some(dir.path().to_string_lossy().to_string()));
+
+        // Now try finding alpha/beta
+        let full_encoded = encode_path_for_claude(sub.to_str().unwrap());
+        let remaining = full_encoded.strip_prefix('-').unwrap();
+        let result = walk_fs_for_path("/", remaining);
+        assert_eq!(result, Some(sub.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_walk_fs_special_chars() {
+        let dir = TempDir::new().unwrap();
+        // Create a directory with spaces and parentheses
+        let special = dir.path().join("my dir (2)");
+        fs::create_dir_all(&special).unwrap();
+
+        let full_encoded = encode_path_for_claude(special.to_str().unwrap());
+        let remaining = full_encoded.strip_prefix('-').unwrap();
+        let result = walk_fs_for_path("/", remaining);
+        assert_eq!(result, Some(special.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_walk_fs_dash_ambiguity() {
+        let dir = TempDir::new().unwrap();
+        // Create both `a-b` and `a/b` to test ambiguity
+        let dashed = dir.path().join("a-b");
+        let nested = dir.path().join("a").join("b");
+        fs::create_dir_all(&dashed).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+
+        // Both encode to the same string "a-b", but walk should find one of them
+        let encoded = encode_path_for_claude(dashed.to_str().unwrap());
+        let remaining = encoded.strip_prefix('-').unwrap();
+        let result = walk_fs_for_path("/", remaining);
+        // Should find at least one valid path
+        assert!(result.is_some());
+        let found = result.unwrap();
+        assert!(found == dashed.to_string_lossy() || found == nested.to_string_lossy());
+    }
+
+    // Tests for decode_project_path (now uses filesystem walking + fallback)
+    #[test]
+    fn test_decode_project_path_nonexistent_falls_back() {
+        // When filesystem walking fails (path doesn't exist), falls back to string-based decode
         let file_path = "/Users/user/.claude/projects/-Users-user-projects-myapp/session.jsonl";
         let result = decode_project_path(file_path);
+        // Falls back to -projects- marker strategy
         assert_eq!(result, Some("/Users/user/projects/myapp".to_string()));
     }
 
     #[test]
-    fn test_decode_project_path_downloads() {
-        let file_path = "/Users/vkkovalev/.claude/projects/-Users-vkkovalev-Downloads-avito-android-2-outputs/68cfcc98.jsonl";
-        let result = decode_project_path(file_path);
-        // Note: This decodes assuming dashes are path separators, which may not be correct
-        // for "avito-android-2-outputs", but it will create a directory structure that
-        // allows Claude to find the session
-        assert!(result.is_some());
-        println!("Decoded downloads path: {:?}", result);
-    }
-
-    #[test]
-    fn test_decode_project_path_hidden_dir() {
+    fn test_decode_project_path_real_hidden_dir() {
         let file_path = "/Users/vkkovalev/.claude/projects/-Users-vkkovalev--claude/session.jsonl";
         let result = decode_project_path(file_path);
         assert_eq!(result, Some("/Users/vkkovalev/.claude".to_string()));
     }
 
     #[test]
-    fn test_decode_project_path_home() {
+    fn test_decode_project_path_real_home() {
         let file_path = "/Users/vkkovalev/.claude/projects/-Users-vkkovalev/session.jsonl";
         let result = decode_project_path(file_path);
         assert_eq!(result, Some("/Users/vkkovalev".to_string()));
+    }
+
+    #[test]
+    fn test_decode_project_path_dc_vpn_parens() {
+        // The original bug: `dc-vpn (1)` encodes with `--` that is NOT a hidden dir
+        let file_path = "/Users/vkkovalev/.claude/projects/-Users-vkkovalev-Downloads-dc-vpn--1-/42b0597f.jsonl";
+        let result = decode_project_path(file_path);
+        // Should find the actual directory via filesystem walking
+        if Path::new("/Users/vkkovalev/Downloads/dc-vpn (1)").exists() {
+            assert_eq!(result, Some("/Users/vkkovalev/Downloads/dc-vpn (1)".to_string()));
+        } else {
+            // Falls back to naive decode if directory was deleted
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn test_decode_roundtrip_with_tempdir() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("my project (v2)");
+        fs::create_dir_all(&project).unwrap();
+
+        // Simulate what Claude CLI does: encode the path as a .claude/projects dir name
+        let encoded_name = encode_path_for_claude(project.to_str().unwrap());
+        let _fake_file = format!("/Users/vkkovalev/.claude/projects/{}/session.jsonl", encoded_name);
+        // We can't use decode_project_path directly since it expects the encoded name
+        // to be the parent dir of the file. Let's test walk_fs_for_path instead.
+        let remaining = encoded_name.strip_prefix('-').unwrap();
+        let result = walk_fs_for_path("/", remaining);
+        assert_eq!(result, Some(project.to_string_lossy().to_string()));
     }
 }
