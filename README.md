@@ -86,6 +86,16 @@ ccs list --limit 20
 | `b` / `Esc` | Back to search |
 | `q` | Quit |
 
+## Claude Code Skill
+
+The repo includes a [Claude Code skill](skill/SKILL.md) so Claude can search your sessions automatically. To install:
+
+```bash
+cp -r skill ~/.claude/skills/claude-session-search
+```
+
+Then Claude will use `ccs` when you ask things like "find where we discussed docker" or "list my recent sessions".
+
 ## How it works
 
 1. Searches JSONL session files using `ripgrep` for speed
