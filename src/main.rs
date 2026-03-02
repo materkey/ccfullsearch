@@ -1,3 +1,4 @@
+mod cli;
 mod resume;
 mod search;
 mod tree;
@@ -13,38 +14,76 @@ use ratatui::prelude::*;
 use std::io::{self, stdout};
 use std::time::Duration;
 
+fn get_search_paths() -> Vec<String> {
+    let mut search_paths = Vec::new();
+
+    if let Ok(custom_path) = std::env::var("CCFS_SEARCH_PATH") {
+        search_paths.push(custom_path);
+    } else {
+        // Claude Code CLI sessions
+        if let Some(cli_path) = dirs::home_dir()
+            .map(|h| h.join(".claude").join("projects"))
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+        {
+            search_paths.push(cli_path);
+        }
+
+        // Claude Desktop sessions (macOS)
+        if let Some(desktop_path) = dirs::home_dir()
+            .map(|h| h.join("Library/Application Support/Claude/local-agent-mode-sessions"))
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+        {
+            search_paths.push(desktop_path);
+        }
+
+        // Fallback if no paths found
+        if search_paths.is_empty() {
+            search_paths.push("~/.claude/projects".to_string());
+        }
+    }
+
+    search_paths
+}
+
 fn main() -> io::Result<()> {
-    // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
+
+    // CLI subcommands: search, list
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "search" => {
+                let query = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
+                    eprintln!("Usage: ccs search <query> [--regex] [--limit N]");
+                    std::process::exit(1);
+                });
+                let use_regex = args.iter().any(|a| a == "--regex");
+                let limit = args.iter().position(|a| a == "--limit")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(100);
+                cli::cli_search(query, &get_search_paths(), use_regex, limit);
+                return Ok(());
+            }
+            "list" => {
+                let limit = args.iter().position(|a| a == "--limit")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(50);
+                cli::cli_list(&get_search_paths(), limit);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    // Parse TUI-specific args
     let tree_target = if let Some(pos) = args.iter().position(|a| a == "--tree") {
         args.get(pos + 1).cloned()
     } else {
         None
     };
 
-    // Get search paths for both CLI and Desktop sessions
-    let mut search_paths = Vec::new();
-
-    // Claude Code CLI sessions
-    if let Some(cli_path) = dirs::home_dir()
-        .map(|h| h.join(".claude").join("projects"))
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-    {
-        search_paths.push(cli_path);
-    }
-
-    // Claude Desktop sessions (macOS)
-    if let Some(desktop_path) = dirs::home_dir()
-        .map(|h| h.join("Library/Application Support/Claude/local-agent-mode-sessions"))
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-    {
-        search_paths.push(desktop_path);
-    }
-
-    // Fallback if no paths found
-    if search_paths.is_empty() {
-        search_paths.push("~/.claude/projects".to_string());
-    }
+    let search_paths = get_search_paths();
 
     // Initialize terminal with proper setup
     enable_raw_mode()?;

@@ -70,6 +70,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "dirs",
+ "ratatui",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "which",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -87,22 +103,6 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link",
-]
-
-[[package]]
-name = "claude-code-fullsearch"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "crossterm",
- "dirs",
- "ratatui",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "uuid",
- "which",
 ]
 
 [[package]]

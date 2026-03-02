@@ -1,6 +1,6 @@
-# ccfullsearch
+# ccs
 
-A TUI tool for searching and browsing Claude Code and Claude Desktop session history.
+A TUI and CLI tool for searching and browsing Claude Code and Claude Desktop session history.
 
 Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep](https://github.com/BurntSushi/ripgrep).
 
@@ -14,6 +14,7 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 - **Tree view** — visualize conversation branches, forks, and context compactions (`Ctrl+B`)
 - **Session resume** — press `Enter` to resume any session directly from search results
 - **Async search** — non-blocking background search with debounce
+- **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
 - **Cross-platform** — supports both Claude Code CLI (`~/.claude/projects`) and Claude Desktop sessions
 
 ## Requirements
@@ -31,17 +32,32 @@ Or build from source:
 
 ```bash
 cargo build --release
-# Binary will be at target/release/claude-code-fullsearch
+# Binary will be at target/release/ccs
 ```
 
 ## Usage
 
+### Interactive TUI
+
 ```bash
-# Launch interactive search TUI
-claude-code-fullsearch
+# Launch interactive search
+ccs
 
 # Open tree view for a specific session
-claude-code-fullsearch --tree <session-id-or-path>
+ccs --tree <session-id-or-path>
+```
+
+### CLI mode
+
+```bash
+# Search sessions (outputs JSONL)
+ccs search "docker build" --limit 10
+
+# Search with regex
+ccs search "OOM|OutOfMemory" --regex
+
+# List all sessions sorted by last activity
+ccs list --limit 20
 ```
 
 ## Keybindings
