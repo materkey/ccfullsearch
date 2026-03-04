@@ -28,7 +28,17 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 cargo install --path .
 ```
 
-Or build from source:
+This installs the `ccs` binary to `~/.cargo/bin/`. Make sure it's in your `PATH`:
+
+```bash
+# fish shell (one-time, persists automatically)
+fish_add_path ~/.cargo/bin
+
+# bash/zsh (add to ~/.bashrc or ~/.zshrc)
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Or build manually:
 
 ```bash
 cargo build --release
@@ -71,6 +81,7 @@ ccs list --limit 20
 | `Left` / `Right` | Navigate matches within a group |
 | `Tab` | Expand/collapse match list |
 | `Enter` | Resume selected session |
+| `Ctrl+C` | Clear input (or quit if input is empty) |
 | `Ctrl+R` | Toggle regex search mode |
 | `Ctrl+B` | Open tree view for selected session |
 | `Esc` | Quit |
@@ -83,7 +94,7 @@ ccs list --limit 20
 | `Left` / `Right` | Scroll content horizontally |
 | `Tab` | Jump to next branch point |
 | `Enter` | Resume session at selected message |
-| `b` / `Esc` | Back to search |
+| `Ctrl+C` / `b` / `Esc` | Back to search |
 | `q` | Quit |
 
 ## Claude Code Skill
