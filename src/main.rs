@@ -46,6 +46,14 @@ fn get_search_paths() -> Vec<String> {
 }
 
 fn main() -> io::Result<()> {
+    // Set panic hook to restore terminal on unexpected crashes
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), cursor::Show, LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     let args: Vec<String> = std::env::args().collect();
 
     // CLI subcommands: search, list
@@ -123,6 +131,12 @@ fn main() -> io::Result<()> {
                 }
 
                 if app.tree_mode {
+                    // Tree mode: Ctrl-C exits tree mode (or quits if standalone)
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.exit_tree_mode();
+                        continue;
+                    }
+
                     // Tree mode key handling
                     match key.code {
                         KeyCode::Esc => app.exit_tree_mode(),
@@ -140,6 +154,16 @@ fn main() -> io::Result<()> {
                     }
                 } else {
                     // Search mode key handling
+
+                    // Handle Ctrl+C: clear input or quit
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        if app.input.is_empty() {
+                            app.should_quit = true;
+                        } else {
+                            app.clear_input();
+                        }
+                        continue;
+                    }
 
                     // Handle Ctrl+R for regex toggle
                     if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {

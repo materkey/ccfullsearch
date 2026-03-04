@@ -204,6 +204,15 @@ impl App {
         }
     }
 
+    /// Clear input and reset search state (Ctrl-C behavior)
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.typing = false;
+        self.last_keystroke = None;
+        self.searching = false;
+        self.last_query.clear();
+    }
+
     pub fn on_toggle_regex(&mut self) {
         self.regex_mode = !self.regex_mode;
         // Trigger re-search if we have a query
@@ -601,5 +610,85 @@ mod tests {
         // Without groups, preview should not toggle
         app.on_tab();
         assert!(!app.preview_mode);
+    }
+
+    #[test]
+    fn test_clear_input_resets_state() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        // Simulate typing a query
+        app.on_key('h');
+        app.on_key('i');
+        app.last_query = "hi".to_string();
+        app.searching = true;
+
+        app.clear_input();
+
+        assert!(app.input.is_empty());
+        assert!(!app.typing);
+        assert!(app.last_keystroke.is_none());
+        assert!(!app.searching);
+        assert!(app.last_query.is_empty());
+    }
+
+    #[test]
+    fn test_ctrl_c_empty_input_should_quit() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        // Empty input — Ctrl-C should signal quit
+        assert!(app.input.is_empty());
+        assert!(!app.should_quit);
+
+        // Simulate the Ctrl-C logic from main.rs
+        if app.input.is_empty() {
+            app.should_quit = true;
+        } else {
+            app.clear_input();
+        }
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_ctrl_c_with_input_clears_not_quits() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        app.on_key('t');
+        app.on_key('e');
+        app.on_key('s');
+        app.on_key('t');
+
+        // Simulate the Ctrl-C logic from main.rs
+        if app.input.is_empty() {
+            app.should_quit = true;
+        } else {
+            app.clear_input();
+        }
+
+        assert!(app.input.is_empty());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_exit_tree_mode_returns_to_search() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.tree_mode = true;
+        app.tree_mode_standalone = false;
+
+        app.exit_tree_mode();
+
+        assert!(!app.tree_mode);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_exit_tree_mode_standalone_quits() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.tree_mode = true;
+        app.tree_mode_standalone = true;
+
+        app.exit_tree_mode();
+
+        assert!(app.should_quit);
     }
 }
