@@ -58,6 +58,8 @@ pub struct App {
     tree_load_rx: Option<Receiver<Result<SessionTree, String>>>,
     /// Whether tree mode was the initial mode (launched with --tree)
     pub tree_mode_standalone: bool,
+    /// Cursor position in input (byte offset)
+    pub cursor_pos: usize,
 }
 
 impl App {
@@ -108,19 +110,38 @@ impl App {
             tree_loading: false,
             tree_load_rx: None,
             tree_mode_standalone: false,
+            cursor_pos: 0,
         }
     }
 
     pub fn on_key(&mut self, c: char) {
-        self.input.push(c);
+        self.input.insert(self.cursor_pos, c);
+        self.cursor_pos += c.len_utf8();
         self.typing = true;
         self.last_keystroke = Some(Instant::now());
     }
 
     pub fn on_backspace(&mut self) {
-        self.input.pop();
-        self.typing = true;
-        self.last_keystroke = Some(Instant::now());
+        if self.cursor_pos > 0 {
+            // Find the previous char boundary
+            let prev = self.input[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.input.remove(prev);
+            self.cursor_pos = prev;
+            self.typing = true;
+            self.last_keystroke = Some(Instant::now());
+        }
+    }
+
+    pub fn on_delete(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            self.input.remove(self.cursor_pos);
+            self.typing = true;
+            self.last_keystroke = Some(Instant::now());
+        }
     }
 
     pub fn on_up(&mut self) {
@@ -207,10 +228,88 @@ impl App {
     /// Clear input and reset search state (Ctrl-C behavior)
     pub fn clear_input(&mut self) {
         self.input.clear();
+        self.cursor_pos = 0;
         self.typing = false;
         self.last_keystroke = None;
         self.searching = false;
         self.last_query.clear();
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos = self.input[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            self.cursor_pos += self.input[self.cursor_pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+        }
+    }
+
+    pub fn move_cursor_word_left(&mut self) {
+        let bytes = self.input.as_bytes();
+        let mut pos = self.cursor_pos;
+        // Skip non-alphanumeric
+        while pos > 0 && !bytes[pos - 1].is_ascii_alphanumeric() {
+            pos -= 1;
+        }
+        // Skip alphanumeric
+        while pos > 0 && bytes[pos - 1].is_ascii_alphanumeric() {
+            pos -= 1;
+        }
+        self.cursor_pos = pos;
+    }
+
+    pub fn move_cursor_word_right(&mut self) {
+        let bytes = self.input.as_bytes();
+        let len = bytes.len();
+        let mut pos = self.cursor_pos;
+        // Skip alphanumeric
+        while pos < len && bytes[pos].is_ascii_alphanumeric() {
+            pos += 1;
+        }
+        // Skip non-alphanumeric
+        while pos < len && !bytes[pos].is_ascii_alphanumeric() {
+            pos += 1;
+        }
+        self.cursor_pos = pos;
+    }
+
+    pub fn move_cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        self.cursor_pos = self.input.len();
+    }
+
+    pub fn delete_word_left(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+        let old_pos = self.cursor_pos;
+        self.move_cursor_word_left();
+        self.input.drain(self.cursor_pos..old_pos);
+        self.typing = true;
+        self.last_keystroke = Some(Instant::now());
+    }
+
+    pub fn delete_word_right(&mut self) {
+        if self.cursor_pos >= self.input.len() {
+            return;
+        }
+        let old_pos = self.cursor_pos;
+        self.move_cursor_word_right();
+        let new_pos = self.cursor_pos;
+        self.cursor_pos = old_pos;
+        self.input.drain(old_pos..new_pos);
+        self.typing = true;
+        self.last_keystroke = Some(Instant::now());
     }
 
     pub fn on_toggle_regex(&mut self) {
@@ -566,10 +665,12 @@ mod tests {
     fn test_on_backspace() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.input = "hello".to_string();
+        app.cursor_pos = 5; // cursor at end
 
         app.on_backspace();
 
         assert_eq!(app.input, "hell");
+        assert_eq!(app.cursor_pos, 4);
     }
 
     #[test]
@@ -690,5 +791,209 @@ mod tests {
         app.exit_tree_mode();
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_on_key_inserts_at_cursor() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.on_key('a');
+        app.on_key('c');
+        // input = "ac", cursor at 2
+        app.cursor_pos = 1; // move cursor between 'a' and 'c'
+        app.on_key('b');
+        assert_eq!(app.input, "abc");
+        assert_eq!(app.cursor_pos, 2);
+    }
+
+    #[test]
+    fn test_on_backspace_at_cursor() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "abc".to_string();
+        app.cursor_pos = 2; // cursor after 'b'
+        app.on_backspace();
+        assert_eq!(app.input, "ac");
+        assert_eq!(app.cursor_pos, 1);
+    }
+
+    #[test]
+    fn test_on_backspace_at_start_does_nothing() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "abc".to_string();
+        app.cursor_pos = 0;
+        app.on_backspace();
+        assert_eq!(app.input, "abc");
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_on_delete_at_cursor() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "abc".to_string();
+        app.cursor_pos = 1; // cursor after 'a'
+        app.on_delete();
+        assert_eq!(app.input, "ac");
+        assert_eq!(app.cursor_pos, 1);
+    }
+
+    #[test]
+    fn test_move_cursor_word_left() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello world foo".to_string();
+        app.cursor_pos = app.input.len(); // at end
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 12); // before "foo"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 6); // before "world"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0); // before "hello"
+
+        // At start, stays at 0
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_word_right() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello world foo".to_string();
+        app.cursor_pos = 0;
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 6); // after "hello "
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 12); // after "world "
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 15); // end
+
+        // At end, stays
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 15);
+    }
+
+    #[test]
+    fn test_delete_word_left() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello world".to_string();
+        app.cursor_pos = app.input.len();
+
+        app.delete_word_left();
+        assert_eq!(app.input, "hello ");
+        assert_eq!(app.cursor_pos, 6);
+
+        app.delete_word_left();
+        assert_eq!(app.input, "");
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_home_end() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello".to_string();
+        app.cursor_pos = 3;
+
+        app.move_cursor_home();
+        assert_eq!(app.cursor_pos, 0);
+
+        app.move_cursor_end();
+        assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_cursor_bounds_empty_input() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        // All operations on empty input should not panic
+        app.move_cursor_left();
+        app.move_cursor_right();
+        app.move_cursor_word_left();
+        app.move_cursor_word_right();
+        app.move_cursor_home();
+        app.move_cursor_end();
+        app.on_backspace();
+        app.on_delete();
+        app.delete_word_left();
+
+        assert_eq!(app.cursor_pos, 0);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn test_move_cursor_left_right() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "abc".to_string();
+        app.cursor_pos = 3;
+
+        app.move_cursor_left();
+        assert_eq!(app.cursor_pos, 2);
+
+        app.move_cursor_left();
+        assert_eq!(app.cursor_pos, 1);
+
+        app.move_cursor_right();
+        assert_eq!(app.cursor_pos, 2);
+    }
+
+    #[test]
+    fn test_clear_input_resets_cursor() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello".to_string();
+        app.cursor_pos = 3;
+
+        app.clear_input();
+
+        assert_eq!(app.cursor_pos, 0);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn test_delete_word_right() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello world foo".to_string();
+        app.cursor_pos = 0;
+
+        app.delete_word_right();
+        assert_eq!(app.input, "world foo");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_right();
+        assert_eq!(app.input, "foo");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_right();
+        assert_eq!(app.input, "");
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_delete_word_right_at_end_does_nothing() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello".to_string();
+        app.cursor_pos = 5;
+
+        app.delete_word_right();
+        assert_eq!(app.input, "hello");
+        assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_delete_word_right_from_middle() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "hello world".to_string();
+        app.cursor_pos = 5; // after "hello", on the space
+
+        // First delete removes " " (skip non-alnum to next word boundary)
+        app.delete_word_right();
+        assert_eq!(app.input, "helloworld");
+        assert_eq!(app.cursor_pos, 5);
+
+        // Second delete removes "world"
+        app.delete_word_right();
+        assert_eq!(app.input, "hello");
+        assert_eq!(app.cursor_pos, 5);
     }
 }

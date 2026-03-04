@@ -179,10 +179,52 @@ fn main() -> io::Result<()> {
                         continue;
                     }
 
+                    // Word movement: Alt+Left/Right, Ctrl+Left/Right,
+                    // and Alt+b/f (macOS Option sends ESC+b/ESC+f)
+                    if key.code == KeyCode::Left && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+                        || key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::ALT)
+                    {
+                        app.move_cursor_word_left();
+                        continue;
+                    }
+                    if key.code == KeyCode::Right && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+                        || key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT)
+                    {
+                        app.move_cursor_word_right();
+                        continue;
+                    }
+
+                    // Word deletion: Alt+Backspace (macOS) or Ctrl+W (Linux)
+                    // Alt+d for delete word right (readline-style)
+                    if key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::ALT) {
+                        app.delete_word_left();
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::ALT) {
+                        app.delete_word_right();
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.delete_word_left();
+                        continue;
+                    }
+
+                    // Home/End and Ctrl+A/E for line start/end
+                    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.move_cursor_home();
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.move_cursor_end();
+                        continue;
+                    }
+
                     match key.code {
                         KeyCode::Esc => {
                             app.should_quit = true;
                         }
+                        KeyCode::Home => app.move_cursor_home(),
+                        KeyCode::End => app.move_cursor_end(),
                         KeyCode::Up => app.on_up(),
                         KeyCode::Down => app.on_down(),
                         KeyCode::Left => app.on_left(),
@@ -190,6 +232,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Tab => app.on_tab(),
                         KeyCode::Enter => app.on_enter(),
                         KeyCode::Backspace => app.on_backspace(),
+                        KeyCode::Delete => app.on_delete(),
                         KeyCode::Char(c) => app.on_key(c),
                         _ => {}
                     }

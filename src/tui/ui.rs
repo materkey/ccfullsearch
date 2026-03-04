@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Style::default()
     };
-    let input = Paragraph::new(format!("{}_", app.input))
+    let input = Paragraph::new(app.input.as_str())
         .style(input_style)
         .block(
             Block::default()
@@ -54,6 +54,9 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .title_style(title_style),
         );
     frame.render_widget(input, input_area);
+    // Place native terminal cursor at cursor_pos (inside the border: +1 for border offset)
+    let cursor_x = app.input[..app.cursor_pos].chars().count() as u16;
+    frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
 
     // Status
     let status = if app.typing {
