@@ -45,6 +45,12 @@ cargo build --release
 # Binary will be at target/release/ccs
 ```
 
+## Testing
+
+```bash
+cargo test
+```
+
 ## Usage
 
 ### Interactive TUI
