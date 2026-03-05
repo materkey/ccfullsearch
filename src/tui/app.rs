@@ -1,4 +1,7 @@
-use crate::search::{group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource};
+use crate::resume::encode_path_for_claude;
+use crate::search::{
+    group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource,
+};
 use crate::tree::SessionTree;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -7,8 +10,15 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_MS: u64 = 300;
 
-/// Result from background search thread
-type SearchResult = Result<(String, bool, Vec<RipgrepMatch>), String>;
+/// Result from background search thread:
+/// (request seq, query, search paths, regex mode, search result)
+type SearchResult = (
+    u64,
+    String,
+    Vec<String>,
+    bool,
+    Result<Vec<RipgrepMatch>, String>,
+);
 
 pub struct App {
     pub input: String,
@@ -38,10 +48,14 @@ pub struct App {
     pub regex_mode: bool,
     /// Track last regex mode used for search
     last_regex_mode: bool,
+    /// Track last search path scope used for search
+    last_search_paths: Vec<String>,
     /// Channel to receive search results from background thread
     search_rx: Receiver<SearchResult>,
-    /// Channel to send search requests to background thread (query, paths, regex_mode)
-    search_tx: Sender<(String, Vec<String>, bool)>,
+    /// Channel to send search requests to background thread
+    search_tx: Sender<(u64, String, Vec<String>, bool)>,
+    /// Monotonic request sequence to ignore stale async results
+    search_seq: u64,
     /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
     pub latest_chains: HashMap<String, HashSet<String>>,
     /// Tree explorer mode
@@ -60,22 +74,49 @@ pub struct App {
     pub tree_mode_standalone: bool,
     /// Cursor position in input (byte offset)
     pub cursor_pos: usize,
+    /// Whether search is scoped to current project only (Ctrl+A toggle)
+    pub project_filter: bool,
+    /// All search paths (for "all sessions" mode)
+    all_search_paths: Vec<String>,
+    /// Search path(s) for current project only
+    pub current_project_paths: Vec<String>,
 }
 
 impl App {
     pub fn new(search_paths: Vec<String>) -> Self {
         // Create channels for async search
         let (result_tx, result_rx) = mpsc::channel::<SearchResult>();
-        let (query_tx, query_rx) = mpsc::channel::<(String, Vec<String>, bool)>();
+        let (query_tx, query_rx) = mpsc::channel::<(u64, String, Vec<String>, bool)>();
 
         // Spawn background search thread
         thread::spawn(move || {
-            while let Ok((query, paths, use_regex)) = query_rx.recv() {
-                let result = search_multiple_paths(&query, &paths, use_regex)
-                    .map(|r| (query, use_regex, r));
+            while let Ok((seq, query, paths, use_regex)) = query_rx.recv() {
+                let result = search_multiple_paths(&query, &paths, use_regex);
+                let result = (seq, query, paths, use_regex, result);
                 let _ = result_tx.send(result);
             }
         });
+
+        // Detect current project path for Ctrl+A filter
+        let current_project_paths = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cwd.to_str().map(|s| encode_path_for_claude(s)))
+            .map(|encoded| {
+                search_paths
+                    .iter()
+                    .filter_map(|base| {
+                        let candidate = format!("{}/{}", base, encoded);
+                        if std::path::Path::new(&candidate).is_dir() {
+                            Some(candidate)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let all_search_paths = search_paths.clone();
 
         Self {
             input: String::new(),
@@ -100,8 +141,10 @@ impl App {
             needs_full_redraw: false,
             regex_mode: false,
             last_regex_mode: false,
+            last_search_paths: all_search_paths.clone(),
             search_rx: result_rx,
             search_tx: query_tx,
+            search_seq: 0,
             latest_chains: HashMap::new(),
             tree_mode: false,
             session_tree: None,
@@ -111,6 +154,9 @@ impl App {
             tree_load_rx: None,
             tree_mode_standalone: false,
             cursor_pos: 0,
+            project_filter: false,
+            all_search_paths,
+            current_project_paths,
         }
     }
 
@@ -247,7 +293,11 @@ impl App {
 
     pub fn move_cursor_right(&mut self) {
         if self.cursor_pos < self.input.len() {
-            self.cursor_pos += self.input[self.cursor_pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+            self.cursor_pos += self.input[self.cursor_pos..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(0);
         }
     }
 
@@ -321,6 +371,22 @@ impl App {
         }
     }
 
+    pub fn toggle_project_filter(&mut self) {
+        if self.current_project_paths.is_empty() {
+            return;
+        }
+        self.project_filter = !self.project_filter;
+        self.search_paths = if self.project_filter {
+            self.current_project_paths.clone()
+        } else {
+            self.all_search_paths.clone()
+        };
+        if !self.input.is_empty() {
+            self.last_keystroke = Some(Instant::now());
+            self.typing = true;
+        }
+    }
+
     pub fn on_enter(&mut self) {
         if self.preview_mode {
             self.preview_mode = false;
@@ -330,7 +396,12 @@ impl App {
         // Extract values first to avoid borrow issues
         let resume_info = self.selected_match().and_then(|m| {
             m.message.as_ref().map(|msg| {
-                (msg.session_id.clone(), m.file_path.clone(), m.source, msg.uuid.clone())
+                (
+                    msg.session_id.clone(),
+                    m.file_path.clone(),
+                    m.source,
+                    msg.uuid.clone(),
+                )
             })
         });
 
@@ -438,7 +509,9 @@ impl App {
     /// Quick check if a JSONL file contains the given session ID (reads first 5 lines).
     fn file_contains_session_id(path: &std::path::Path, session_id: &str) -> bool {
         use std::io::{BufRead, BufReader};
-        let Ok(file) = std::fs::File::open(path) else { return false };
+        let Ok(file) = std::fs::File::open(path) else {
+            return false;
+        };
         let reader = BufReader::new(file);
         for line in reader.lines().take(5) {
             if let Ok(line) = line {
@@ -585,27 +658,7 @@ impl App {
 
         // Check for search results from background thread
         while let Ok(result) = self.search_rx.try_recv() {
-            match result {
-                Ok((query, use_regex, results)) => {
-                    // Only apply results if query and regex mode match current state
-                    // (ignore stale results from old queries or mode changes)
-                    if query == self.input && use_regex == self.regex_mode {
-                        self.results_query = query;
-                        self.groups = group_by_session(results.clone());
-                        self.results = results;
-                        self.group_cursor = 0;
-                        self.sub_cursor = 0;
-                        self.expanded = false;
-                        self.error = None;
-                        self.latest_chains.clear();
-                        self.searching = false;
-                    }
-                }
-                Err(e) => {
-                    self.error = Some(e);
-                    self.searching = false;
-                }
-            }
+            self.handle_search_result(result);
         }
 
         // Check if debounce period passed
@@ -614,22 +667,59 @@ impl App {
                 self.last_keystroke = None;
                 self.typing = false;
 
-                // Re-search if query changed or regex mode changed
+                // Re-search if query, regex mode, or search scope changed
                 let query_changed = self.input != self.last_query;
                 let mode_changed = self.regex_mode != self.last_regex_mode;
-                if !self.input.is_empty() && (query_changed || mode_changed) {
+                let scope_changed = self.search_paths != self.last_search_paths;
+                if !self.input.is_empty() && (query_changed || mode_changed || scope_changed) {
                     self.start_search();
                 }
             }
         }
     }
 
+    fn handle_search_result(&mut self, (seq, query, paths, use_regex, result): SearchResult) {
+        // Ignore stale async results if query text, mode, path scope, or request sequence changed.
+        if seq != self.search_seq
+            || query != self.input
+            || use_regex != self.regex_mode
+            || paths != self.search_paths
+        {
+            return;
+        }
+
+        match result {
+            Ok(results) => {
+                self.results_query = query;
+                self.groups = group_by_session(results.clone());
+                self.results = results;
+                self.group_cursor = 0;
+                self.sub_cursor = 0;
+                self.expanded = false;
+                self.error = None;
+                self.latest_chains.clear();
+                self.searching = false;
+            }
+            Err(e) => {
+                self.error = Some(e);
+                self.searching = false;
+            }
+        }
+    }
+
     /// Start an async search in the background thread
     fn start_search(&mut self) {
+        self.search_seq += 1;
         self.last_query = self.input.clone();
         self.last_regex_mode = self.regex_mode;
+        self.last_search_paths = self.search_paths.clone();
         self.searching = true;
-        let _ = self.search_tx.send((self.input.clone(), self.search_paths.clone(), self.regex_mode));
+        let _ = self.search_tx.send((
+            self.search_seq,
+            self.input.clone(),
+            self.search_paths.clone(),
+            self.regex_mode,
+        ));
     }
 }
 
@@ -995,5 +1085,88 @@ mod tests {
         app.delete_word_right();
         assert_eq!(app.input, "hello");
         assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_no_current_project() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        assert!(!app.project_filter);
+        app.toggle_project_filter();
+        assert!(!app.project_filter); // unchanged — no current project detected
+    }
+
+    #[test]
+    fn test_toggle_project_filter_switches_paths() {
+        let mut app = App::new(vec!["/all".to_string()]);
+        app.current_project_paths = vec!["/all/-Users-test-project".to_string()];
+
+        assert!(!app.project_filter);
+        assert_eq!(app.search_paths, vec!["/all".to_string()]);
+
+        app.toggle_project_filter();
+        assert!(app.project_filter);
+        assert_eq!(
+            app.search_paths,
+            vec!["/all/-Users-test-project".to_string()]
+        );
+
+        app.toggle_project_filter();
+        assert!(!app.project_filter);
+        assert_eq!(app.search_paths, vec!["/all".to_string()]);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_triggers_research() {
+        let mut app = App::new(vec!["/all".to_string()]);
+        app.current_project_paths = vec!["/all/-Users-test".to_string()];
+        app.input = "query".to_string();
+        app.last_query = "query".to_string();
+        app.cursor_pos = 5;
+
+        app.toggle_project_filter();
+        app.last_keystroke = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS + 1));
+        app.tick();
+
+        assert!(app.searching);
+        assert_eq!(app.search_seq, 1);
+        assert_eq!(app.last_search_paths, vec!["/all/-Users-test".to_string()]);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_no_research_empty_query() {
+        let mut app = App::new(vec!["/all".to_string()]);
+        app.current_project_paths = vec!["/all/-Users-test".to_string()];
+
+        app.toggle_project_filter();
+
+        assert!(app.project_filter);
+        assert!(!app.typing);
+    }
+
+    #[test]
+    fn test_stale_search_result_ignored_when_scope_changes() {
+        let mut app = App::new(vec!["/all".to_string()]);
+        app.input = "query".to_string();
+        app.search_paths = vec!["/project".to_string()];
+        app.search_seq = 1;
+        app.searching = true;
+
+        let stale_result = (
+            1,
+            "query".to_string(),
+            vec!["/all".to_string()],
+            false,
+            Ok(vec![RipgrepMatch {
+                file_path: "/all/session.jsonl".to_string(),
+                message: None,
+                source: SessionSource::ClaudeCodeCLI,
+            }]),
+        );
+
+        app.handle_search_result(stale_result);
+
+        assert!(app.results.is_empty());
+        assert!(app.groups.is_empty());
+        assert!(app.searching);
     }
 }

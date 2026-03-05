@@ -209,11 +209,19 @@ fn main() -> io::Result<()> {
                         continue;
                     }
 
-                    // Home/End and Ctrl+A/E for line start/end
+                    // Ctrl+A: toggle project filter (current project only / all sessions)
                     if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.move_cursor_home();
+                        app.toggle_project_filter();
                         continue;
                     }
+
+                    // Ctrl+V: toggle preview (same as Tab)
+                    if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.on_tab();
+                        continue;
+                    }
+
+                    // Home/End and Ctrl+E for line end
                     if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
                         app.move_cursor_end();
                         continue;

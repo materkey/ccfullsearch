@@ -35,12 +35,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Style::default().fg(Color::White)
     };
-    let search_title = if app.regex_mode {
-        "Search [Regex]"
-    } else {
-        "Search"
+    let search_title = match (app.regex_mode, app.project_filter) {
+        (true, true) => "Search [Regex] [Project]",
+        (true, false) => "Search [Regex]",
+        (false, true) => "Search [Project]",
+        (false, false) => "Search",
     };
-    let title_style = if app.regex_mode {
+    let title_style = if app.regex_mode || app.project_filter {
         Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -86,11 +87,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Help
     let help_text = if app.preview_mode {
-        "[Tab/Enter] Close preview  [Ctrl+R] Regex  [Esc] Quit"
+        "[Tab/Ctrl+V/Enter] Close preview  [Ctrl+A] Project  [Ctrl+R] Regex  [Esc] Quit"
     } else if !app.groups.is_empty() {
-        "[↑↓] Navigate  [→←] Expand  [Tab] Preview  [Enter] Resume  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit"
+        "[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit"
     } else {
-        "[↑↓] Navigate  [Tab] Preview  [Enter] Resume  [Ctrl+R] Regex  [Esc] Quit"
+        "[↑↓] Navigate  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+R] Regex  [Esc] Quit"
     };
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, help_area);

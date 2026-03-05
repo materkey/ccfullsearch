@@ -312,7 +312,7 @@ fn exec_command(cmd: &mut Command) -> Result<(), String> {
 
 /// Encode a path the same way Claude CLI does: replace any non-ASCII-alphanumeric
 /// character (except `-`) with `-`.
-fn encode_path_for_claude(path: &str) -> String {
+pub fn encode_path_for_claude(path: &str) -> String {
     path.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
         .collect()

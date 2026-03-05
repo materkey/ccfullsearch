@@ -87,6 +87,8 @@ ccs list --limit 20
 | `Left` / `Right` | Navigate matches within a group |
 | `Tab` | Expand/collapse match list |
 | `Enter` | Resume selected session |
+| `Ctrl+A` | Toggle project filter (current project / all sessions) |
+| `Ctrl+V` | Toggle preview (same as Tab) |
 | `Ctrl+C` | Clear input (or quit if input is empty) |
 | `Ctrl+R` | Toggle regex search mode |
 | `Ctrl+B` | Open tree view for selected session |
