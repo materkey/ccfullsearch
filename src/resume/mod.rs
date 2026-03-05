@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -270,11 +271,9 @@ fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
         }
 
         // Run claude from the project directory
-        let err = Command::new(&claude_path)
-            .current_dir(dir)
-            .args(["--resume", session_id])
-            .exec();
-        return Err(format!("Failed to exec claude: {}", err));
+        let mut cmd = Command::new(&claude_path);
+        cmd.current_dir(dir).args(["--resume", session_id]);
+        return exec_command(&mut cmd);
     }
 
     // Fallback: try from home directory
@@ -282,22 +281,33 @@ fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "/tmp".to_string());
 
-    let err = Command::new(&claude_path)
-        .current_dir(&home_dir)
-        .args(["--resume", session_id])
-        .exec();
-
-    Err(format!("Failed to exec claude: {}", err))
+    let mut cmd = Command::new(&claude_path);
+    cmd.current_dir(&home_dir).args(["--resume", session_id]);
+    exec_command(&mut cmd)
 }
 
 /// Open Claude Desktop app for Desktop sessions
 fn resume_desktop() -> Result<(), String> {
-    // On macOS, use `open` to launch Claude Desktop
-    let err = Command::new("open")
-        .args(["-a", "Claude"])
-        .exec();
+    let mut cmd = Command::new("open");
+    cmd.args(["-a", "Claude"]);
+    exec_command(&mut cmd)
+}
 
-    Err(format!("Failed to open Claude Desktop: {}", err))
+/// Execute a command, replacing the current process on Unix or spawning on Windows.
+#[cfg(unix)]
+fn exec_command(cmd: &mut Command) -> Result<(), String> {
+    let err = cmd.exec();
+    Err(format!("Failed to exec: {}", err))
+}
+
+#[cfg(not(unix))]
+fn exec_command(cmd: &mut Command) -> Result<(), String> {
+    let status = cmd.status().map_err(|e| format!("Failed to spawn: {}", e))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Process exited with {}", status))
+    }
 }
 
 /// Encode a path the same way Claude CLI does: replace any non-ASCII-alphanumeric
