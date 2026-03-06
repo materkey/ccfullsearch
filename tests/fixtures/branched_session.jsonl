@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Help me write a Rust function"}]},"uuid":"root","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sure! What kind of function would you like to write?"}]},"uuid":"a1","parentUuid":"root","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:01:00Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"A function that parses JSON"}]},"uuid":"a2","parentUuid":"a1","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:02:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is a JSON parsing function using serde_json."}]},"uuid":"a3","parentUuid":"a2","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:03:00Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Actually, make it parse YAML instead"}]},"uuid":"b2","parentUuid":"a1","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:04:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is a YAML parsing function using serde_yaml."}]},"uuid":"b3","parentUuid":"b2","sessionId":"sess-branched-001","timestamp":"2025-06-01T10:05:00Z"}

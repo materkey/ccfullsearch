@@ -103,7 +103,7 @@ fn collect_sessions(dir: &str, results: &mut Vec<ListResult>) {
 
         if path.is_dir() {
             collect_sessions(path.to_str().unwrap_or(""), results);
-        } else if path.extension().map_or(false, |ext| ext == "jsonl") {
+        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
             if let Some(session) = extract_session_metadata(&path) {
                 results.push(session);
             }
@@ -134,7 +134,7 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
             if session_id.is_none() {
                 session_id = Some(msg.session_id.clone());
             }
-            if last_timestamp.map_or(true, |t| msg.timestamp > t) {
+            if last_timestamp.is_none_or(|t| msg.timestamp > t) {
                 last_timestamp = Some(msg.timestamp);
             }
             message_count += 1;

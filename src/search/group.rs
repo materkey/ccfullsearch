@@ -91,7 +91,9 @@ mod tests {
                 session_id: session_id.to_string(),
                 role: "user".to_string(),
                 content: "test content".to_string(),
-                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, timestamp_mins as u32, 0).unwrap(),
+                timestamp: Utc
+                    .with_ymd_and_hms(2025, 1, 9, 10, timestamp_mins as u32, 0)
+                    .unwrap(),
                 branch: None,
                 line_number: 1,
                 uuid: None,
@@ -160,8 +162,14 @@ mod tests {
         let groups = group_by_session(results);
 
         assert_eq!(groups.len(), 3);
-        assert_eq!(groups[0].session_id, "new-session", "Newest should be first");
-        assert_eq!(groups[1].session_id, "mid-session", "Middle should be second");
+        assert_eq!(
+            groups[0].session_id, "new-session",
+            "Newest should be first"
+        );
+        assert_eq!(
+            groups[1].session_id, "mid-session",
+            "Middle should be second"
+        );
         assert_eq!(groups[2].session_id, "old-session", "Oldest should be last");
     }
 
@@ -212,10 +220,7 @@ mod tests {
         let group = SessionGroup {
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
-            matches: vec![
-                make_match("test", 0),
-                make_match("test", 1),
-            ],
+            matches: vec![make_match("test", 0), make_match("test", 1)],
         };
 
         let first = group.first_match();

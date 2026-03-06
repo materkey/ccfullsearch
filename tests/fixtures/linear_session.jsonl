@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"How do I sort a list in Python?"}]},"uuid":"u1","sessionId":"sess-linear-001","timestamp":"2025-06-01T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"You can sort a list in Python using the sorted() function or the list.sort() method."}]},"uuid":"u2","parentUuid":"u1","sessionId":"sess-linear-001","timestamp":"2025-06-01T10:01:00Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"What about sorting in reverse order?"}]},"uuid":"u3","parentUuid":"u2","sessionId":"sess-linear-001","timestamp":"2025-06-01T10:02:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Use reverse=True parameter: sorted(my_list, reverse=True) or my_list.sort(reverse=True)."}]},"uuid":"u4","parentUuid":"u3","sessionId":"sess-linear-001","timestamp":"2025-06-01T10:03:00Z"}

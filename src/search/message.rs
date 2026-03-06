@@ -1,33 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Source of the Claude session
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionSource {
-    /// Claude Code CLI sessions stored in ~/.claude/projects/
-    ClaudeCodeCLI,
-    /// Claude Desktop app sessions stored in ~/Library/Application Support/Claude/
-    ClaudeDesktop,
-}
-
-impl SessionSource {
-    /// Detect session source from file path
-    pub fn from_path(path: &str) -> Self {
-        if path.contains("local-agent-mode-sessions") {
-            SessionSource::ClaudeDesktop
-        } else {
-            SessionSource::ClaudeCodeCLI
-        }
-    }
-
-    /// Returns display name for the source
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            SessionSource::ClaudeCodeCLI => "CLI",
-            SessionSource::ClaudeDesktop => "Desktop",
-        }
-    }
-}
+// Re-export SessionSource from the shared session module
+pub use crate::session::SessionSource;
 
 /// Represents a message from Claude Code JSONL session
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -47,10 +22,12 @@ impl Message {
     /// Supports both Claude Code CLI format (sessionId, timestamp) and
     /// Claude Desktop format (session_id, _audit_timestamp)
     pub fn from_jsonl(line: &str, line_number: usize) -> Option<Self> {
+        use crate::session;
+
         let json: serde_json::Value = serde_json::from_str(line).ok()?;
 
         // Skip non-message types (summary, etc.)
-        let msg_type = json.get("type")?.as_str()?;
+        let msg_type = session::extract_record_type(&json)?;
         if msg_type != "user" && msg_type != "assistant" {
             return None;
         }
@@ -65,33 +42,19 @@ impl Message {
             return None;
         }
 
-        // Support both CLI format (sessionId) and Desktop format (session_id)
-        let session_id = json.get("sessionId")
-            .or_else(|| json.get("session_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())?;
-
-        // Support both CLI format (timestamp) and Desktop format (_audit_timestamp)
-        let timestamp_str = json.get("timestamp")
-            .or_else(|| json.get("_audit_timestamp"))
-            .and_then(|v| v.as_str())?;
-        let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
-            .ok()?
-            .with_timezone(&Utc);
+        let session_id = session::extract_session_id(&json)?;
+        let timestamp = session::extract_timestamp(&json)?;
 
         // Branch is CLI-only, Desktop doesn't have it
-        let branch = json.get("branch")
+        let branch = json
+            .get("branch")
             .or_else(|| json.get("gitBranch"))
             .and_then(|b| b.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        let uuid = json.get("uuid")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let parent_uuid = json.get("parentUuid")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let uuid = session::extract_uuid(&json);
+        let parent_uuid = session::extract_parent_uuid(&json);
 
         Some(Message {
             session_id,
@@ -245,26 +208,6 @@ mod tests {
         assert!(content.contains("File contents here"));
     }
 
-    // SessionSource tests
-
-    #[test]
-    fn test_session_source_from_cli_path() {
-        let path = "/Users/user/.claude/projects/-Users-user-myproject/abc123.jsonl";
-        assert_eq!(SessionSource::from_path(path), SessionSource::ClaudeCodeCLI);
-    }
-
-    #[test]
-    fn test_session_source_from_desktop_path() {
-        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_session/audit.jsonl";
-        assert_eq!(SessionSource::from_path(path), SessionSource::ClaudeDesktop);
-    }
-
-    #[test]
-    fn test_session_source_display_name() {
-        assert_eq!(SessionSource::ClaudeCodeCLI.display_name(), "CLI");
-        assert_eq!(SessionSource::ClaudeDesktop.display_name(), "Desktop");
-    }
-
     #[test]
     fn test_parse_desktop_format_message() {
         // Desktop format uses session_id (underscore) and _audit_timestamp
@@ -276,7 +219,10 @@ mod tests {
         assert_eq!(msg.role, "assistant");
         assert!(msg.content.contains("I'd love to help you analyze"));
         assert!(msg.branch.is_none()); // Desktop doesn't have branch
-        assert_eq!(msg.uuid, Some("aa419e76-930a-4970-85c3-b5f03e85f6e0".to_string()));
+        assert_eq!(
+            msg.uuid,
+            Some("aa419e76-930a-4970-85c3-b5f03e85f6e0".to_string())
+        );
     }
 
     #[test]

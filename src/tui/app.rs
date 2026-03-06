@@ -100,7 +100,7 @@ impl App {
         // Detect current project path for Ctrl+A filter
         let current_project_paths = std::env::current_dir()
             .ok()
-            .and_then(|cwd| cwd.to_str().map(|s| encode_path_for_claude(s)))
+            .and_then(|cwd| cwd.to_str().map(encode_path_for_claude))
             .map(|encoded| {
                 search_paths
                     .iter()
@@ -249,9 +249,11 @@ impl App {
             // Precompute latest chain for the expanded group (for fork indicator)
             if let Some(group) = self.groups.get(self.group_cursor) {
                 let fp = group.file_path.clone();
-                if !self.latest_chains.contains_key(&fp) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    self.latest_chains.entry(fp.clone())
+                {
                     if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
-                        self.latest_chains.insert(fp, chain);
+                        e.insert(chain);
                     }
                 }
             }
@@ -491,10 +493,10 @@ impl App {
                                     }
                                     // Desktop local_<id>/audit.jsonl — check by reading first line
                                     let audit = subpath.join("audit.jsonl");
-                                    if audit.exists() {
-                                        if Self::file_contains_session_id(&audit, session_id) {
-                                            return Some(audit.to_string_lossy().to_string());
-                                        }
+                                    if audit.exists()
+                                        && Self::file_contains_session_id(&audit, session_id)
+                                    {
+                                        return Some(audit.to_string_lossy().to_string());
                                     }
                                 }
                             }
@@ -513,11 +515,9 @@ impl App {
             return false;
         };
         let reader = BufReader::new(file);
-        for line in reader.lines().take(5) {
-            if let Ok(line) = line {
-                if line.contains(session_id) {
-                    return true;
-                }
+        for line in reader.lines().take(5).flatten() {
+            if line.contains(session_id) {
+                return true;
             }
         }
         false

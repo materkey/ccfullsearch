@@ -1,4 +1,4 @@
-use crate::search::SessionSource;
+use crate::session::{self, SessionSource};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -68,7 +68,8 @@ impl SessionTree {
         let mut session_id = String::new();
 
         for (line_idx, line_result) in reader.lines().enumerate() {
-            let line = line_result.map_err(|e| format!("Read error at line {}: {}", line_idx, e))?;
+            let line =
+                line_result.map_err(|e| format!("Read error at line {}: {}", line_idx, e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -79,28 +80,18 @@ impl SessionTree {
                 Err(_) => continue,
             };
 
-            let uuid = match json.get("uuid").and_then(|v| v.as_str()) {
-                Some(u) => u.to_string(),
+            let uuid = match session::extract_uuid(&json) {
+                Some(u) => u,
                 None => continue,
             };
 
-            let parent_uuid = json
-                .get("parentUuid")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let parent_uuid = session::extract_parent_uuid(&json);
 
-            let record_type = json
-                .get("type")
-                .and_then(|v| v.as_str())
+            let record_type = session::extract_record_type(&json)
                 .unwrap_or("")
                 .to_string();
 
-            let timestamp = json
-                .get("timestamp")
-                .or_else(|| json.get("_audit_timestamp"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            let timestamp = session::extract_timestamp(&json);
 
             // Extract role and content preview for displayable types
             let (role, content_preview) = if record_type == "user" || record_type == "assistant" {
@@ -129,12 +120,8 @@ impl SessionTree {
 
             // Capture session_id from first available record
             if session_id.is_empty() {
-                if let Some(sid) = json
-                    .get("sessionId")
-                    .or_else(|| json.get("session_id"))
-                    .and_then(|v| v.as_str())
-                {
-                    session_id = sid.to_string();
+                if let Some(sid) = session::extract_session_id(&json) {
+                    session_id = sid;
                 }
             }
 
@@ -188,10 +175,7 @@ impl SessionTree {
 
     /// Number of branch points (nodes with >1 child in display graph)
     pub fn branch_count(&self) -> usize {
-        self.children
-            .values()
-            .filter(|kids| kids.len() > 1)
-            .count()
+        self.children.values().filter(|kids| kids.len() > 1).count()
     }
 
     /// Get the full content of a message by reading its JSONL line from file.
@@ -256,12 +240,19 @@ impl SessionTree {
         // Sort by line_index for deterministic processing order
         let mut displayable_sorted: Vec<&String> = displayable_uuids.iter().collect();
         displayable_sorted.sort_by_key(|uuid| {
-            self.nodes.get(uuid.as_str()).map(|n| n.line_index).unwrap_or(0)
+            self.nodes
+                .get(uuid.as_str())
+                .map(|n| n.line_index)
+                .unwrap_or(0)
         });
 
         // For each displayable node, walk up parents until we find another displayable node
         for uuid in displayable_sorted {
-            let display_parent = self.find_displayable_parent(uuid, &displayable_uuids, &mut displayable_parent_cache);
+            let display_parent = self.find_displayable_parent(
+                uuid,
+                &displayable_uuids,
+                &mut displayable_parent_cache,
+            );
             match display_parent {
                 Some(parent_uuid) => {
                     display_children
@@ -277,15 +268,11 @@ impl SessionTree {
 
         // Sort children by line_index for consistent ordering
         for kids in display_children.values_mut() {
-            kids.sort_by_key(|uuid| {
-                self.nodes.get(uuid).map(|n| n.line_index).unwrap_or(0)
-            });
+            kids.sort_by_key(|uuid| self.nodes.get(uuid).map(|n| n.line_index).unwrap_or(0));
         }
 
         // Sort roots by line_index
-        display_roots.sort_by_key(|uuid| {
-            self.nodes.get(uuid).map(|n| n.line_index).unwrap_or(0)
-        });
+        display_roots.sort_by_key(|uuid| self.nodes.get(uuid).map(|n| n.line_index).unwrap_or(0));
 
         (display_children, display_roots)
     }
@@ -342,10 +329,7 @@ impl SessionTree {
             None => return,
         };
 
-        let kids = display_children
-            .get(uuid)
-            .cloned()
-            .unwrap_or_default();
+        let kids = display_children.get(uuid).cloned().unwrap_or_default();
         let is_branch_point = kids.len() > 1;
         let is_on_latest = self.latest_chain.contains(uuid);
 
@@ -358,7 +342,7 @@ impl SessionTree {
         rows.push(TreeRow {
             uuid: uuid.to_string(),
             role: node.role.clone().unwrap_or_else(|| "?".to_string()),
-            timestamp: node.timestamp.unwrap_or_else(|| Utc::now()),
+            timestamp: node.timestamp.unwrap_or_else(Utc::now),
             content_preview: node.content_preview.clone().unwrap_or_default(),
             depth: column,
             graph_symbols: graph,
@@ -393,7 +377,14 @@ impl SessionTree {
             let is_last = i == num_kids - 1;
             if i == 0 {
                 // First child continues on same column
-                self.dfs_flatten(&child, column, is_last, display_children, active_columns, rows);
+                self.dfs_flatten(
+                    &child,
+                    column,
+                    is_last,
+                    display_children,
+                    active_columns,
+                    rows,
+                );
             } else {
                 // Allocate new column for branch
                 let new_col = find_free_column(active_columns);
@@ -402,7 +393,14 @@ impl SessionTree {
                 } else {
                     active_columns[new_col] = true;
                 }
-                self.dfs_flatten(&child, new_col, is_last, display_children, active_columns, rows);
+                self.dfs_flatten(
+                    &child,
+                    new_col,
+                    is_last,
+                    display_children,
+                    active_columns,
+                    rows,
+                );
             }
         }
     }
@@ -460,7 +458,7 @@ fn find_free_column(active_columns: &[bool]) -> usize {
 fn build_graph_symbols(
     column: usize,
     active_columns: &[bool],
-    is_last_child: bool,
+    _is_last_child: bool,
     _has_children: bool,
 ) -> String {
     let max_col = active_columns.len().max(column + 1);
@@ -468,11 +466,7 @@ fn build_graph_symbols(
 
     for col in 0..max_col {
         if col == column {
-            if is_last_child || column == 0 {
-                result.push_str("* ");
-            } else {
-                result.push_str("* ");
-            }
+            result.push_str("* ");
         } else if col < active_columns.len() && active_columns[col] {
             result.push_str("| ");
         } else {
@@ -643,7 +637,10 @@ mod tests {
         let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
 
         for row in &tree.rows {
-            assert!(row.is_on_latest_chain, "All linear messages should be on latest chain");
+            assert!(
+                row.is_on_latest_chain,
+                "All linear messages should be on latest chain"
+            );
         }
     }
 
@@ -664,7 +661,10 @@ mod tests {
         let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
 
         // a2 has two displayable children (a4 via a3, and b4 via b3) so it's a branch point
-        assert!(tree.branch_count() >= 1, "Should have at least one branch point");
+        assert!(
+            tree.branch_count() >= 1,
+            "Should have at least one branch point"
+        );
     }
 
     #[test]
@@ -704,10 +704,21 @@ mod tests {
         // Row 1: Hi (common)
         // Then latest chain branch (B) should come before branch A
 
-        let b_msg_idx = tree.rows.iter().position(|r| r.content_preview.contains("Branch B msg")).unwrap();
-        let a_msg_idx = tree.rows.iter().position(|r| r.content_preview.contains("Branch A msg")).unwrap();
+        let b_msg_idx = tree
+            .rows
+            .iter()
+            .position(|r| r.content_preview.contains("Branch B msg"))
+            .unwrap();
+        let a_msg_idx = tree
+            .rows
+            .iter()
+            .position(|r| r.content_preview.contains("Branch A msg"))
+            .unwrap();
 
-        assert!(b_msg_idx < a_msg_idx, "Latest chain (B) should appear before fork (A)");
+        assert!(
+            b_msg_idx < a_msg_idx,
+            "Latest chain (B) should appear before fork (A)"
+        );
     }
 
     #[test]
@@ -753,7 +764,11 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
         // Summary without uuid — should be skipped entirely (no uuid = not in DAG)
-        writeln!(f, r#"{{"type":"summary","summary":"Some summary","leafUuid":"u1","sessionId":"s1"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"summary","summary":"Some summary","leafUuid":"u1","sessionId":"s1"}}"#
+        )
+        .unwrap();
 
         let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
         // Only the user message should be visible

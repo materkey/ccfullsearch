@@ -1,49 +1,15 @@
-mod cli;
-mod resume;
-mod search;
-mod tree;
-mod tui;
-
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, Clear, ClearType},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::prelude::*;
 use std::io::{self, stdout};
 use std::time::Duration;
-
-fn get_search_paths() -> Vec<String> {
-    let mut search_paths = Vec::new();
-
-    if let Ok(custom_path) = std::env::var("CCFS_SEARCH_PATH") {
-        search_paths.push(custom_path);
-    } else {
-        // Claude Code CLI sessions
-        if let Some(cli_path) = dirs::home_dir()
-            .map(|h| h.join(".claude").join("projects"))
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-        {
-            search_paths.push(cli_path);
-        }
-
-        // Claude Desktop sessions (macOS)
-        if let Some(desktop_path) = dirs::home_dir()
-            .map(|h| h.join("Library/Application Support/Claude/local-agent-mode-sessions"))
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-        {
-            search_paths.push(desktop_path);
-        }
-
-        // Fallback if no paths found
-        if search_paths.is_empty() {
-            search_paths.push("~/.claude/projects".to_string());
-        }
-    }
-
-    search_paths
-}
 
 fn main() -> io::Result<()> {
     // Set panic hook to restore terminal on unexpected crashes
@@ -65,19 +31,23 @@ fn main() -> io::Result<()> {
                     std::process::exit(1);
                 });
                 let use_regex = args.iter().any(|a| a == "--regex");
-                let limit = args.iter().position(|a| a == "--limit")
+                let limit = args
+                    .iter()
+                    .position(|a| a == "--limit")
                     .and_then(|i| args.get(i + 1))
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(100);
-                cli::cli_search(query, &get_search_paths(), use_regex, limit);
+                ccs::cli::cli_search(query, &ccs::get_search_paths(), use_regex, limit);
                 return Ok(());
             }
             "list" => {
-                let limit = args.iter().position(|a| a == "--limit")
+                let limit = args
+                    .iter()
+                    .position(|a| a == "--limit")
                     .and_then(|i| args.get(i + 1))
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(50);
-                cli::cli_list(&get_search_paths(), limit);
+                ccs::cli::cli_list(&ccs::get_search_paths(), limit);
                 return Ok(());
             }
             _ => {}
@@ -91,7 +61,7 @@ fn main() -> io::Result<()> {
         None
     };
 
-    let search_paths = get_search_paths();
+    let search_paths = ccs::get_search_paths();
 
     // Initialize terminal with proper setup
     enable_raw_mode()?;
@@ -105,7 +75,7 @@ fn main() -> io::Result<()> {
     terminal.clear()?;
 
     // Create app
-    let mut app = tui::App::new(search_paths);
+    let mut app = ccs::tui::App::new(search_paths);
 
     // Enter tree mode if --tree flag was provided
     if let Some(target) = tree_target {
@@ -121,7 +91,7 @@ fn main() -> io::Result<()> {
         }
 
         // Draw
-        terminal.draw(|frame| tui::render(frame, &app))?;
+        terminal.draw(|frame| ccs::tui::render(frame, &app))?;
 
         // Handle events
         if event::poll(Duration::from_millis(100))? {
@@ -132,7 +102,9 @@ fn main() -> io::Result<()> {
 
                 if app.tree_mode {
                     // Tree mode: Ctrl-C exits tree mode (or quits if standalone)
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.exit_tree_mode();
                         continue;
                     }
@@ -156,7 +128,9 @@ fn main() -> io::Result<()> {
                     // Search mode key handling
 
                     // Handle Ctrl+C: clear input or quit
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         if app.input.is_empty() {
                             app.should_quit = true;
                         } else {
@@ -166,13 +140,17 @@ fn main() -> io::Result<()> {
                     }
 
                     // Handle Ctrl+R for regex toggle
-                    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('r')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.on_toggle_regex();
                         continue;
                     }
 
                     // Handle Ctrl+B for tree mode
-                    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('b')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         if !app.groups.is_empty() {
                             app.enter_tree_mode();
                         }
@@ -181,14 +159,22 @@ fn main() -> io::Result<()> {
 
                     // Word movement: Alt+Left/Right, Ctrl+Left/Right,
                     // and Alt+b/f (macOS Option sends ESC+b/ESC+f)
-                    if key.code == KeyCode::Left && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
-                        || key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::ALT)
+                    if key.code == KeyCode::Left
+                        && key
+                            .modifiers
+                            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+                        || key.code == KeyCode::Char('b')
+                            && key.modifiers.contains(KeyModifiers::ALT)
                     {
                         app.move_cursor_word_left();
                         continue;
                     }
-                    if key.code == KeyCode::Right && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
-                        || key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT)
+                    if key.code == KeyCode::Right
+                        && key
+                            .modifiers
+                            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+                        || key.code == KeyCode::Char('f')
+                            && key.modifiers.contains(KeyModifiers::ALT)
                     {
                         app.move_cursor_word_right();
                         continue;
@@ -204,25 +190,33 @@ fn main() -> io::Result<()> {
                         app.delete_word_right();
                         continue;
                     }
-                    if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('w')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.delete_word_left();
                         continue;
                     }
 
                     // Ctrl+A: toggle project filter (current project only / all sessions)
-                    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('a')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.toggle_project_filter();
                         continue;
                     }
 
                     // Ctrl+V: toggle preview (same as Tab)
-                    if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('v')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.on_tab();
                         continue;
                     }
 
                     // Home/End and Ctrl+E for line end
-                    if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('e')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         app.move_cursor_end();
                         continue;
                     }
@@ -259,16 +253,14 @@ fn main() -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        stdout(),
-        cursor::Show,
-        LeaveAlternateScreen
-    )?;
+    execute!(stdout(), cursor::Show, LeaveAlternateScreen)?;
 
     // Resume if requested
-    if let (Some(session_id), Some(file_path), Some(source)) = (&app.resume_id, &app.resume_file_path, &app.resume_source) {
+    if let (Some(session_id), Some(file_path), Some(source)) =
+        (&app.resume_id, &app.resume_file_path, &app.resume_source)
+    {
         let uuid = app.resume_uuid.as_deref();
-        if let Err(e) = resume::resume(session_id, file_path, *source, uuid) {
+        if let Err(e) = ccs::resume::resume(session_id, file_path, *source, uuid) {
             eprintln!("Error resuming session: {}", e);
             std::process::exit(1);
         }

@@ -1,6 +1,7 @@
-use crate::search::{extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup};
+use crate::search::{
+    extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup,
+};
 use crate::tui::App;
-use std::collections::HashSet;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -8,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use std::collections::HashSet;
 
 pub fn render(frame: &mut Frame, app: &App) {
     if app.tree_mode {
@@ -25,8 +27,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     // Header
-    let header = Paragraph::new("Claude Code Session Search")
-        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+    let header = Paragraph::new("Claude Code Session Search").style(
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_widget(header, header_area);
 
     // Input
@@ -42,18 +47,18 @@ pub fn render(frame: &mut Frame, app: &App) {
         (false, false) => "Search",
     };
     let title_style = if app.regex_mode || app.project_filter {
-        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
-    let input = Paragraph::new(app.input.as_str())
-        .style(input_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(search_title)
-                .title_style(title_style),
-        );
+    let input = Paragraph::new(app.input.as_str()).style(input_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(search_title)
+            .title_style(title_style),
+    );
     frame.render_widget(input, input_area);
     // Place native terminal cursor at cursor_pos (inside the border: +1 for border offset)
     let cursor_x = app.input[..app.cursor_pos].chars().count() as u16;
@@ -61,14 +66,28 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Status
     let status = if app.typing {
-        Span::styled("Typing...", Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC))
+        Span::styled(
+            "Typing...",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        )
     } else if app.searching {
-        Span::styled("Searching...", Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC))
+        Span::styled(
+            "Searching...",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        )
     } else if let Some(ref err) = app.error {
         Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))
     } else if !app.groups.is_empty() {
         Span::styled(
-            format!("Found {} matches in {} sessions", app.results.len(), app.groups.len()),
+            format!(
+                "Found {} matches in {} sessions",
+                app.results.len(),
+                app.groups.len()
+            ),
             Style::default().fg(Color::DarkGray),
         )
     } else if !app.results_query.is_empty() {
@@ -125,7 +144,8 @@ fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             let latest_chain = app.latest_chains.get(&group.file_path);
             for (j, m) in group.matches.iter().enumerate() {
                 let is_match_selected = j == app.sub_cursor;
-                let sub_item = render_sub_match(m, is_match_selected, &app.results_query, latest_chain);
+                let sub_item =
+                    render_sub_match(m, is_match_selected, &app.results_query, latest_chain);
                 items.push(sub_item);
             }
         }
@@ -189,14 +209,27 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
     ListItem::new(format!("{}{}", prefix, header_text)).style(style)
 }
 
-fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str, latest_chain: Option<&HashSet<String>>) -> ListItem<'a> {
+fn render_sub_match<'a>(
+    m: &RipgrepMatch,
+    selected: bool,
+    query: &str,
+    latest_chain: Option<&HashSet<String>>,
+) -> ListItem<'a> {
     let (role_str, role_style, content) = if let Some(ref msg) = m.message {
         let role_style = if msg.role == "user" {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         };
-        let role_str = if msg.role == "user" { "User:" } else { "Claude:" };
+        let role_str = if msg.role == "user" {
+            "User:"
+        } else {
+            "Claude:"
+        };
         // Sanitize content before extracting context to remove ANSI codes
         let sanitized = sanitize_content(&msg.content);
         let content = extract_context(&sanitized, query, 30);
@@ -206,15 +239,20 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str, latest_ch
     };
 
     // Determine if this message is on a fork (not on the latest chain)
-    let is_fork = latest_chain.map(|chain| {
-        m.message.as_ref()
-            .and_then(|msg| msg.uuid.as_deref())
-            .map(|uuid| !chain.contains(uuid))
-            .unwrap_or(false)
-    }).unwrap_or(false);
+    let is_fork = latest_chain
+        .map(|chain| {
+            m.message
+                .as_ref()
+                .and_then(|msg| msg.uuid.as_deref())
+                .map(|uuid| !chain.contains(uuid))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
 
     let style = if selected {
-        Style::default().fg(Color::Yellow).bg(Color::Rgb(75, 0, 130))
+        Style::default()
+            .fg(Color::Yellow)
+            .bg(Color::Rgb(75, 0, 130))
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -222,11 +260,12 @@ fn render_sub_match<'a>(m: &RipgrepMatch, selected: bool, query: &str, latest_ch
     let prefix = if selected { "    → " } else { "      " };
 
     // Build the line with styled spans
-    let mut spans = vec![
-        Span::styled(prefix, style),
-    ];
+    let mut spans = vec![Span::styled(prefix, style)];
     if is_fork {
-        spans.push(Span::styled("[fork] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            "[fork] ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
     }
     spans.push(Span::styled(role_str, role_style));
     spans.push(Span::raw(" "));
@@ -454,8 +493,11 @@ fn render_tree_mode(frame: &mut Frame, app: &App) {
         "Branch Tree".to_string()
     };
 
-    let header = Paragraph::new(title)
-        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+    let header = Paragraph::new(title).style(
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_widget(header, header_area);
 
     // Tree content
@@ -504,7 +546,9 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     let visible_height = area.height as usize;
-    let start = app.tree_scroll_offset.min(tree.rows.len().saturating_sub(1));
+    let start = app
+        .tree_scroll_offset
+        .min(tree.rows.len().saturating_sub(1));
     let end = (start + visible_height).min(tree.rows.len());
 
     let mut items: Vec<ListItem> = Vec::new();
@@ -529,9 +573,14 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         // Compaction events get special rendering
         if row.is_compaction {
             let compact_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Rgb(255, 140, 0)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(255, 140, 0))
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Rgb(255, 140, 0)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Rgb(255, 140, 0))
+                    .add_modifier(Modifier::BOLD)
             };
             spans.push(Span::styled("~", compact_style));
             spans.push(Span::raw(" "));
@@ -540,10 +589,7 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             spans.push(Span::styled(time_str, Style::default().fg(Color::DarkGray)));
             spans.push(Span::raw("  "));
 
-            spans.push(Span::styled(
-                "[COMPACT] ",
-                compact_style,
-            ));
+            spans.push(Span::styled("[COMPACT] ", compact_style));
 
             // ~(1) + space(1) + time(11) + spaces(2) + [COMPACT](10) = 25
             let prefix_width = graph_width + 25;
@@ -554,26 +600,35 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             // Regular message rendering
             // Role indicator
             let (role_char, role_style) = if row.role == "user" {
-                ("U", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                (
+                    "U",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
-                ("C", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                (
+                    "C",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             };
             spans.push(Span::styled(role_char, role_style));
             spans.push(Span::raw(" "));
 
             // Timestamp (compact)
             let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
-            spans.push(Span::styled(
-                time_str,
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(time_str, Style::default().fg(Color::DarkGray)));
             spans.push(Span::raw("  "));
 
             // Branch indicator
             let fork_width = if row.is_branch_point {
                 spans.push(Span::styled(
                     "[fork] ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 7
             } else {
@@ -642,7 +697,10 @@ fn render_tree_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 
     let mut lines = vec![
         Line::from(format!("Session: {}", tree.session_id)),
-        Line::from(format!("Date: {} | Role: {} | {}", date_str, row.role, chain_status)),
+        Line::from(format!(
+            "Date: {} | Role: {} | {}",
+            date_str, row.role, chain_status
+        )),
         Line::from(format!("UUID: {}", row.uuid)),
         Line::from("─".repeat(60)),
         Line::raw(""),
@@ -683,8 +741,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -883,8 +941,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -921,12 +979,15 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 branch: Some("main".to_string()),
                 line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+                uuid: None,
+                parent_uuid: None,
             };
 
             let m = RipgrepMatch {
-                file_path: format!("/path/to/projects/-Users-test-projects-app{}/session.jsonl", i),
+                file_path: format!(
+                    "/path/to/projects/-Users-test-projects-app{}/session.jsonl",
+                    i
+                ),
                 message: Some(msg),
                 source: SessionSource::ClaudeCodeCLI,
             };
@@ -974,8 +1035,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         // Create a small content message
@@ -986,8 +1047,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let large_match = RipgrepMatch {
@@ -1054,7 +1115,10 @@ mod tests {
                 line_content.push_str(cell.symbol());
             }
             let trimmed = line_content.trim();
-            if !trimmed.is_empty() && trimmed != "│" && !trimmed.chars().all(|c| c == '│' || c == ' ') {
+            if !trimmed.is_empty()
+                && trimmed != "│"
+                && !trimmed.chars().all(|c| c == '│' || c == ' ')
+            {
                 non_empty_lines_after_content += 1;
             }
         }
@@ -1076,10 +1140,16 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
 
         // Create messages with varying sizes: large, small, medium, tiny
-        let sizes = vec![
-            ("Large message with lots of content\n".repeat(50), "assistant"),
+        let sizes = [
+            (
+                "Large message with lots of content\n".repeat(50),
+                "assistant",
+            ),
             ("Tiny".to_string(), "user"),
-            ("Medium sized message with some content\n".repeat(10), "assistant"),
+            (
+                "Medium sized message with some content\n".repeat(10),
+                "assistant",
+            ),
             ("X".to_string(), "user"),
         ];
 
@@ -1181,8 +1251,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         // Small follow-up message (Cyrillic like in user's session)
@@ -1193,8 +1263,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         app.groups = vec![SessionGroup {
@@ -1251,7 +1321,10 @@ mod tests {
             let trimmed = line_content.trim();
 
             // Check if this line has content that looks like leftover from tool output
-            if trimmed.contains("android") || trimmed.contains("Exception") || trimmed.contains("12-11") {
+            if trimmed.contains("android")
+                || trimmed.contains("Exception")
+                || trimmed.contains("12-11")
+            {
                 panic!(
                     "Leftover content from large render on line {}: {:?}",
                     y, trimmed
@@ -1297,8 +1370,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let small_msg = Message {
@@ -1308,8 +1381,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         app.groups = vec![SessionGroup {
@@ -1369,8 +1442,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -1386,7 +1459,11 @@ mod tests {
         };
 
         let text = build_group_header_text(&group, false);
-        assert!(text.contains("[CLI]"), "Header should contain [CLI] indicator, got: {}", text);
+        assert!(
+            text.contains("[CLI]"),
+            "Header should contain [CLI] indicator, got: {}",
+            text
+        );
     }
 
     #[test]
@@ -1398,8 +1475,8 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+            uuid: None,
+            parent_uuid: None,
         };
 
         let m = RipgrepMatch {
@@ -1415,7 +1492,11 @@ mod tests {
         };
 
         let text = build_group_header_text(&group, false);
-        assert!(text.contains("[Desktop]"), "Header should contain [Desktop] indicator, got: {}", text);
+        assert!(
+            text.contains("[Desktop]"),
+            "Header should contain [Desktop] indicator, got: {}",
+            text
+        );
     }
 
     #[test]
@@ -1437,8 +1518,15 @@ mod tests {
             // Write 50 messages with some branches
             writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello start"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
             for i in 2..=40 {
-                let parent = if i == 21 { "u10".to_string() } else { format!("u{}", i - 1) }; // fork at u10
-                let content = format!("Message number {} with <xml-tag>some content</xml-tag> args>", i);
+                let parent = if i == 21 {
+                    "u10".to_string()
+                } else {
+                    format!("u{}", i - 1)
+                }; // fork at u10
+                let content = format!(
+                    "Message number {} with <xml-tag>some content</xml-tag> args>",
+                    i
+                );
                 writeln!(f, r#"{{"type":"{}","message":{{"role":"{}","content":[{{"type":"text","text":"{}"}}]}},"uuid":"u{}","parentUuid":"{}","sessionId":"s1","timestamp":"2025-01-01T00:{:02}:00Z"}}"#,
                     if i % 2 == 0 { "user" } else { "assistant" },
                     if i % 2 == 0 { "user" } else { "assistant" },

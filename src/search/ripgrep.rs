@@ -20,12 +20,20 @@ pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, Strin
 
 /// Search with explicit regex mode option (single path)
 #[cfg(test)]
-fn search_with_options(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+fn search_with_options(
+    query: &str,
+    search_path: &str,
+    use_regex: bool,
+) -> Result<Vec<RipgrepMatch>, String> {
     search_multiple_paths(query, &[search_path.to_string()], use_regex)
 }
 
 /// Search multiple paths with explicit regex mode option
-pub fn search_multiple_paths(query: &str, search_paths: &[String], use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+pub fn search_multiple_paths(
+    query: &str,
+    search_paths: &[String],
+    use_regex: bool,
+) -> Result<Vec<RipgrepMatch>, String> {
     let mut all_results = Vec::new();
 
     for search_path in search_paths {
@@ -46,11 +54,17 @@ pub fn search_multiple_paths(query: &str, search_paths: &[String], use_regex: bo
 }
 
 /// Search a single path
-fn search_single_path(query: &str, search_path: &str, use_regex: bool) -> Result<Vec<RipgrepMatch>, String> {
+fn search_single_path(
+    query: &str,
+    search_path: &str,
+    use_regex: bool,
+) -> Result<Vec<RipgrepMatch>, String> {
     let mut args = vec![
         "--json".to_string(),
-        "--glob".to_string(), "*.jsonl".to_string(),
-        "--max-count".to_string(), "1000".to_string(),
+        "--glob".to_string(),
+        "*.jsonl".to_string(),
+        "--max-count".to_string(),
+        "1000".to_string(),
     ];
 
     // Use fixed-strings for literal search, omit for regex
@@ -73,29 +87,24 @@ fn search_single_path(query: &str, search_path: &str, use_regex: bool) -> Result
 
     // Build matcher: regex or literal (case-insensitive)
     let regex_matcher = if use_regex {
-        RegexBuilder::new(query)
-            .case_insensitive(true)
-            .build()
-            .ok()
+        RegexBuilder::new(query).case_insensitive(true).build().ok()
     } else {
         None
     };
     let query_lower = query.to_lowercase();
 
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            if let Some(m) = parse_ripgrep_json(&line) {
-                // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
-                // This filters out false positives where query matched file path or metadata
-                if let Some(ref msg) = m.message {
-                    let matches = if let Some(ref re) = regex_matcher {
-                        re.is_match(&msg.content)
-                    } else {
-                        msg.content.to_lowercase().contains(&query_lower)
-                    };
-                    if matches {
-                        results.push(m);
-                    }
+    for line in reader.lines().map_while(Result::ok) {
+        if let Some(m) = parse_ripgrep_json(&line) {
+            // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
+            // This filters out false positives where query matched file path or metadata
+            if let Some(ref msg) = m.message {
+                let matches = if let Some(ref re) = regex_matcher {
+                    re.is_match(&msg.content)
+                } else {
+                    msg.content.to_lowercase().contains(&query_lower)
+                };
+                if matches {
+                    results.push(m);
                 }
             }
         }
@@ -123,7 +132,11 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let message = Message::from_jsonl(line_text.trim(), line_number);
     let source = SessionSource::from_path(&file_path);
 
-    Some(RipgrepMatch { file_path, message, source })
+    Some(RipgrepMatch {
+        file_path,
+        message,
+        source,
+    })
 }
 
 /// Extract project/session name from file path
@@ -134,7 +147,7 @@ pub fn extract_project_from_path(path: &str) -> String {
     // Check for Desktop session name in path (e.g., -sessions-wizardly-vibrant-dirac)
     if let Some(sessions_idx) = path.find("-sessions-") {
         let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
-        // Get the name (before the next /)
+                                                         // Get the name (before the next /)
         let name = after_sessions.split('/').next().unwrap_or("");
         if !name.is_empty() {
             return name.to_string();
@@ -220,8 +233,8 @@ pub fn sanitize_content(content: &str) -> String {
                 // CSI sequence: ESC [ ... (letter)
                 Some(&'[') => {
                     chars.next(); // consume '['
-                    // Skip until we hit a letter (the terminator)
-                    // This handles colors, cursor movement, etc.
+                                  // Skip until we hit a letter (the terminator)
+                                  // This handles colors, cursor movement, etc.
                     while let Some(&next) = chars.peek() {
                         chars.next();
                         if next.is_ascii_alphabetic() {
@@ -232,7 +245,7 @@ pub fn sanitize_content(content: &str) -> String {
                 // OSC sequence: ESC ] ... (BEL or ESC \)
                 Some(&']') => {
                     chars.next(); // consume ']'
-                    // Skip until BEL (\x07) or ST (ESC \)
+                                  // Skip until BEL (\x07) or ST (ESC \)
                     while let Some(next) = chars.next() {
                         if next == '\x07' {
                             break; // BEL terminator
@@ -353,8 +366,8 @@ mod tests {
 
         create_test_session(&temp_dir, "session.jsonl", session_content);
 
-        let results = search("Hello", temp_dir.path().to_str().unwrap())
-            .expect("Search should succeed");
+        let results =
+            search("Hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
 
         assert!(!results.is_empty(), "Should find matches");
         assert!(results.iter().any(|r| r.message.is_some()));
@@ -383,10 +396,13 @@ mod tests {
         create_test_session(&temp_dir, "session.jsonl", session_content);
 
         // Search for sessionId which appears in metadata but NOT in message content
-        let results = search("abc123", temp_dir.path().to_str().unwrap())
-            .expect("Search should succeed");
+        let results =
+            search("abc123", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
 
-        assert!(results.is_empty(), "Should NOT match sessionId, only message content");
+        assert!(
+            results.is_empty(),
+            "Should NOT match sessionId, only message content"
+        );
     }
 
     #[test]
@@ -398,14 +414,20 @@ mod tests {
         create_test_session(&temp_dir, "session.jsonl", session_content);
 
         // Search for "adb" - should NOT match because it's only in sessionId
-        let adb_results = search("adb", temp_dir.path().to_str().unwrap())
-            .expect("Search should succeed");
-        assert!(adb_results.is_empty(), "Should NOT match 'adb' in sessionId");
+        let adb_results =
+            search("adb", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+        assert!(
+            adb_results.is_empty(),
+            "Should NOT match 'adb' in sessionId"
+        );
 
         // Search for "warmup" - should match because it's in content
-        let warmup_results = search("warmup", temp_dir.path().to_str().unwrap())
-            .expect("Search should succeed");
-        assert!(!warmup_results.is_empty(), "Should match 'warmup' in content");
+        let warmup_results =
+            search("warmup", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+        assert!(
+            !warmup_results.is_empty(),
+            "Should match 'warmup' in content"
+        );
     }
 
     #[test]
@@ -493,7 +515,10 @@ mod tests {
 
         let context = extract_context(content, "hello", 10);
 
-        assert!(context.to_lowercase().contains("hello"), "Should find case-insensitive");
+        assert!(
+            context.to_lowercase().contains("hello"),
+            "Should find case-insensitive"
+        );
     }
 
     #[test]
@@ -502,7 +527,10 @@ mod tests {
 
         let context = extract_context(content, "Preview", 5);
 
-        assert!(context.contains("Preview"), "Should find match in Cyrillic text");
+        assert!(
+            context.contains("Preview"),
+            "Should find match in Cyrillic text"
+        );
         // Should not panic on UTF-8 boundaries
     }
 
