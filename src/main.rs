@@ -1,3 +1,4 @@
+use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -11,6 +12,38 @@ use ratatui::prelude::*;
 use std::io::{self, stdout};
 use std::time::Duration;
 
+#[derive(Parser)]
+#[command(name = "ccs", about = "Claude Code Session Search")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Enter tree mode for a session file or ID
+    #[arg(long)]
+    tree: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Search across Claude Code sessions
+    Search {
+        /// Search query
+        query: String,
+        /// Use regex search
+        #[arg(long)]
+        regex: bool,
+        /// Maximum number of results
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+    /// List all Claude Code sessions
+    List {
+        /// Maximum number of results
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+}
+
 fn main() -> io::Result<()> {
     // Set panic hook to restore terminal on unexpected crashes
     let original_hook = std::panic::take_hook();
@@ -20,47 +53,26 @@ fn main() -> io::Result<()> {
         original_hook(info);
     }));
 
-    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
 
-    // CLI subcommands: search, list
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "search" => {
-                let query = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
-                    eprintln!("Usage: ccs search <query> [--regex] [--limit N]");
-                    std::process::exit(1);
-                });
-                let use_regex = args.iter().any(|a| a == "--regex");
-                let limit = args
-                    .iter()
-                    .position(|a| a == "--limit")
-                    .and_then(|i| args.get(i + 1))
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(100);
-                ccs::cli::cli_search(query, &ccs::get_search_paths(), use_regex, limit);
-                return Ok(());
-            }
-            "list" => {
-                let limit = args
-                    .iter()
-                    .position(|a| a == "--limit")
-                    .and_then(|i| args.get(i + 1))
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(50);
-                ccs::cli::cli_list(&ccs::get_search_paths(), limit);
-                return Ok(());
-            }
-            _ => {}
+    // Handle CLI subcommands
+    match cli.command {
+        Some(Commands::Search {
+            query,
+            regex,
+            limit,
+        }) => {
+            ccs::cli::cli_search(&query, &ccs::get_search_paths(), regex, limit);
+            return Ok(());
         }
+        Some(Commands::List { limit }) => {
+            ccs::cli::cli_list(&ccs::get_search_paths(), limit);
+            return Ok(());
+        }
+        None => {}
     }
 
-    // Parse TUI-specific args
-    let tree_target = if let Some(pos) = args.iter().position(|a| a == "--tree") {
-        args.get(pos + 1).cloned()
-    } else {
-        None
-    };
-
+    // TUI mode
     let search_paths = ccs::get_search_paths();
 
     // Initialize terminal with proper setup
@@ -78,7 +90,7 @@ fn main() -> io::Result<()> {
     let mut app = ccs::tui::App::new(search_paths);
 
     // Enter tree mode if --tree flag was provided
-    if let Some(target) = tree_target {
+    if let Some(target) = cli.tree {
         app.enter_tree_mode_direct(&target);
     }
 
