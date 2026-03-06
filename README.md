@@ -45,9 +45,44 @@ cargo build --release
 # Binary will be at target/release/ccs
 ```
 
+## Architecture
+
+```
+src/
+├── lib.rs              # Crate root — re-exports all modules
+├── main.rs             # CLI entry point (clap) + TUI event loop
+├── cli.rs              # Non-interactive search/list commands (JSONL output)
+├── session.rs          # Shared JSONL parsing primitives (timestamps, UUIDs, sources)
+├── search/             # Ripgrep integration, message parsing, result grouping
+├── tree/               # Session DAG parsing, branch detection, flattened tree rows
+├── resume/
+│   ├── path_codec.rs   # Claude path encoding/decoding + filesystem walking
+│   ├── fork.rs         # Branch chain detection + fork file creation
+│   └── launcher.rs     # Process launching (exec on Unix, spawn on Windows)
+└── tui/
+    ├── state.rs         # App struct, constructor, input/cursor methods, tick loop
+    ├── search_mode.rs   # Search navigation, enter, toggle, search orchestration
+    ├── tree_mode.rs     # Tree mode enter/exit, navigation, file lookup
+    ├── render_search.rs # Search & preview rendering
+    └── render_tree.rs   # Tree mode rendering
+
+tests/
+├── fixtures/           # Representative JSONL session files
+├── cli_search.rs       # Integration tests for `ccs search`
+├── cli_list.rs         # Integration tests for `ccs list`
+├── tree_parsing.rs     # Tree parsing via library API
+└── render_snapshots.rs # TUI render state verification
+```
+
 ## Testing
 
 ```bash
+# Run all tests
+cargo test
+
+# Quality checks (same as CI)
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
