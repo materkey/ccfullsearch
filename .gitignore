@@ -1,3 +1,18 @@
-/target
-.omc/
+# Build artifacts
+/target/
+dist/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+.omc/
+*.swp
+*~
+
+# Environment
+.env
+.env.local
