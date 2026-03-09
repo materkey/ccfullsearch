@@ -17,33 +17,35 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 - **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
 - **Cross-platform** — supports both Claude Code CLI (`~/.claude/projects`) and Claude Desktop sessions
 
-## Requirements
-
-- [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) must be installed and available in `PATH`
-- Rust 1.70+
-
 ## Installation
 
-```bash
-cargo install --path .
-```
-
-This installs the `ccs` binary to `~/.cargo/bin/`. Make sure it's in your `PATH`:
+### Homebrew (macOS/Linux)
 
 ```bash
-# fish shell (one-time, persists automatically)
-fish_add_path ~/.cargo/bin
-
-# bash/zsh (add to ~/.bashrc or ~/.zshrc)
-export PATH="$HOME/.cargo/bin:$PATH"
+brew install materkey/ccs/ccs
 ```
 
-Or build manually:
+### Shell installer (macOS/Linux)
 
 ```bash
-cargo build --release
-# Binary will be at target/release/ccs
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/materkey/ccfullsearch/releases/latest/download/ccfullsearch-installer.sh | sh
 ```
+
+### Cargo
+
+```bash
+cargo install ccfullsearch --locked
+```
+
+### Cargo binstall
+
+```bash
+cargo binstall ccfullsearch
+```
+
+### Requirements
+
+[ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) must be installed and available in `PATH`. The Homebrew formula installs it automatically.
 
 ## Architecture
 
