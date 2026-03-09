@@ -152,6 +152,19 @@ cp -r skill ~/.claude/skills/claude-session-search
 
 Then Claude will use `ccs` when you ask things like "find where we discussed docker" or "list my recent sessions".
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml`
+2. Commit and push to `main`
+3. Publish to crates.io: `cargo publish`
+4. Tag and push: `git tag v<VERSION> && git push origin v<VERSION>`
+
+The tag push triggers [cargo-dist](https://github.com/axodotdev/cargo-dist) which:
+- Builds binaries for macOS (arm64/x86_64) and Linux (gnu/musl, arm64/x86_64)
+- Creates tar.gz archives with SHA256 checksums
+- Publishes a GitHub Release with all artifacts
+- Updates the Homebrew formula in [materkey/homebrew-ccs](https://github.com/materkey/homebrew-ccs)
+
 ## How it works
 
 1. Searches JSONL session files using `ripgrep` for speed
