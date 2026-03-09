@@ -13,7 +13,7 @@ use std::io::{self, stdout};
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "ccs", about = "Claude Code Session Search")]
+#[command(name = "ccs", about = "Claude Code Session Search", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

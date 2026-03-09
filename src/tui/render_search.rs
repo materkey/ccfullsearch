@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     // Header
-    let header = Paragraph::new("Claude Code Session Search").style(
+    let header = Paragraph::new(format!("Claude Code Session Search v{}", env!("CARGO_PKG_VERSION"))).style(
         Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
