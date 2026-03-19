@@ -34,31 +34,31 @@
 
 TDD: write tests that assert the correct behavior BEFORE fixing the code.
 
-- [ ] Add test `test_clear_input_clears_results_and_groups` — set up `App` with non-empty `results`, `groups`, `results_query`, call `clear_input()`, assert all three are empty
-- [ ] Add test `test_tick_clears_state_when_query_becomes_empty` — set up `App` with `input=""`, `last_query="hello"`, non-empty `results`/`groups`/`results_query`, simulate debounce expiry via `tick()`, assert results/groups/results_query are cleared
-- [ ] Run tests — expected: both new tests FAIL (confirms bug exists)
+- [x] Add test `test_clear_input_clears_results_and_groups` — set up `App` with non-empty `results`, `groups`, `results_query`, call `clear_input()`, assert all three are empty
+- [x] Add test `test_tick_clears_state_when_query_becomes_empty` — set up `App` with `input=""`, `last_query="hello"`, non-empty `results`/`groups`/`results_query`, simulate debounce expiry via `tick()`, assert results/groups/results_query are cleared
+- [x] Run tests — expected: both new tests FAIL (confirms bug exists)
 
 ### Task 2: Fix `clear_input()` to reset result state
 
 Fix the explicit clear path (Ctrl-C / Escape).
 
-- [ ] In `src/tui/state.rs:clear_input()` (line 194), add: `self.results.clear()`, `self.groups.clear()`, `self.results_query.clear()`, reset `self.group_cursor = 0`, `self.sub_cursor = 0`, `self.expanded = false`
-- [ ] Run tests — `test_clear_input_clears_results_and_groups` must now PASS
+- [x] In `src/tui/state.rs:clear_input()` (line 194), add: `self.results.clear()`, `self.groups.clear()`, `self.results_query.clear()`, reset `self.group_cursor = 0`, `self.sub_cursor = 0`, `self.expanded = false`
+- [x] Run tests — `test_clear_input_clears_results_and_groups` must now PASS
 
 ### Task 3: Fix debounce `tick()` to handle empty query transition
 
 Fix the gradual-backspace path.
 
-- [ ] In `src/tui/state.rs:tick()` (line 320), change the debounce condition to also handle empty input: when `query_changed` is true and `self.input.is_empty()`, clear `results`, `groups`, `results_query`, update `last_query` to empty, reset cursors — instead of calling `start_search()`
-- [ ] Run tests — `test_tick_clears_state_when_query_becomes_empty` must now PASS
+- [x] In `src/tui/state.rs:tick()` (line 320), change the debounce condition to also handle empty input: when `query_changed` is true and `self.input.is_empty()`, clear `results`, `groups`, `results_query`, update `last_query` to empty, reset cursors — instead of calling `start_search()`
+- [x] Run tests — `test_tick_clears_state_when_query_becomes_empty` must now PASS
 
 ### Task 4: Verify acceptance criteria
-- [ ] Verify: backspace-to-empty clears all results and shows idle state
-- [ ] Verify: Ctrl-C/Escape clears all results and shows idle state
-- [ ] Verify: typing a new query after clearing still works (debounce → search → results)
-- [ ] Run full test suite (`cargo test`)
-- [ ] Run linter (`cargo clippy --all-targets --all-features -- -D warnings`)
-- [ ] Run formatter check (`cargo fmt --check`)
+- [x] Verify: backspace-to-empty clears all results and shows idle state
+- [x] Verify: Ctrl-C/Escape clears all results and shows idle state
+- [x] Verify: typing a new query after clearing still works (debounce → search → results)
+- [x] Run full test suite (`cargo test`)
+- [x] Run linter (`cargo clippy --all-targets --all-features -- -D warnings`)
+- [x] Run formatter check (`cargo fmt --check`)
 
 ## Technical Details
 

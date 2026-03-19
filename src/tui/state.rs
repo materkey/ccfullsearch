@@ -190,14 +190,29 @@ impl App {
         }
     }
 
+    /// Reset all search result state to idle (no results, no error, no status).
+    /// Shared by `clear_input()` (Ctrl-C) and `tick()` (backspace-to-empty).
+    fn reset_search_state(&mut self) {
+        self.last_query.clear();
+        self.results.clear();
+        self.groups.clear();
+        self.results_query.clear();
+        self.group_cursor = 0;
+        self.sub_cursor = 0;
+        self.expanded = false;
+        self.preview_mode = false;
+        self.latest_chains.clear();
+        self.searching = false;
+        self.error = None;
+    }
+
     /// Clear input and reset search state (Ctrl-C behavior)
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_pos = 0;
         self.typing = false;
         self.last_keystroke = None;
-        self.searching = false;
-        self.last_query.clear();
+        self.reset_search_state();
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -317,7 +332,11 @@ impl App {
                 let query_changed = self.input != self.last_query;
                 let mode_changed = self.regex_mode != self.last_regex_mode;
                 let scope_changed = self.search_paths != self.last_search_paths;
-                if !self.input.is_empty() && (query_changed || mode_changed || scope_changed) {
+                if query_changed && self.input.is_empty() {
+                    // User backspaced to empty — reset to idle state
+                    self.reset_search_state();
+                } else if !self.input.is_empty() && (query_changed || mode_changed || scope_changed)
+                {
                     self.start_search();
                 }
             }
@@ -416,19 +435,56 @@ mod tests {
     fn test_clear_input_resets_state() {
         let mut app = App::new(vec!["/test".to_string()]);
 
-        // Simulate typing a query
-        app.on_key('h');
-        app.on_key('i');
-        app.last_query = "hi".to_string();
+        // Set up state as if a search has completed
+        app.input = "hello".to_string();
+        app.cursor_pos = 5;
+        app.last_query = "hello".to_string();
+        app.results_query = "hello".to_string();
+        app.results = vec![RipgrepMatch {
+            file_path: "/test/file.jsonl".to_string(),
+            message: None,
+            source: SessionSource::ClaudeCodeCLI,
+        }];
+        app.groups = vec![SessionGroup {
+            session_id: "abc123".to_string(),
+            file_path: "/test/file.jsonl".to_string(),
+            matches: vec![],
+        }];
+        app.group_cursor = 1;
+        app.sub_cursor = 2;
+        app.expanded = true;
         app.searching = true;
+        app.typing = true;
+        app.last_keystroke = Some(Instant::now());
+        app.latest_chains.insert("file".to_string(), HashSet::new());
+        app.error = Some("stale error".to_string());
+        app.preview_mode = true;
 
         app.clear_input();
 
-        assert!(app.input.is_empty());
-        assert!(!app.typing);
-        assert!(app.last_keystroke.is_none());
-        assert!(!app.searching);
-        assert!(app.last_query.is_empty());
+        assert!(app.input.is_empty(), "input should be cleared");
+        assert!(!app.typing, "typing should be false");
+        assert!(
+            app.last_keystroke.is_none(),
+            "last_keystroke should be None"
+        );
+        assert!(!app.searching, "searching should be false");
+        assert!(app.last_query.is_empty(), "last_query should be cleared");
+        assert!(app.results.is_empty(), "results should be cleared");
+        assert!(app.groups.is_empty(), "groups should be cleared");
+        assert!(
+            app.results_query.is_empty(),
+            "results_query should be cleared"
+        );
+        assert_eq!(app.group_cursor, 0, "group_cursor should be reset");
+        assert_eq!(app.sub_cursor, 0, "sub_cursor should be reset");
+        assert!(!app.expanded, "expanded should be reset");
+        assert!(
+            app.latest_chains.is_empty(),
+            "latest_chains should be cleared"
+        );
+        assert!(app.error.is_none(), "error should be cleared");
+        assert!(!app.preview_mode, "preview_mode should be reset");
     }
 
     #[test]
@@ -654,6 +710,67 @@ mod tests {
         app.delete_word_right();
         assert_eq!(app.input, "hello");
         assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_tick_clears_state_when_query_becomes_empty() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        // Simulate: user had typed "hello", search completed, then backspaced to empty
+        app.input = String::new(); // empty — user backspaced everything
+        app.last_query = "hello".to_string(); // previous query that produced results
+        app.results_query = "hello".to_string();
+        app.results = vec![RipgrepMatch {
+            file_path: "/test/file.jsonl".to_string(),
+            message: None,
+            source: SessionSource::ClaudeCodeCLI,
+        }];
+        app.groups = vec![SessionGroup {
+            session_id: "abc123".to_string(),
+            file_path: "/test/file.jsonl".to_string(),
+            matches: vec![],
+        }];
+        app.group_cursor = 1;
+        app.sub_cursor = 2;
+        app.expanded = true;
+        app.searching = true;
+        app.latest_chains.insert("file".to_string(), HashSet::new());
+        app.error = Some("stale error".to_string());
+        app.preview_mode = true;
+
+        // Set debounce to fire: last keystroke was > DEBOUNCE_MS ago
+        app.last_keystroke = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS + 50));
+        app.typing = true;
+
+        app.tick();
+
+        assert!(
+            app.results.is_empty(),
+            "results should be cleared after tick with empty query"
+        );
+        assert!(
+            app.groups.is_empty(),
+            "groups should be cleared after tick with empty query"
+        );
+        assert!(
+            app.results_query.is_empty(),
+            "results_query should be cleared after tick with empty query"
+        );
+        assert!(
+            app.last_query.is_empty(),
+            "last_query should be updated to empty"
+        );
+        assert_eq!(app.group_cursor, 0, "group_cursor should be reset");
+        assert_eq!(app.sub_cursor, 0, "sub_cursor should be reset");
+        assert!(!app.expanded, "expanded should be reset");
+        assert!(!app.typing, "typing should be false after debounce");
+        assert!(!app.searching, "searching should be false");
+        assert!(
+            app.latest_chains.is_empty(),
+            "latest_chains should be cleared"
+        );
+        assert!(app.error.is_none(), "error should be cleared");
+        assert!(!app.preview_mode, "preview_mode should be reset");
     }
 
     #[test]
