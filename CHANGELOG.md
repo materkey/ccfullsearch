@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 - 2026-03-20
+
+### Fixed
+- Fix stale search results remaining visible when query is deleted to empty
+
 ## v0.4.0 - 2026-03-09
 
 ### New Features
