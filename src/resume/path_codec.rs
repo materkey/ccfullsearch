@@ -68,14 +68,31 @@ fn walk_fs_recursive(
     None
 }
 
+/// Find the Claude project directory from a session file path.
+/// For regular sessions: `.claude/projects/<encoded-dir>/session.jsonl`
+/// For subagent sessions: `.claude/projects/<encoded-dir>/<session-id>/subagents/agent.jsonl`
+/// Returns the `<encoded-dir>` component name.
+fn find_project_dir_name(file_path: &str) -> Option<String> {
+    let path = Path::new(file_path);
+    // Walk up ancestors to find the directory directly under .claude/projects/
+    for ancestor in path.ancestors() {
+        if let Some(parent) = ancestor.parent() {
+            if parent.ends_with(".claude/projects") {
+                return ancestor.file_name()?.to_str().map(|s| s.to_string());
+            }
+        }
+    }
+    // Fallback: use immediate parent (original behavior)
+    path.parent()?.file_name()?.to_str().map(|s| s.to_string())
+}
+
 /// Decode the original project path from the .claude/projects folder name.
 /// First tries walking the filesystem to find the exact directory (handles ambiguous
 /// encodings like spaces, parentheses, dots all becoming `-`).
 /// Falls back to naive string-based decoding.
 pub fn decode_project_path(file_path: &str) -> Option<String> {
-    let path = Path::new(file_path);
-    let claude_project_dir = path.parent()?;
-    let dir_name = claude_project_dir.file_name()?.to_str()?;
+    let dir_name = find_project_dir_name(file_path)?;
+    let dir_name = dir_name.as_str();
 
     // Strategy 1: Walk the filesystem to find the exact matching path.
     let remaining = dir_name.strip_prefix('-').unwrap_or(dir_name);
@@ -241,6 +258,31 @@ mod tests {
         assert!(result.is_some());
         let found = result.unwrap();
         assert!(found == dashed.to_string_lossy() || found == nested.to_string_lossy());
+    }
+
+    #[test]
+    fn test_find_project_dir_name_regular_session() {
+        let path = "/Users/user/.claude/projects/-Users-user-projects-myapp/session.jsonl";
+        assert_eq!(
+            find_project_dir_name(path),
+            Some("-Users-user-projects-myapp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_project_dir_name_subagent_session() {
+        let path = "/Users/user/.claude/projects/-Users-user-projects-myapp/abc-123/subagents/agent-xyz.jsonl";
+        assert_eq!(
+            find_project_dir_name(path),
+            Some("-Users-user-projects-myapp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_decode_project_path_subagent_session() {
+        let file_path = "/fake/.claude/projects/-Users-user-projects-myapp/dffd4ad8-c1bc-459d/subagents/agent-a65efef89f277db1a.jsonl";
+        let result = decode_project_path(file_path);
+        assert_eq!(result, Some("/Users/user/projects/myapp".to_string()));
     }
 
     #[test]
