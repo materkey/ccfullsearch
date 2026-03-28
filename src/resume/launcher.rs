@@ -9,7 +9,6 @@ use std::path::Path;
 use std::process::Command;
 
 const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
-const SYNTHETIC_VERSION: &str = "2.1.85";
 
 /// Session metadata extracted from a single JSONL parse pass.
 struct SessionAnalysis {
@@ -255,7 +254,6 @@ fn create_linear_session(file_path: &str) -> Result<(String, String), String> {
         let new_uuid = uuid::Uuid::new_v4().to_string();
         json["uuid"] = serde_json::Value::String(new_uuid.clone());
         json["sessionId"] = serde_json::Value::String(new_id.clone());
-        json["version"] = serde_json::Value::String(SYNTHETIC_VERSION.to_string());
         json["isSidechain"] = serde_json::Value::Bool(false);
 
         if let Some(ref parent) = prev_uuid {
