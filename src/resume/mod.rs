@@ -63,7 +63,7 @@ fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String)
     (session_id.to_string(), file_path.to_string())
 }
 
-/// Resolve the correct session ID and file path for resume (public for integration tests).
+#[doc(hidden)]
 pub fn test_resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
     resolve_parent_session(session_id, file_path)
 }
