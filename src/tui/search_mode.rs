@@ -57,7 +57,9 @@ impl App {
     }
 
     pub fn on_right(&mut self) {
-        if !self.groups.is_empty() && self.group_cursor < self.groups.len() {
+        if self.cursor_pos < self.input.len() {
+            self.move_cursor_right();
+        } else if !self.groups.is_empty() && self.group_cursor < self.groups.len() {
             self.expanded = true;
             // Precompute latest chain for the expanded group (for fork indicator)
             if let Some(group) = self.groups.get(self.group_cursor) {
@@ -74,8 +76,12 @@ impl App {
     }
 
     pub fn on_left(&mut self) {
-        self.expanded = false;
-        self.sub_cursor = 0;
+        if self.cursor_pos > 0 {
+            self.move_cursor_left();
+        } else {
+            self.expanded = false;
+            self.sub_cursor = 0;
+        }
     }
 
     pub fn on_tab(&mut self) {
