@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.0 - 2026-03-30
+
+### New Features
+- Show recent sessions on TUI startup so session browsing works before typing a query
+- Detect and filter automated sessions in both recent-session and search views, including scheduled-task runs
+- Add `ccs update` for self-updating installed builds
+
+### Changed
+- Add Left/Right cursor movement in the search input
+- Simplify resume analysis and session metadata extraction to better handle compacted transcripts
+
+### Fixed
+- Resume and branch handling for subagent, auxiliary, compacted, and non-latest sessions
+- Recent-session summaries and automation metadata for malformed tails, older sessions, and abandoned branches
+- Project/path display and filtering edge cases, including sibling-project prefix collisions and non-message UUID records
+
 ## v0.5.0 - 2026-03-20
 
 ### Fixed
