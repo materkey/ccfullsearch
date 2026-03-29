@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**ccfullsearch** (`ccs`) — a TUI and CLI tool for searching and browsing Claude Code CLI and Claude Desktop session history. Built in Rust with ratatui (TUI), ripgrep (search), crossterm (terminal), and clap (CLI parsing). Requires `rg` (ripgrep) in PATH at runtime.
+**ccfullsearch** (`ccs`) — a TUI and CLI tool for searching and browsing Claude Code CLI and Claude Desktop session history. Built in Rust with ratatui (TUI), ripgrep (search), crossterm (terminal), clap (CLI parsing), and rayon (parallelism). Requires `rg` (ripgrep) in PATH at runtime.
 
 ## Build & Development Commands
 
@@ -14,6 +14,8 @@ cargo build --release          # Release build
 cargo run                      # Run TUI mode
 cargo run -- search "query"    # CLI search subcommand
 cargo run -- list              # List all sessions
+cargo run -- update            # Self-update to latest release
+cargo run -- --tree <file|id>  # Open tree mode directly for a session
 
 cargo fmt --check              # Check formatting
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
@@ -32,7 +34,10 @@ src/
 ├── lib.rs            # Module re-exports + get_search_paths()
 ├── cli.rs            # Non-interactive subcommands (search, list)
 ├── session.rs        # SessionSource enum (ClaudeCodeCLI | ClaudeDesktop), shared field extractors
+├── recent.rs         # RecentSession struct, parallel scanning (rayon), summary extraction from JSONL
+├── update.rs         # Self-update: GitHub release download, Homebrew detection, version comparison
 ├── search/
+│   ├── mod.rs        # Module re-exports for search API surface
 │   ├── ripgrep.rs    # Spawns `rg --json`, parses matches, post-filters content, extracts project names
 │   ├── message.rs    # Parses JSONL lines into Message structs, extracts content from block arrays
 │   └── group.rs      # Groups RipgrepMatch by session_id, sorts by timestamp
@@ -44,10 +49,10 @@ src/
 │   ├── fork.rs       # Creates forked JSONL files for branch-aware resume
 │   └── launcher.rs   # Process exec (Unix) / spawn (Windows)
 └── tui/
-    ├── state.rs      # App struct, debounced async search (300ms), MPSC channels
-    ├── search_mode.rs# Search navigation, filtering, input handling
+    ├── state.rs      # App struct, debounced async search (300ms), MPSC channels, recent sessions loader
+    ├── search_mode.rs# Search navigation, filtering, input handling, recent sessions navigation
     ├── tree_mode.rs  # Tree mode enter/exit, DAG navigation
-    ├── render_search.rs # Search results + preview rendering
+    ├── render_search.rs # Search results + preview rendering + recent sessions empty state
     └── render_tree.rs   # Tree DAG rendering with graph symbols
 ```
 
@@ -56,6 +61,7 @@ src/
 1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc
 2. **Tree mode**: Load full JSONL file → build DAG from `uuid`/`parentUuid` links → detect latest chain (walk backward from last uuid) → mark branch points (nodes with >1 child) → flatten to `TreeRow` list
 3. **Resume**: On Enter, find `claude` binary via `which` → if selected message is NOT on latest chain, create a forked JSONL file (trace branch to root, write subset) → exec/spawn `claude --resume <session-id>`
+4. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*`) → sort by mtime → take top 50 → rayon parallel extract first user message as summary → sort by timestamp desc → send via mpsc to TUI → render in empty-state view
 
 ### Dual format support
 

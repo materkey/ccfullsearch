@@ -1,4 +1,5 @@
 use super::RipgrepMatch;
+use crate::session;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -8,6 +9,7 @@ pub struct SessionGroup {
     pub session_id: String,
     pub file_path: String,
     pub matches: Vec<RipgrepMatch>,
+    pub automation: Option<String>,
 }
 
 impl SessionGroup {
@@ -52,15 +54,19 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
                     session_id,
                     file_path: m.file_path.clone(),
                     matches: vec![m],
+                    automation: None,
                 },
             );
         }
     }
 
-    // Convert to vec and sort matches within each group (newest first)
+    // Convert to vec, detect automation from matched user messages, and sort matches within
+    // each group (newest first).
     let mut groups: Vec<SessionGroup> = group_map.into_values().collect();
 
     for group in &mut groups {
+        group.automation = detect_automation_from_matches(&group.matches);
+
         group.matches.sort_by(|a, b| {
             let ta = a.message.as_ref().map(|m| m.timestamp);
             let tb = b.message.as_ref().map(|m| m.timestamp);
@@ -78,11 +84,24 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
     groups
 }
 
+fn detect_automation_from_matches(matches: &[RipgrepMatch]) -> Option<String> {
+    matches.iter().find_map(|m| {
+        let msg = m.message.as_ref()?;
+        if msg.role != "user" {
+            return None;
+        }
+        session::detect_automation(&msg.content).map(|tool| tool.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::search::{Message, SessionSource};
     use chrono::TimeZone;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::TempDir;
 
     fn make_match(session_id: &str, timestamp_mins: i64) -> RipgrepMatch {
         RipgrepMatch {
@@ -206,6 +225,7 @@ mod tests {
                 make_match("test", 30), // latest
                 make_match("test", 15),
             ],
+            automation: None,
         };
 
         let latest = group.latest_timestamp();
@@ -221,6 +241,7 @@ mod tests {
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![make_match("test", 0), make_match("test", 1)],
+            automation: None,
         };
 
         let first = group.first_match();
@@ -238,11 +259,164 @@ mod tests {
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![],
+            automation: None,
         };
 
         let first = group.first_match();
 
         assert!(first.is_none());
+    }
+
+    fn make_match_with_content(
+        session_id: &str,
+        role: &str,
+        content: &str,
+        timestamp_mins: i64,
+    ) -> RipgrepMatch {
+        RipgrepMatch {
+            file_path: format!("/path/to/{}.jsonl", session_id),
+            message: Some(Message {
+                session_id: session_id.to_string(),
+                role: role.to_string(),
+                content: content.to_string(),
+                timestamp: Utc
+                    .with_ymd_and_hms(2025, 1, 9, 10, timestamp_mins as u32, 0)
+                    .unwrap(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        }
+    }
+
+    #[test]
+    fn test_group_detects_ralphex_automation() {
+        let results = vec![
+            make_match_with_content(
+                "rx-session",
+                "user",
+                "Do task. Output <<<RALPHEX:ALL_TASKS_DONE>>>",
+                0,
+            ),
+            make_match_with_content("rx-session", "assistant", "Working on it.", 1),
+        ];
+
+        let groups = group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].automation, Some("ralphex".to_string()));
+    }
+
+    #[test]
+    fn test_group_manual_session_no_automation() {
+        let results = vec![
+            make_match_with_content("manual-session", "user", "How do I sort a list?", 0),
+            make_match_with_content("manual-session", "assistant", "Use sorted()", 1),
+        ];
+
+        let groups = group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].automation, None);
+    }
+
+    #[test]
+    fn test_group_marker_in_assistant_not_detected() {
+        let results = vec![
+            make_match_with_content("chat-session", "user", "Tell me about ralphex", 0),
+            make_match_with_content(
+                "chat-session",
+                "assistant",
+                "Ralphex uses <<<RALPHEX:ALL_TASKS_DONE>>> signals",
+                1,
+            ),
+        ];
+
+        let groups = group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].automation, None);
+    }
+
+    #[test]
+    fn test_group_does_not_scan_session_file_when_hits_miss_marker() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+
+        writeln!(
+            f,
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Bootstrap <<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"auto-session","timestamp":"2025-01-09T10:00:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Later answer"}}]}},"sessionId":"auto-session","timestamp":"2025-01-09T10:01:00Z"}}"#
+        )
+        .unwrap();
+
+        let results = vec![RipgrepMatch {
+            file_path: path.to_string_lossy().to_string(),
+            message: Some(Message {
+                session_id: "auto-session".to_string(),
+                role: "assistant".to_string(),
+                content: "Later answer".to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
+                branch: None,
+                line_number: 2,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        }];
+
+        let groups = group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].automation, None);
+    }
+
+    #[test]
+    fn test_group_does_not_scan_parent_session_when_hit_is_auxiliary_file() {
+        let dir = TempDir::new().unwrap();
+        let parent_path = dir.path().join("auto-session.jsonl");
+        let aux_path = dir.path().join("agent-abc123.jsonl");
+
+        fs::write(
+            &parent_path,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Bootstrap <<<RALPHEX:ALL_TASKS_DONE>>>"}]},"sessionId":"auto-session","timestamp":"2025-01-09T10:00:00Z"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Parent answer"}]},"sessionId":"auto-session","timestamp":"2025-01-09T10:01:00Z"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &aux_path,
+            concat!(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Auxiliary answer"}]},"sessionId":"auto-session","timestamp":"2025-01-09T10:02:00Z"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let results = vec![RipgrepMatch {
+            file_path: aux_path.to_string_lossy().to_string(),
+            message: Some(Message {
+                session_id: "auto-session".to_string(),
+                role: "assistant".to_string(),
+                content: "Auxiliary answer".to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 2, 0).unwrap(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        }];
+
+        let groups = group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].automation, None);
     }
 
     #[test]

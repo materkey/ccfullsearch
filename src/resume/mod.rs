@@ -20,7 +20,7 @@ use std::path::Path;
 /// 2. **Mismatched filename** (file's stem != session_id):
 ///    looks for `<session_id>.jsonl` in the same directory
 /// 3. **Normal file**: returns as-is
-fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
+pub(crate) fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
     let path = Path::new(file_path);
 
     // Case 1: subagent file under .../session-id/subagents/
@@ -43,10 +43,7 @@ fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String)
     }
 
     // Case 2: filename stem doesn't match session_id — find the correct file
-    let file_stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if file_stem != session_id {
         if let Some(parent_dir) = path.parent() {
             let correct_file = parent_dir.join(format!("{}.jsonl", session_id));
@@ -89,8 +86,7 @@ pub fn resume(
             && source == SessionSource::ClaudeCodeCLI
             && !fork::is_on_latest_chain(&resolved_file_path, uuid)
         {
-            let (fork_session_id, fork_file_path) =
-                fork::create_fork(&resolved_file_path, uuid)?;
+            let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
             return launcher::resume_cli(&fork_session_id, &fork_file_path);
         }
     }
@@ -138,7 +134,11 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         // Simulate .claude/projects/<encoded-dir>/
-        let project_dir = dir.path().join(".claude").join("projects").join("-Users-proj");
+        let project_dir = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-Users-proj");
         fs::create_dir_all(&project_dir).unwrap();
 
         // Parent session file
@@ -231,7 +231,11 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let project_dir = dir.path().join(".claude").join("projects").join("-Users-proj");
+        let project_dir = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-Users-proj");
         fs::create_dir_all(&project_dir).unwrap();
 
         // Parent session file

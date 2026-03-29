@@ -160,11 +160,7 @@ fn e2e_normal_session_no_redirect() {
         ccs::resume::test_resolve_parent_session(session_id, session_file.to_str().unwrap());
 
     assert_eq!(sid, session_id, "session_id unchanged");
-    assert_eq!(
-        fpath,
-        session_file.to_string_lossy(),
-        "file_path unchanged"
-    );
+    assert_eq!(fpath, session_file.to_string_lossy(), "file_path unchanged");
 }
 
 // =============================================================================
@@ -215,7 +211,9 @@ fn e2e_fork_skipped_when_file_redirected() {
         .filter_map(|e| e.ok())
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            name.ends_with(".jsonl") && name != format!("{}.jsonl", main_id) && name != "agent-xyz.jsonl"
+            name.ends_with(".jsonl")
+                && name != format!("{}.jsonl", main_id)
+                && name != "agent-xyz.jsonl"
         })
         .collect();
     assert!(
@@ -253,10 +251,8 @@ fn e2e_fork_triggers_for_branch_on_same_file() {
     }
 
     // No redirect — same file
-    let (_, fpath) = ccs::resume::test_resolve_parent_session(
-        session_id,
-        session_file.to_str().unwrap(),
-    );
+    let (_, fpath) =
+        ccs::resume::test_resolve_parent_session(session_id, session_file.to_str().unwrap());
     let file_changed = fpath != session_file.to_str().unwrap();
     assert!(!file_changed, "no redirect for normal file");
 

@@ -1,14 +1,88 @@
+use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
 use crate::resume::encode_path_for_claude;
 use crate::search::{
     group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource,
 };
 use crate::tree::SessionTree;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) const DEBOUNCE_MS: u64 = 300;
+const RECENT_SESSIONS_LIMIT: usize = 100;
+
+fn normalize_path_for_prefix_check(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    normalized
+        .trim_end_matches(|c| c == '/' || c == '\\')
+        .to_string()
+}
+
+fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
+    let file_path = normalize_path_for_prefix_check(file_path);
+    let project_path = normalize_path_for_prefix_check(project_path);
+
+    file_path == project_path
+        || file_path
+            .strip_prefix(&project_path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn apply_recent_automation_to_groups(
+    groups: &mut [SessionGroup],
+    recent_sessions: &[RecentSession],
+    automation_cache: &mut HashMap<String, Option<String>>,
+) {
+    let mut automation_by_session_id: HashMap<&str, String> = HashMap::new();
+    for session in recent_sessions {
+        if let Some(automation) = &session.automation {
+            automation_by_session_id
+                .entry(session.session_id.as_str())
+                .or_insert_with(|| automation.clone());
+        }
+        automation_cache
+            .entry(session.file_path.clone())
+            .or_insert_with(|| session.automation.clone());
+    }
+
+    for group in groups {
+        if group.automation.is_some() {
+            automation_cache.insert(group.file_path.clone(), group.automation.clone());
+            continue;
+        }
+
+        if let Some(automation) = automation_by_session_id
+            .get(group.session_id.as_str())
+            .cloned()
+        {
+            automation_cache.insert(group.file_path.clone(), Some(automation.clone()));
+            group.automation = Some(automation);
+            continue;
+        }
+
+        if let Some(cached) = automation_cache.get(&group.file_path) {
+            group.automation = cached.clone();
+            continue;
+        }
+
+        let detected = detect_session_automation(Path::new(&group.file_path));
+        automation_cache.insert(group.file_path.clone(), detected.clone());
+        group.automation = detected;
+    }
+}
+
+/// Filter mode for automated vs manual sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationFilter {
+    /// Show all sessions (default)
+    All,
+    /// Show only manual (non-automated) sessions
+    Manual,
+    /// Show only automated sessions
+    Auto,
+}
 
 /// Result from background search thread:
 /// (request seq, query, search paths, regex mode, search result)
@@ -23,6 +97,9 @@ pub(crate) type SearchResult = (
 pub struct App {
     pub input: String,
     pub results: Vec<RipgrepMatch>,
+    /// All search result groups (unfiltered)
+    pub(crate) all_groups: Vec<SessionGroup>,
+    /// Search result groups filtered by automation filter
     pub groups: Vec<SessionGroup>,
     pub group_cursor: usize,
     pub sub_cursor: usize,
@@ -76,10 +153,26 @@ pub struct App {
     pub cursor_pos: usize,
     /// Whether search is scoped to current project only (Ctrl+A toggle)
     pub project_filter: bool,
+    /// Filter for automated vs manual sessions (Ctrl+H toggle)
+    pub automation_filter: AutomationFilter,
+    /// Cache: file_path -> resolved automation marker (including negative lookups)
+    automation_cache: HashMap<String, Option<String>>,
     /// All search paths (for "all sessions" mode)
     pub(crate) all_search_paths: Vec<String>,
     /// Search path(s) for current project only
     pub current_project_paths: Vec<String>,
+    /// All recently accessed sessions (unfiltered, loaded once at startup)
+    pub(crate) all_recent_sessions: Vec<RecentSession>,
+    /// Recently accessed sessions shown on startup (filtered by project_filter)
+    pub recent_sessions: Vec<RecentSession>,
+    /// Cursor position in recent sessions list
+    pub recent_cursor: usize,
+    /// Scroll offset for recent sessions list
+    pub recent_scroll_offset: usize,
+    /// Whether recent sessions are still loading
+    pub recent_loading: bool,
+    /// Channel to receive recent sessions from background loader
+    pub(crate) recent_load_rx: Option<Receiver<Vec<RecentSession>>>,
 }
 
 impl App {
@@ -118,9 +211,18 @@ impl App {
 
         let all_search_paths = search_paths.clone();
 
+        // Spawn background thread to load recent sessions
+        let (recent_tx, recent_rx) = mpsc::channel::<Vec<RecentSession>>();
+        let recent_paths = search_paths.clone();
+        thread::spawn(move || {
+            let sessions = collect_recent_sessions(&recent_paths, RECENT_SESSIONS_LIMIT);
+            let _ = recent_tx.send(sessions);
+        });
+
         Self {
             input: String::new(),
             results: vec![],
+            all_groups: vec![],
             groups: vec![],
             group_cursor: 0,
             sub_cursor: 0,
@@ -155,8 +257,16 @@ impl App {
             tree_mode_standalone: false,
             cursor_pos: 0,
             project_filter: false,
+            automation_filter: AutomationFilter::All,
+            automation_cache: HashMap::new(),
             all_search_paths,
             current_project_paths,
+            all_recent_sessions: Vec::new(),
+            recent_sessions: Vec::new(),
+            recent_cursor: 0,
+            recent_scroll_offset: 0,
+            recent_loading: true,
+            recent_load_rx: Some(recent_rx),
         }
     }
 
@@ -195,6 +305,7 @@ impl App {
     fn reset_search_state(&mut self) {
         self.last_query.clear();
         self.results.clear();
+        self.all_groups.clear();
         self.groups.clear();
         self.results_query.clear();
         self.group_cursor = 0;
@@ -297,6 +408,30 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        // Check for recent sessions load results
+        if let Some(ref rx) = self.recent_load_rx {
+            if let Ok(sessions) = rx.try_recv() {
+                self.all_recent_sessions = sessions;
+                apply_recent_automation_to_groups(
+                    &mut self.all_groups,
+                    &self.all_recent_sessions,
+                    &mut self.automation_cache,
+                );
+                self.apply_groups_filter();
+                self.apply_recent_sessions_filter();
+                self.recent_loading = false;
+                self.recent_load_rx = None;
+                // Clamp cursor in case list shrank
+                if !self.recent_sessions.is_empty() {
+                    self.recent_cursor = self
+                        .recent_cursor
+                        .min(self.recent_sessions.len().saturating_sub(1));
+                } else {
+                    self.recent_cursor = 0;
+                }
+            }
+        }
+
         // Check for tree load results
         if let Some(ref rx) = self.tree_load_rx {
             if let Ok(result) = rx.try_recv() {
@@ -359,7 +494,14 @@ impl App {
         match result {
             Ok(results) => {
                 self.results_query = query;
-                self.groups = group_by_session(results.clone());
+                let mut groups = group_by_session(results.clone());
+                apply_recent_automation_to_groups(
+                    &mut groups,
+                    &self.all_recent_sessions,
+                    &mut self.automation_cache,
+                );
+                self.all_groups = groups;
+                self.apply_groups_filter();
                 self.results = results;
                 self.group_cursor = 0;
                 self.sub_cursor = 0;
@@ -373,6 +515,63 @@ impl App {
                 self.searching = false;
             }
         }
+    }
+
+    /// Rebuild `recent_sessions` from `all_recent_sessions` based on current filters.
+    pub(crate) fn apply_recent_sessions_filter(&mut self) {
+        let project_filtered: Vec<_> =
+            if self.project_filter && !self.current_project_paths.is_empty() {
+                self.all_recent_sessions
+                    .iter()
+                    .filter(|s| {
+                        self.current_project_paths
+                            .iter()
+                            .any(|p| path_is_within_project(&s.file_path, p))
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                self.all_recent_sessions.clone()
+            };
+
+        self.recent_sessions = match self.automation_filter {
+            AutomationFilter::All => project_filtered,
+            AutomationFilter::Manual => project_filtered
+                .into_iter()
+                .filter(|s| s.automation.is_none())
+                .collect(),
+            AutomationFilter::Auto => project_filtered
+                .into_iter()
+                .filter(|s| s.automation.is_some())
+                .collect(),
+        };
+        // Clamp cursor
+        if self.recent_sessions.is_empty() {
+            self.recent_cursor = 0;
+        } else {
+            self.recent_cursor = self
+                .recent_cursor
+                .min(self.recent_sessions.len().saturating_sub(1));
+        }
+    }
+
+    /// Rebuild `groups` from `all_groups` based on automation filter.
+    pub(crate) fn apply_groups_filter(&mut self) {
+        self.groups = match self.automation_filter {
+            AutomationFilter::All => self.all_groups.clone(),
+            AutomationFilter::Manual => self
+                .all_groups
+                .iter()
+                .filter(|g| g.automation.is_none())
+                .cloned()
+                .collect(),
+            AutomationFilter::Auto => self
+                .all_groups
+                .iter()
+                .filter(|g| g.automation.is_some())
+                .cloned()
+                .collect(),
+        };
     }
 
     /// Start an async search in the background thread
@@ -394,6 +593,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::Message;
+    use chrono::Utc;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn make_recent_session(file_path: &str) -> RecentSession {
+        RecentSession {
+            session_id: file_path.to_string(),
+            file_path: file_path.to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "summary".to_string(),
+            automation: None,
+        }
+    }
 
     #[test]
     fn test_app_new() {
@@ -403,6 +618,156 @@ mod tests {
         assert!(app.input.is_empty());
         assert!(app.groups.is_empty());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_app_initializes_with_empty_recent_sessions() {
+        let app = App::new(vec!["/nonexistent/path".to_string()]);
+        assert!(app.recent_sessions.is_empty());
+        assert_eq!(app.recent_cursor, 0);
+        assert!(app.recent_loading);
+        assert!(app.recent_load_rx.is_some());
+    }
+
+    #[test]
+    fn test_app_receives_recent_sessions_from_background() {
+        // Use a temp dir with a real JSONL file so the background thread finds something
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj_dir = dir.path().join("-Users-user-proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        let session_file = proj_dir.join("sess1.jsonl");
+        std::fs::write(
+            &session_file,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello world"}]},"sessionId":"sess-1","timestamp":"2025-06-01T10:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new(vec![dir.path().to_str().unwrap().to_string()]);
+
+        // Poll tick() until recent sessions arrive (with timeout)
+        let start = Instant::now();
+        while app.recent_loading && start.elapsed() < Duration::from_secs(5) {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!app.recent_loading);
+        assert!(app.recent_load_rx.is_none());
+        assert_eq!(app.recent_sessions.len(), 1);
+        assert_eq!(app.recent_sessions[0].session_id, "sess-1");
+        assert_eq!(app.recent_sessions[0].summary, "hello world");
+    }
+
+    #[test]
+    fn test_apply_recent_sessions_filter_matches_mixed_separators() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.project_filter = true;
+        app.current_project_paths = vec![r"C:/Users/test/project".to_string()];
+        app.all_recent_sessions = vec![
+            make_recent_session(r"C:\Users\test\project\session.jsonl"),
+            make_recent_session(r"C:\Users\test\project-other\session.jsonl"),
+        ];
+
+        app.apply_recent_sessions_filter();
+
+        assert_eq!(app.recent_sessions.len(), 1);
+        assert_eq!(
+            app.recent_sessions[0].file_path,
+            r"C:\Users\test\project\session.jsonl"
+        );
+    }
+
+    #[test]
+    fn test_handle_search_result_reuses_recent_session_automation() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "later".to_string();
+        app.search_seq = 1;
+        app.all_recent_sessions = vec![RecentSession {
+            session_id: "auto-session".to_string(),
+            file_path: "/sessions/auto-session.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "summary".to_string(),
+            automation: Some("ralphex".to_string()),
+        }];
+
+        let result = RipgrepMatch {
+            file_path: "/sessions/agent-123.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "auto-session".to_string(),
+                role: "assistant".to_string(),
+                content: "Later answer".to_string(),
+                timestamp: Utc::now(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result((
+            1,
+            "later".to_string(),
+            app.search_paths.clone(),
+            false,
+            Ok(vec![result]),
+        ));
+
+        assert_eq!(app.all_groups.len(), 1);
+        assert_eq!(app.all_groups[0].automation, Some("ralphex".to_string()));
+    }
+
+    #[test]
+    fn test_handle_search_result_detects_automation_outside_recent_sessions() {
+        let mut session_file = NamedTempFile::new().unwrap();
+        writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"<<<RALPHEX: run automation >>>"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(session_file, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Automation reply"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "reply".to_string();
+        app.search_seq = 1;
+        app.automation_filter = AutomationFilter::Auto;
+
+        let result = RipgrepMatch {
+            file_path: session_file.path().to_string_lossy().to_string(),
+            message: Some(Message {
+                session_id: "old-auto".to_string(),
+                role: "assistant".to_string(),
+                content: "Automation reply".to_string(),
+                timestamp: Utc::now(),
+                branch: None,
+                line_number: 2,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result((
+            1,
+            "reply".to_string(),
+            app.search_paths.clone(),
+            false,
+            Ok(vec![result]),
+        ));
+
+        assert_eq!(app.all_groups.len(), 1);
+        assert_eq!(app.all_groups[0].automation, Some("ralphex".to_string()));
+        assert_eq!(app.groups.len(), 1);
+    }
+
+    #[test]
+    fn test_path_is_within_project_rejects_sibling_prefixes() {
+        assert!(path_is_within_project(
+            r"C:\Users\test\project\session.jsonl",
+            r"C:/Users/test/project"
+        ));
+        assert!(!path_is_within_project(
+            r"C:\Users\test\project-other\session.jsonl",
+            r"C:/Users/test/project"
+        ));
     }
 
     #[test]
@@ -449,6 +814,7 @@ mod tests {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
+            automation: None,
         }];
         app.group_cursor = 1;
         app.sub_cursor = 2;
@@ -729,6 +1095,7 @@ mod tests {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
+            automation: None,
         }];
         app.group_cursor = 1;
         app.sub_cursor = 2;

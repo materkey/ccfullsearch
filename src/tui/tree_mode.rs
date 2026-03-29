@@ -32,7 +32,7 @@ impl App {
         self.enter_tree_mode_for_file(&file_path);
     }
 
-    fn enter_tree_mode_for_file(&mut self, file_path: &str) {
+    pub(crate) fn enter_tree_mode_for_file(&mut self, file_path: &str) {
         self.tree_mode = true;
         self.tree_loading = true;
         self.tree_cursor = 0;

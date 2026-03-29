@@ -3,7 +3,21 @@ use crate::tui::App;
 use std::time::Instant;
 
 impl App {
+    /// Whether the app is currently showing the recent sessions list
+    /// (input is empty, no search results, not loading search).
+    pub fn in_recent_sessions_mode(&self) -> bool {
+        self.input.is_empty() && self.groups.is_empty()
+    }
+
     pub fn on_up(&mut self) {
+        // Recent sessions navigation
+        if self.in_recent_sessions_mode() {
+            if !self.recent_sessions.is_empty() && self.recent_cursor > 0 {
+                self.recent_cursor -= 1;
+            }
+            return;
+        }
+
         if self.groups.is_empty() {
             return;
         }
@@ -25,6 +39,16 @@ impl App {
     }
 
     pub fn on_down(&mut self) {
+        // Recent sessions navigation
+        if self.in_recent_sessions_mode() {
+            if !self.recent_sessions.is_empty()
+                && self.recent_cursor < self.recent_sessions.len().saturating_sub(1)
+            {
+                self.recent_cursor += 1;
+            }
+            return;
+        }
+
         if self.groups.is_empty() {
             return;
         }
@@ -76,7 +100,10 @@ impl App {
     }
 
     pub fn on_left(&mut self) {
-        if self.cursor_pos > 0 {
+        if self.expanded {
+            self.expanded = false;
+            self.sub_cursor = 0;
+        } else if self.cursor_pos > 0 {
             self.move_cursor_left();
         } else {
             self.expanded = false;
@@ -101,6 +128,22 @@ impl App {
         }
     }
 
+    pub fn toggle_automation_filter(&mut self) {
+        use crate::tui::state::AutomationFilter;
+        self.automation_filter = match self.automation_filter {
+            AutomationFilter::All => AutomationFilter::Manual,
+            AutomationFilter::Manual => AutomationFilter::Auto,
+            AutomationFilter::Auto => AutomationFilter::All,
+        };
+        self.apply_recent_sessions_filter();
+        self.apply_groups_filter();
+        self.recent_cursor = 0;
+        self.recent_scroll_offset = 0;
+        self.group_cursor = 0;
+        self.sub_cursor = 0;
+        self.expanded = false;
+    }
+
     pub fn toggle_project_filter(&mut self) {
         if self.current_project_paths.is_empty() {
             return;
@@ -111,6 +154,8 @@ impl App {
         } else {
             self.all_search_paths.clone()
         };
+        // Refilter recent sessions list
+        self.apply_recent_sessions_filter();
         if !self.input.is_empty() {
             self.last_keystroke = Some(Instant::now());
             self.typing = true;
@@ -120,6 +165,18 @@ impl App {
     pub fn on_enter(&mut self) {
         if self.preview_mode {
             self.preview_mode = false;
+            return;
+        }
+
+        // Recent sessions: resume selected session
+        if self.in_recent_sessions_mode() {
+            if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
+                self.resume_id = Some(session.session_id.clone());
+                self.resume_file_path = Some(session.file_path.clone());
+                self.resume_source = Some(session.source);
+                self.resume_uuid = None;
+                self.should_quit = true;
+            }
             return;
         }
 
@@ -144,6 +201,14 @@ impl App {
         }
     }
 
+    /// Enter tree mode for the currently selected recent session.
+    pub fn enter_tree_mode_recent(&mut self) {
+        if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
+            let file_path = session.file_path.clone();
+            self.enter_tree_mode_for_file(&file_path);
+        }
+    }
+
     pub fn selected_group(&self) -> Option<&SessionGroup> {
         self.groups.get(self.group_cursor)
     }
@@ -156,10 +221,24 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::recent::RecentSession;
     use crate::search::{RipgrepMatch, SessionGroup, SessionSource};
     use crate::tui::state::DEBOUNCE_MS;
     use crate::tui::App;
+    use chrono::Utc;
     use std::time::{Duration, Instant};
+
+    fn make_recent_session(id: &str, project: &str, summary: &str) -> RecentSession {
+        RecentSession {
+            session_id: id.to_string(),
+            file_path: format!("/tmp/{}.jsonl", id),
+            project: project.to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: summary.to_string(),
+            automation: None,
+        }
+    }
 
     #[test]
     fn test_navigation_empty_groups() {
@@ -183,6 +262,7 @@ mod tests {
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
+            automation: None,
         }];
 
         app.on_right();
@@ -190,6 +270,27 @@ mod tests {
 
         app.on_left();
         assert!(!app.expanded);
+    }
+
+    #[test]
+    fn test_left_collapses_expanded_group_even_with_input_cursor() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.groups = vec![SessionGroup {
+            session_id: "test".to_string(),
+            file_path: "/test.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+        }];
+        app.input = "query".to_string();
+        app.cursor_pos = app.input.len();
+        app.expanded = true;
+        app.sub_cursor = 1;
+
+        app.on_left();
+
+        assert!(!app.expanded);
+        assert_eq!(app.sub_cursor, 0);
+        assert_eq!(app.cursor_pos, 5);
     }
 
     #[test]
@@ -282,5 +383,161 @@ mod tests {
         assert!(app.results.is_empty());
         assert!(app.groups.is_empty());
         assert!(app.searching);
+    }
+
+    // =========================================================================
+    // Recent sessions navigation tests
+    // =========================================================================
+
+    #[test]
+    fn test_in_recent_sessions_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        // Empty input, empty groups → recent sessions mode
+        assert!(app.in_recent_sessions_mode());
+
+        // Typing something exits recent sessions mode
+        app.on_key('h');
+        assert!(!app.in_recent_sessions_mode());
+
+        // Clearing input returns to recent sessions mode
+        app.clear_input();
+        assert!(app.in_recent_sessions_mode());
+    }
+
+    #[test]
+    fn test_in_recent_sessions_mode_false_when_groups_present() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.groups = vec![SessionGroup {
+            session_id: "test".to_string(),
+            file_path: "/test.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+        }];
+        // Even with empty input, if groups exist we're in search results mode
+        assert!(!app.in_recent_sessions_mode());
+    }
+
+    #[test]
+    fn test_recent_sessions_up_down_navigation() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![
+            make_recent_session("s1", "proj-a", "first message"),
+            make_recent_session("s2", "proj-b", "second message"),
+            make_recent_session("s3", "proj-c", "third message"),
+        ];
+
+        assert_eq!(app.recent_cursor, 0);
+
+        app.on_down();
+        assert_eq!(app.recent_cursor, 1);
+
+        app.on_down();
+        assert_eq!(app.recent_cursor, 2);
+
+        // At bottom, should not go further
+        app.on_down();
+        assert_eq!(app.recent_cursor, 2);
+
+        app.on_up();
+        assert_eq!(app.recent_cursor, 1);
+
+        app.on_up();
+        assert_eq!(app.recent_cursor, 0);
+
+        // At top, should not go further
+        app.on_up();
+        assert_eq!(app.recent_cursor, 0);
+    }
+
+    #[test]
+    fn test_recent_sessions_navigation_empty_list() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![];
+
+        // Should not panic or change cursor
+        app.on_up();
+        assert_eq!(app.recent_cursor, 0);
+        app.on_down();
+        assert_eq!(app.recent_cursor, 0);
+    }
+
+    #[test]
+    fn test_recent_sessions_navigation_while_loading() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        // recent_loading is true by default, recent_sessions is empty
+        assert!(app.recent_loading);
+
+        // Navigation should not panic
+        app.on_up();
+        app.on_down();
+        assert_eq!(app.recent_cursor, 0);
+    }
+
+    #[test]
+    fn test_recent_sessions_enter_resumes_session() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![
+            make_recent_session("s1", "proj-a", "first"),
+            make_recent_session("s2", "proj-b", "second"),
+        ];
+
+        // Navigate to second session and press Enter
+        app.on_down();
+        app.on_enter();
+
+        assert!(app.should_quit);
+        assert_eq!(app.resume_id.as_deref(), Some("s2"));
+        assert_eq!(app.resume_file_path.as_deref(), Some("/tmp/s2.jsonl"));
+        assert_eq!(app.resume_source, Some(SessionSource::ClaudeCodeCLI));
+        assert!(app.resume_uuid.is_none());
+    }
+
+    #[test]
+    fn test_recent_sessions_enter_on_empty_list_does_nothing() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![];
+
+        app.on_enter();
+
+        assert!(!app.should_quit);
+        assert!(app.resume_id.is_none());
+    }
+
+    #[test]
+    fn test_typing_exits_recent_sessions_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![make_recent_session("s1", "proj-a", "first")];
+        app.recent_cursor = 0;
+
+        // Type a character — should switch to search mode
+        app.on_key('h');
+        assert!(!app.in_recent_sessions_mode());
+        assert_eq!(app.input, "h");
+    }
+
+    #[test]
+    fn test_recent_cursor_preserved_on_clear_input() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_sessions = vec![
+            make_recent_session("s1", "proj-a", "first"),
+            make_recent_session("s2", "proj-b", "second"),
+        ];
+
+        // Navigate down, type something, then clear
+        app.on_down();
+        assert_eq!(app.recent_cursor, 1);
+
+        app.on_key('x');
+        app.clear_input();
+
+        // Back in recent sessions mode — cursor preserved (not reset by clear_input)
+        assert!(app.in_recent_sessions_mode());
+        assert_eq!(app.recent_cursor, 1);
     }
 }

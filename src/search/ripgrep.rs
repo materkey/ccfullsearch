@@ -139,6 +139,35 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     })
 }
 
+/// Decode an encoded directory name into a short readable project label.
+/// Strips common home-dir prefixes and converts `--` to `/.` (hidden dirs), `-` to `/`.
+/// Examples:
+///   "-Users-user" -> "~"
+///   "-Users-user--claude-skills-gist" -> "~/.claude/skills/gist"
+///   "-private-tmp" -> "/private/tmp"
+fn decode_dir_name_short(dir_name: &str) -> String {
+    let stripped = dir_name.strip_prefix('-').unwrap_or(dir_name);
+    let decoded = stripped
+        .replace("--", "\x00")
+        .replace('-', "/")
+        .replace('\x00', "/.");
+    let full_path = format!("/{}", decoded);
+
+    // Try to shorten home directory prefix to ~
+    if let Some(home) = dirs::home_dir() {
+        if let Some(home_str) = home.to_str() {
+            if let Some(rest) = full_path.strip_prefix(home_str) {
+                if rest.is_empty() {
+                    return "~".to_string();
+                }
+                return format!("~{}", rest);
+            }
+        }
+    }
+
+    full_path
+}
+
 /// Extract project/session name from file path
 /// CLI format: /Users/user/.claude/projects/-Users-user-projects-myapp/session.jsonl
 /// Desktop format: .../local-agent-mode-sessions/.../local_xxx/.claude/projects/-sessions-cool-name/xxx.jsonl
@@ -161,10 +190,18 @@ pub fn extract_project_from_path(path: &str) -> String {
         // Get the directory name (before the next /)
         let dir_name = after_projects.split('/').next().unwrap_or("");
 
-        // The project name is the last part after splitting by -projects-
-        // e.g., "-Users-user-projects-myapp" -> "myapp"
-        if let Some(last_projects_idx) = dir_name.rfind("-projects-") {
-            return dir_name[last_projects_idx + 10..].to_string();
+        if !dir_name.is_empty() {
+            // The project name is the last part after splitting by -projects-
+            // e.g., "-Users-user-projects-myapp" -> "myapp"
+            if let Some(last_projects_idx) = dir_name.rfind("-projects-") {
+                return dir_name[last_projects_idx + 10..].to_string();
+            }
+
+            // No -projects- segment: extract last meaningful part from encoded dir name
+            // e.g., "-Users-user" -> "~"
+            // e.g., "-Users-user--claude-skills-gist" -> "~/.claude/skills/gist"
+            // e.g., "-private-tmp" -> "/tmp"
+            return decode_dir_name_short(dir_name);
         }
     }
 

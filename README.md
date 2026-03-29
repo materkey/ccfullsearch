@@ -8,11 +8,12 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 
 ## Features
 
+- **Recent sessions on startup** — shows your most recent sessions with first user message as summary when the TUI launches
 - **Full-text search** across all Claude Code CLI and Claude Desktop sessions
 - **Regex search** mode (toggle with `Ctrl+R`)
 - **Session grouping** — results grouped by session with timestamps and project context
 - **Tree view** — visualize conversation branches, forks, and context compactions (`Ctrl+B`)
-- **Session resume** — press `Enter` to resume any session directly from search results
+- **Session resume** — press `Enter` to resume any session directly from search results or the recent sessions list
 - **Async search** — non-blocking background search with debounce
 - **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
 - **Cross-platform** — supports both Claude Code CLI (`~/.claude/projects`) and Claude Desktop sessions
@@ -55,6 +56,7 @@ src/
 ├── main.rs             # CLI entry point (clap) + TUI event loop
 ├── cli.rs              # Non-interactive search/list commands (JSONL output)
 ├── session.rs          # Shared JSONL parsing primitives (timestamps, UUIDs, sources)
+├── recent.rs           # Recent sessions: parallel scanning, summary extraction, RecentSession struct
 ├── search/             # Ripgrep integration, message parsing, result grouping
 ├── tree/               # Session DAG parsing, branch detection, flattened tree rows
 ├── resume/
@@ -65,7 +67,7 @@ src/
     ├── state.rs         # App struct, constructor, input/cursor methods, tick loop
     ├── search_mode.rs   # Search navigation, enter, toggle, search orchestration
     ├── tree_mode.rs     # Tree mode enter/exit, navigation, file lookup
-    ├── render_search.rs # Search & preview rendering
+    ├── render_search.rs # Search & preview rendering (+ recent sessions empty state)
     └── render_tree.rs   # Tree mode rendering
 
 tests/
@@ -73,6 +75,7 @@ tests/
 ├── cli_search.rs       # Integration tests for `ccs search`
 ├── cli_list.rs         # Integration tests for `ccs list`
 ├── tree_parsing.rs     # Tree parsing via library API
+├── resume_resolution.rs # Resume session resolution tests
 └── render_snapshots.rs # TUI render state verification
 ```
 
@@ -93,7 +96,7 @@ cargo test
 ### Interactive TUI
 
 ```bash
-# Launch interactive search
+# Launch — shows recent sessions on startup, start typing to search
 ccs
 
 # Open tree view for a specific session
@@ -114,6 +117,15 @@ ccs list --limit 20
 ```
 
 ## Keybindings
+
+### Recent sessions (empty input)
+
+| Key | Action |
+|-----|--------|
+| `Up` / `Down` | Navigate recent sessions |
+| `Enter` | Resume selected session |
+| `Ctrl+B` | Open tree view for selected session |
+| Type | Start searching (recent list disappears) |
 
 ### Search mode
 

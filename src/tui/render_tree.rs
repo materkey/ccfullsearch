@@ -317,40 +317,40 @@ mod tests {
 
         // Scroll down through all rows
         for _ in 0..num_rows {
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
             app.on_down_tree();
         }
 
         // Scroll back up through all rows
         for _ in 0..num_rows {
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
             app.on_up_tree();
         }
 
         // Jump branch points
         for _ in 0..5 {
             app.on_right_tree();
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
         }
         for _ in 0..5 {
             app.on_left_tree();
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
         }
 
         // Toggle preview mode at various positions
         app.tree_cursor = 0;
         app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         app.on_tab_tree();
 
         app.tree_cursor = num_rows / 2;
         app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         app.on_tab_tree();
 
         app.tree_cursor = num_rows.saturating_sub(1);
         app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Check buffer for artifacts
         let buffer = terminal.backend().buffer();

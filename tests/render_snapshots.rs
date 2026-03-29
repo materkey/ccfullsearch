@@ -31,8 +31,8 @@ fn snapshot_empty_search_mode() {
     let backend = TestBackend::new(120, 10);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    let app = App::new(vec!["/test".to_string()]);
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let mut app = App::new(vec!["/test".to_string()]);
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
     let lines = buffer_lines(&terminal);
 
@@ -81,11 +81,12 @@ fn snapshot_search_with_results() {
         session_id: "abc12345-def6-7890".to_string(),
         file_path: m.file_path.clone(),
         matches: vec![m.clone()],
+        automation: None,
     }];
     app.results = vec![m];
     app.results_query = "sort".to_string();
 
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
     let lines = buffer_lines(&terminal);
 
@@ -119,7 +120,7 @@ fn snapshot_search_status_indicators() {
     // Test "Typing..." status
     let mut app = App::new(vec!["/test".to_string()]);
     app.typing = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
     let lines = buffer_lines(&terminal);
     assert!(
@@ -130,7 +131,7 @@ fn snapshot_search_status_indicators() {
     // Test "Searching..." status
     app.typing = false;
     app.searching = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
         lines.iter().any(|l| l.contains("Searching...")),
@@ -140,7 +141,7 @@ fn snapshot_search_status_indicators() {
     // Test error status
     app.searching = false;
     app.error = Some("rg not found".to_string());
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
         lines.iter().any(|l| l.contains("Error: rg not found")),
@@ -157,7 +158,7 @@ fn snapshot_regex_and_project_filter_labels() {
 
     // Regex mode
     app.regex_mode = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
         lines.iter().any(|l| l.contains("[Regex]")),
@@ -167,7 +168,7 @@ fn snapshot_regex_and_project_filter_labels() {
     // Project filter mode
     app.regex_mode = false;
     app.project_filter = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
         lines.iter().any(|l| l.contains("[Project]")),
@@ -176,7 +177,7 @@ fn snapshot_regex_and_project_filter_labels() {
 
     // Both modes
     app.regex_mode = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
         lines
@@ -206,7 +207,7 @@ fn snapshot_tree_mode_header() {
     app.tree_mode = true;
     app.session_tree = Some(tree);
 
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
     let lines = buffer_lines(&terminal);
 
@@ -238,7 +239,7 @@ fn snapshot_tree_mode_loading() {
     app.tree_mode = true;
     app.tree_loading = true;
 
-    terminal.draw(|frame| render(frame, &app)).unwrap();
+    terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
     let lines = buffer_lines(&terminal);
 

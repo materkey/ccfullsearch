@@ -12,7 +12,69 @@ use ratatui::{
 };
 use std::collections::HashSet;
 
-pub fn render(frame: &mut Frame, app: &App) {
+fn search_results_status_text(app: &App) -> Option<String> {
+    if app.results_query.is_empty() {
+        return None;
+    }
+
+    let total_groups = app.all_groups.len().max(app.groups.len());
+    if total_groups == 0 {
+        return Some("No matches found".to_string());
+    }
+
+    let hidden = total_groups.saturating_sub(app.groups.len());
+    if hidden == 0 {
+        return Some(format!(
+            "Found {} matches in {} sessions",
+            app.results.len(),
+            app.groups.len()
+        ));
+    }
+
+    let hidden_text = if app.groups.is_empty() {
+        "all hidden by filter".to_string()
+    } else {
+        format!("{} hidden by filter", hidden)
+    };
+
+    Some(format!(
+        "Found {} matches in {} sessions ({})",
+        app.results.len(),
+        app.groups.len(),
+        hidden_text
+    ))
+}
+
+fn recent_sessions_status_text(app: &App) -> Option<String> {
+    if !app.input.is_empty() {
+        return None;
+    }
+
+    if app.recent_loading {
+        return Some("Loading recent sessions...".to_string());
+    }
+
+    let total = app.all_recent_sessions.len();
+    let shown = app.recent_sessions.len();
+    if shown > 0 {
+        if shown < total {
+            return Some(format!(
+                "{} recent sessions ({} hidden by filter)",
+                shown,
+                total - shown
+            ));
+        }
+        return Some(format!("{} recent sessions", shown));
+    }
+
+    if total > 0 {
+        return Some(format!("0 recent sessions ({} hidden by filter)", total));
+    }
+
+    Some("No recent sessions found".to_string())
+}
+
+pub fn render(frame: &mut Frame, app: &mut App) {
     if app.tree_mode {
         render_tree_mode(frame, app);
         return;
@@ -45,13 +107,22 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Style::default().fg(Color::White)
     };
-    let search_title = match (app.regex_mode, app.project_filter) {
-        (true, true) => "Search [Regex] [Project]",
-        (true, false) => "Search [Regex]",
-        (false, true) => "Search [Project]",
-        (false, false) => "Search",
-    };
-    let title_style = if app.regex_mode || app.project_filter {
+    use crate::tui::state::AutomationFilter;
+    let mut search_title = String::from("Search");
+    if app.regex_mode {
+        search_title.push_str(" [Regex]");
+    }
+    if app.project_filter {
+        search_title.push_str(" [Project]");
+    }
+    match app.automation_filter {
+        AutomationFilter::All => {}
+        AutomationFilter::Manual => search_title.push_str(" [Manual]"),
+        AutomationFilter::Auto => search_title.push_str(" [Auto]"),
+    }
+    let has_active_filter =
+        app.regex_mode || app.project_filter || app.automation_filter != AutomationFilter::All;
+    let title_style = if has_active_filter {
         Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD)
@@ -61,7 +132,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let input = Paragraph::new(app.input.as_str()).style(input_style).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(search_title)
+            .title(search_title.as_str())
             .title_style(title_style),
     );
     frame.render_widget(input, input_area);
@@ -86,17 +157,17 @@ pub fn render(frame: &mut Frame, app: &App) {
         )
     } else if let Some(ref err) = app.error {
         Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))
-    } else if !app.groups.is_empty() {
-        Span::styled(
-            format!(
-                "Found {} matches in {} sessions",
-                app.results.len(),
-                app.groups.len()
-            ),
-            Style::default().fg(Color::DarkGray),
-        )
-    } else if !app.results_query.is_empty() {
-        Span::styled("No matches found", Style::default().fg(Color::DarkGray))
+    } else if let Some(text) = search_results_status_text(app) {
+        Span::styled(text, Style::default().fg(Color::DarkGray))
+    } else if let Some(text) = recent_sessions_status_text(app) {
+        let style = if app.recent_loading {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        Span::styled(text, style)
     } else {
         Span::raw("")
     };
@@ -109,19 +180,62 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_groups(frame, app, list_area);
     }
 
-    // Help
-    let help_text = if app.preview_mode {
-        "[Tab/Ctrl+V/Enter] Close preview  [Ctrl+A] Project  [Ctrl+R] Regex  [Esc] Quit"
-    } else if !app.groups.is_empty() {
-        "[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit"
-    } else {
-        "[↑↓] Navigate  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+R] Regex  [Esc] Quit"
+    // Help — show current filter mode inline with color
+    use crate::tui::state::AutomationFilter as AF;
+    let in_recent_mode = app.in_recent_sessions_mode() && !app.recent_sessions.is_empty();
+    let filter_label = match app.automation_filter {
+        AF::All => "All",
+        AF::Manual => "Manual",
+        AF::Auto => "Auto",
     };
-    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    let filter_style = match app.automation_filter {
+        AF::All => Style::default().fg(Color::DarkGray),
+        AF::Manual => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        AF::Auto => Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    };
+
+    let mut help_spans: Vec<Span> = Vec::new();
+    let dim = Style::default().fg(Color::DarkGray);
+
+    if app.preview_mode {
+        help_spans.push(Span::styled(
+            "[Tab/Ctrl+V/Enter] Close preview  [Ctrl+A] Project  [Ctrl+H] ",
+            dim,
+        ));
+        help_spans.push(Span::styled(filter_label, filter_style));
+        help_spans.push(Span::styled("  [Ctrl+R] Regex  [Esc] Quit", dim));
+    } else if in_recent_mode {
+        help_spans.push(Span::styled(
+            "[↑↓] Navigate  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ",
+            dim,
+        ));
+        help_spans.push(Span::styled(filter_label, filter_style));
+        help_spans.push(Span::styled("  [Ctrl+B] Tree  [Esc] Quit", dim));
+    } else if !app.groups.is_empty() {
+        help_spans.push(Span::styled("[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ", dim));
+        help_spans.push(Span::styled(filter_label, filter_style));
+        help_spans.push(Span::styled(
+            "  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit",
+            dim,
+        ));
+    } else {
+        help_spans.push(Span::styled(
+            "[↑↓] Navigate  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ",
+            dim,
+        ));
+        help_spans.push(Span::styled(filter_label, filter_style));
+        help_spans.push(Span::styled("  [Ctrl+R] Regex  [Esc] Quit", dim));
+    }
+
+    let help = Paragraph::new(Line::from(help_spans));
     frame.render_widget(help, help_area);
 }
 
-fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_groups(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     // Clear the area by filling with spaces - more reliable than Clear widget
     // This handles wide Unicode characters better
     let buf = frame.buffer_mut();
@@ -132,6 +246,12 @@ fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 cell.set_style(Style::default());
             }
         }
+    }
+
+    // Show recent sessions when input is empty and no search results
+    if app.input.is_empty() && app.groups.is_empty() {
+        render_recent_sessions(frame, app, area);
+        return;
     }
 
     let mut items: Vec<ListItem> = vec![];
@@ -154,6 +274,91 @@ fn render_groups(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 items.push(sub_item);
             }
         }
+    }
+
+    let list = List::new(items).block(Block::default().borders(Borders::NONE));
+    frame.render_widget(list, area);
+}
+
+fn render_recent_sessions(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    // Loading and empty states are shown in the status bar only
+    if app.recent_loading || app.recent_sessions.is_empty() {
+        return;
+    }
+
+    let visible_height = area.height as usize;
+    let available_width = area.width as usize;
+    let mut items: Vec<ListItem> = vec![];
+
+    // Compute visible window based on cursor position and persist back to state
+    let scroll_offset = if app.recent_cursor >= app.recent_scroll_offset + visible_height {
+        app.recent_cursor
+            .saturating_sub(visible_height.saturating_sub(1))
+    } else if app.recent_cursor < app.recent_scroll_offset {
+        app.recent_cursor
+    } else {
+        app.recent_scroll_offset
+    };
+    app.recent_scroll_offset = scroll_offset;
+
+    let end = (scroll_offset + visible_height).min(app.recent_sessions.len());
+
+    for i in scroll_offset..end {
+        let session = &app.recent_sessions[i];
+        let is_selected = i == app.recent_cursor;
+
+        let date_str = session.timestamp.format("%Y-%m-%d %H:%M").to_string();
+        // Reserve space: "  " prefix + date (16) + "  " + project + "  " + summary
+        let project_max = 20;
+        let project_display = truncate_to_width(&session.project, project_max);
+        let is_automated = session.automation.is_some();
+        let auto_prefix = if is_automated { "[A] " } else { "" };
+        let prefix_len =
+            2 + date_str.len() + 2 + project_display.chars().count() + 2 + auto_prefix.len();
+        let summary_max = available_width.saturating_sub(prefix_len);
+        let summary_display = truncate_to_width(&session.summary, summary_max);
+
+        let prefix = if is_selected { "> " } else { "  " };
+
+        let mut spans = vec![
+            Span::raw(prefix.to_string()),
+            Span::styled(date_str, Style::default().fg(Color::DarkGray)),
+            Span::raw("  "),
+            Span::styled(project_display, Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+        ];
+
+        if is_automated {
+            spans.push(Span::styled("[A] ", Style::default().fg(Color::DarkGray)));
+        }
+
+        let summary_color = if is_automated {
+            Color::Gray
+        } else {
+            Color::White
+        };
+
+        if is_selected {
+            spans.push(Span::styled(
+                summary_display,
+                Style::default()
+                    .fg(summary_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                summary_display,
+                Style::default().fg(summary_color),
+            ));
+        }
+
+        let style = if is_selected {
+            Style::default().bg(Color::Rgb(75, 0, 130))
+        } else {
+            Style::default()
+        };
+
+        items.push(ListItem::new(Line::from(spans)).style(style));
     }
 
     let list = List::new(items).block(Block::default().borders(Borders::NONE));
@@ -184,15 +389,22 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
         &group.session_id
     };
 
+    let auto_tag = if group.automation.is_some() {
+        " [A]"
+    } else {
+        ""
+    };
+
     format!(
-        "{} [{}] {} | {} | {} | {} ({} messages)",
+        "{} [{}] {} | {} | {} | {} ({} messages){}",
         expand_indicator,
         source,
         date_str,
         project,
         branch,
         session_display,
-        group.matches.len()
+        group.matches.len(),
+        auto_tag
     )
 }
 
@@ -347,8 +559,8 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
         return Line::raw(text.to_string());
     }
 
-    let text_lower = text.to_lowercase();
     let query_lower = query.to_lowercase();
+    let (text_lower, lower_start_map, lower_end_map) = build_lowercase_index(text);
 
     let highlight_style = Style::default()
         .fg(Color::Black)
@@ -360,10 +572,14 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
 
     // Find all occurrences of query (case-insensitive)
     let mut search_start = 0;
-    while let Some(pos) = text_lower[search_start..].find(&query_lower) {
-        let match_start = search_start + pos;
-        let match_end = match_start + query.len();
-
+    while let Some((match_start, match_end, next_search_start)) = find_case_insensitive_match(
+        text,
+        &text_lower,
+        &lower_start_map,
+        &lower_end_map,
+        &query_lower,
+        search_start,
+    ) {
         // Add text before the match
         if match_start > last_end {
             spans.push(Span::raw(text[last_end..match_start].to_string()));
@@ -376,7 +592,7 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
         ));
 
         last_end = match_end;
-        search_start = match_end;
+        search_start = next_search_start;
     }
 
     // Add remaining text after last match
@@ -389,6 +605,67 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
     } else {
         Line::from(spans)
     }
+}
+
+fn build_lowercase_index(text: &str) -> (String, Vec<Option<usize>>, Vec<Option<usize>>) {
+    let mut text_lower = String::new();
+    let mut lower_start_map = vec![None; 1];
+    let mut lower_end_map = vec![Some(0); 1];
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((char_start, ch)) = chars.next() {
+        let char_end = chars.peek().map(|(idx, _)| *idx).unwrap_or(text.len());
+        let lower_start = text_lower.len();
+        let lower_chunk = ch.to_lowercase().collect::<String>();
+        text_lower.push_str(&lower_chunk);
+        let lower_end = text_lower.len();
+
+        if lower_start_map.len() <= lower_end {
+            lower_start_map.resize(lower_end + 1, None);
+        }
+        if lower_end_map.len() <= lower_end {
+            lower_end_map.resize(lower_end + 1, None);
+        }
+
+        lower_start_map[lower_start] = Some(char_start);
+        for (offset, _) in lower_chunk.char_indices().skip(1) {
+            lower_end_map[lower_start + offset] = Some(char_end);
+        }
+        lower_end_map[lower_end] = Some(char_end);
+    }
+
+    (text_lower, lower_start_map, lower_end_map)
+}
+
+fn find_case_insensitive_match(
+    text: &str,
+    text_lower: &str,
+    lower_start_map: &[Option<usize>],
+    lower_end_map: &[Option<usize>],
+    query_lower: &str,
+    mut search_start: usize,
+) -> Option<(usize, usize, usize)> {
+    while search_start <= text_lower.len() {
+        let relative_pos = text_lower[search_start..].find(query_lower)?;
+        let lower_match_start = search_start + relative_pos;
+        let lower_match_end = lower_match_start + query_lower.len();
+
+        let match_start = lower_start_map.get(lower_match_start).copied().flatten();
+        let match_end = lower_end_map.get(lower_match_end).copied().flatten();
+
+        if let (Some(match_start), Some(match_end)) = (match_start, match_end) {
+            if text.is_char_boundary(match_start) && text.is_char_boundary(match_end) {
+                return Some((match_start, match_end, lower_match_end));
+            }
+        }
+
+        let Some(next_char) = text_lower[lower_match_start..].chars().next() else {
+            return None;
+        };
+        search_start = lower_match_start + next_char.len_utf8();
+    }
+
+    None
 }
 
 fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -475,6 +752,21 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    fn buffer_contains(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        needle: &str,
+    ) -> bool {
+        (0..height).any(|y| {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            line.contains(needle)
+        })
+    }
+
     fn make_test_app_with_groups() -> App {
         let mut app = App::new(vec!["/test".to_string()]);
 
@@ -499,6 +791,7 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
+            automation: None,
         }];
         app.results_query = "test".to_string();
 
@@ -579,14 +872,22 @@ mod tests {
     }
 
     #[test]
+    fn test_highlight_line_handles_unicode_lowercase_expansion() {
+        let line = highlight_line("İstanbul", "i");
+        assert_eq!(line.spans.len(), 2);
+        assert_eq!(line.spans[0].content.as_ref(), "İ");
+        assert_eq!(line.spans[1].content.as_ref(), "stanbul");
+    }
+
+    #[test]
     fn test_render_does_not_panic() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let app = App::new(vec!["/test".to_string()]);
+        let mut app = App::new(vec!["/test".to_string()]);
 
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Render should not panic");
     }
 
@@ -595,10 +896,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let app = make_test_app_with_groups();
+        let mut app = make_test_app_with_groups();
 
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Render with groups should not panic");
     }
 
@@ -611,7 +912,7 @@ mod tests {
         app.preview_mode = true;
 
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Preview mode render should not panic");
     }
 
@@ -624,19 +925,19 @@ mod tests {
 
         // First render normal mode
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Normal render should not panic");
 
         // Toggle to preview
         app.preview_mode = true;
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Preview render should not panic");
 
         // Toggle back to normal
         app.preview_mode = false;
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Toggle back render should not panic");
 
         // The buffer should have valid content without artifacts
@@ -667,7 +968,7 @@ mod tests {
         app.expanded = true;
 
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Expanded group render should not panic");
     }
 
@@ -699,11 +1000,12 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
+            automation: None,
         }];
         app.preview_mode = true;
 
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &mut app))
             .expect("Cyrillic content render should not panic");
     }
 
@@ -740,17 +1042,18 @@ mod tests {
                 session_id: format!("session-{}", i),
                 file_path: m.file_path.clone(),
                 matches: vec![m],
+                automation: None,
             });
         }
 
         // Navigate through groups
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         app.on_down();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         app.on_down();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         app.on_up();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // All renders should succeed without artifacts
     }
@@ -810,6 +1113,7 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: large_match.file_path.clone(),
             matches: vec![large_match, small_match],
+            automation: None,
         }];
         app.results_query = "test".to_string();
 
@@ -819,11 +1123,11 @@ mod tests {
         app.sub_cursor = 0; // Start on large message
 
         // Render with large content
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Navigate down to small content
         app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Check buffer for artifacts
         let buffer = terminal.backend().buffer();
@@ -909,6 +1213,7 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
             matches,
+            automation: None,
         }];
         app.results_query = "test".to_string();
         app.preview_mode = true;
@@ -917,7 +1222,7 @@ mod tests {
         // Navigate through all messages, checking buffer after each
         for i in 0..4 {
             app.sub_cursor = i;
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
             let buffer = terminal.backend().buffer();
 
@@ -939,7 +1244,7 @@ mod tests {
         // Navigate backwards and check again
         for i in (0..4).rev() {
             app.sub_cursor = i;
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
             let buffer = terminal.backend().buffer();
 
@@ -1014,6 +1319,7 @@ mod tests {
                     source: SessionSource::ClaudeCodeCLI,
                 },
             ],
+            automation: None,
         }];
         app.results_query = "test".to_string();
         app.preview_mode = true;
@@ -1021,11 +1327,11 @@ mod tests {
 
         // Render large tool output
         app.sub_cursor = 0;
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Navigate to small content
         app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         let buffer = terminal.backend().buffer();
 
@@ -1117,6 +1423,7 @@ mod tests {
                     source: SessionSource::ClaudeCodeCLI,
                 },
             ],
+            automation: None,
         }];
         app.results_query = "test".to_string();
         app.preview_mode = true;
@@ -1124,11 +1431,11 @@ mod tests {
 
         // Render ANSI content
         app.sub_cursor = 0;
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Navigate to small content
         app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         // Check buffer - no ANSI artifacts should remain
         let buffer = terminal.backend().buffer();
@@ -1173,6 +1480,7 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
+            automation: None,
         };
 
         let text = build_group_header_text(&group, false);
@@ -1206,6 +1514,7 @@ mod tests {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
+            automation: None,
         };
 
         let text = build_group_header_text(&group, false);
@@ -1214,5 +1523,235 @@ mod tests {
             "Header should contain [Desktop] indicator, got: {}",
             text
         );
+    }
+
+    #[test]
+    fn test_render_recent_sessions_loading() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = true;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with loading recent sessions should not panic");
+
+        let buffer = terminal.backend().buffer();
+        let mut found_loading = false;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..80 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if line.contains("Loading recent sessions") {
+                found_loading = true;
+                break;
+            }
+        }
+        assert!(found_loading, "Should show loading indicator");
+    }
+
+    #[test]
+    fn test_render_recent_sessions_empty() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_load_rx = None;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with empty recent sessions should not panic");
+
+        let buffer = terminal.backend().buffer();
+        let mut found_empty = false;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..80 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if line.contains("No recent sessions found") {
+                found_empty = true;
+                break;
+            }
+        }
+        assert!(found_empty, "Should show empty state message");
+    }
+
+    #[test]
+    fn test_render_recent_sessions_with_data() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_load_rx = None;
+        app.recent_sessions = vec![
+            RecentSession {
+                session_id: "sess-1".to_string(),
+                file_path: "/test/session1.jsonl".to_string(),
+                project: "my-project".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 30, 0).unwrap(),
+                summary: "Fix the login bug".to_string(),
+                automation: None,
+            },
+            RecentSession {
+                session_id: "sess-2".to_string(),
+                file_path: "/test/session2.jsonl".to_string(),
+                project: "other-app".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: Utc.with_ymd_and_hms(2025, 5, 31, 9, 0, 0).unwrap(),
+                summary: "Add new feature".to_string(),
+                automation: None,
+            },
+        ];
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with recent sessions should not panic");
+
+        let buffer = terminal.backend().buffer();
+        let mut found_project = false;
+        let mut found_summary = false;
+        let mut found_status = false;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..100 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if line.contains("my-project") {
+                found_project = true;
+            }
+            if line.contains("Fix the login bug") {
+                found_summary = true;
+            }
+            if line.contains("2 recent sessions") {
+                found_status = true;
+            }
+        }
+        assert!(found_project, "Should show project name");
+        assert!(found_summary, "Should show session summary");
+        assert!(found_status, "Should show session count in status bar");
+    }
+
+    #[test]
+    fn test_render_recent_sessions_help_bar() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_load_rx = None;
+        app.recent_sessions = vec![RecentSession {
+            session_id: "sess-1".to_string(),
+            file_path: "/test/session1.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+            summary: "hello".to_string(),
+            automation: None,
+        }];
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render should not panic");
+
+        // Check that help bar shows recent sessions keybindings
+        let buffer = terminal.backend().buffer();
+        let mut last_line = String::new();
+        for x in 0..100 {
+            last_line.push_str(buffer.cell((x, 23)).unwrap().symbol());
+        }
+        assert!(
+            last_line.contains("Navigate")
+                && last_line.contains("Resume")
+                && last_line.contains("Tree"),
+            "Help bar should show recent session keybindings, got: {}",
+            last_line.trim()
+        );
+    }
+
+    #[test]
+    fn test_render_search_status_reports_hidden_groups() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.results_query = "later".to_string();
+        app.results = vec![RipgrepMatch {
+            file_path: "/test/session.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "sess-1".to_string(),
+                role: "assistant".to_string(),
+                content: "Later answer".to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        }];
+        app.all_groups = vec![SessionGroup {
+            session_id: "sess-1".to_string(),
+            file_path: "/test/session.jsonl".to_string(),
+            matches: app.results.clone(),
+            automation: Some("ralphex".to_string()),
+        }];
+        app.groups = vec![];
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with hidden groups should not panic");
+
+        assert!(buffer_contains(
+            terminal.backend().buffer(),
+            100,
+            24,
+            "Found 1 matches in 0 sessions (all hidden by filter)"
+        ));
+    }
+
+    #[test]
+    fn test_render_recent_sessions_status_reports_hidden_sessions() {
+        use crate::recent::RecentSession;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent_loading = false;
+        app.recent_load_rx = None;
+        app.automation_filter = crate::tui::state::AutomationFilter::Manual;
+        app.all_recent_sessions = vec![RecentSession {
+            session_id: "sess-1".to_string(),
+            file_path: "/test/session1.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+            summary: "Automated session".to_string(),
+            automation: Some("ralphex".to_string()),
+        }];
+        app.recent_sessions = vec![];
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with hidden recent sessions should not panic");
+
+        assert!(buffer_contains(
+            terminal.backend().buffer(),
+            100,
+            24,
+            "0 recent sessions (1 hidden by filter)"
+        ));
     }
 }

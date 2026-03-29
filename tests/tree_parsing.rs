@@ -65,11 +65,16 @@ fn branched_session_marks_fork_not_on_latest() {
 }
 
 #[test]
-fn compaction_session_shows_compaction_event() {
+fn compaction_session_summary_without_uuid_not_in_tree() {
+    // Real Claude sessions have summary records without UUID — they should not
+    // appear as tree nodes (only summary records with UUID would be visible).
     let tree = SessionTree::from_file("tests/fixtures/compaction_session.jsonl").unwrap();
 
     let has_compaction = tree.rows.iter().any(|r| r.is_compaction);
-    assert!(has_compaction, "Should detect compaction event");
+    assert!(
+        !has_compaction,
+        "Summary without UUID should not appear in tree"
+    );
 }
 
 #[test]

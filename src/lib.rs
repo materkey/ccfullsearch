@@ -1,9 +1,11 @@
 pub mod cli;
+pub mod recent;
 pub mod resume;
 pub mod search;
 pub mod session;
 pub mod tree;
 pub mod tui;
+pub mod update;
 
 pub fn get_search_paths() -> Vec<String> {
     let mut search_paths = Vec::new();

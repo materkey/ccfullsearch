@@ -23,8 +23,20 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     let mut last_uuid: Option<String> = None;
 
     for line in reader.lines() {
-        let line = line.ok()?;
-        let json: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Session logs are append-only, so a partially written tail line should not
+        // discard the latest valid branch metadata we already parsed.
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
 
         if let Some(uuid) = session::extract_uuid(&json) {
             let parent = session::extract_parent_uuid(&json);
@@ -43,6 +55,33 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     }
 
     Some(chain)
+}
+
+/// Return the UUID of the last UUID-bearing record in the file.
+pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
+    let file = fs::File::open(file_path).ok()?;
+    let reader = BufReader::new(file);
+    let mut last_uuid: Option<String> = None;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
+        if let Some(uuid) = session::extract_uuid(&json) {
+            last_uuid = Some(uuid);
+        }
+    }
+
+    last_uuid
 }
 
 /// Create a forked JSONL file containing only messages from the branch
@@ -235,5 +274,25 @@ mod tests {
         assert!(pos("a2") < pos("a3"));
         assert!(pos("a3") < pos("a4"));
         assert!(pos("a4") < pos("a5"));
+    }
+
+    #[test]
+    fn test_latest_chain_and_tip_ignore_invalid_jsonl_lines() {
+        let dir = TempDir::new().unwrap();
+        let path = create_branched_session(&dir);
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":"truncated""#).unwrap();
+
+        let chain = build_chain_from_tip(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            latest_tip_uuid(path.to_str().unwrap()),
+            Some("b5".to_string())
+        );
+        assert!(chain.contains("b5"));
+        assert!(chain.contains("b4"));
+        assert!(chain.contains("b3"));
+        assert!(chain.contains("a2"));
+        assert!(!chain.contains("a5"));
     }
 }

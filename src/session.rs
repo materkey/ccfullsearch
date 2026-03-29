@@ -62,9 +62,47 @@ pub fn extract_parent_uuid(json: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Extract leafUuid from a JSON record.
+pub fn extract_leaf_uuid(json: &serde_json::Value) -> Option<String> {
+    json.get("leafUuid")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Extract record type from a JSON record.
 pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
     json.get("type").and_then(|v| v.as_str())
+}
+
+/// Known automation tool markers found in user message content.
+/// Each entry is (marker_substring, tool_name).
+const AUTOMATION_MARKERS: &[(&str, &str)] = &[
+    ("<<<RALPHEX:", "ralphex"),
+    ("<scheduled-task", "scheduled"),
+];
+const SYNTHETIC_LINEAR_FIELD: &str = "ccsSyntheticLinear";
+
+/// Detect whether message content was produced by a known automation tool.
+/// Returns the tool name if a marker is found, `None` otherwise.
+pub fn detect_automation(content: &str) -> Option<&'static str> {
+    for &(marker, tool_name) in AUTOMATION_MARKERS {
+        if content.contains(marker) {
+            return Some(tool_name);
+        }
+    }
+    None
+}
+
+/// Mark a JSON record as belonging to a synthetic linearized resume session.
+pub fn mark_synthetic_linear_record(json: &mut serde_json::Value) {
+    json[SYNTHETIC_LINEAR_FIELD] = serde_json::Value::Bool(true);
+}
+
+/// Whether a JSON record belongs to a synthetic linearized resume session.
+pub fn is_synthetic_linear_record(json: &serde_json::Value) -> bool {
+    json.get(SYNTHETIC_LINEAR_FIELD)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -142,8 +180,63 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_leaf_uuid() {
+        let json: serde_json::Value = serde_json::json!({"leafUuid": "l1"});
+        assert_eq!(extract_leaf_uuid(&json), Some("l1".to_string()));
+    }
+
+    #[test]
     fn test_extract_record_type() {
         let json: serde_json::Value = serde_json::json!({"type": "user"});
         assert_eq!(extract_record_type(&json), Some("user"));
+    }
+
+    #[test]
+    fn test_detect_automation_ralphex_marker() {
+        let content = "Review complete. <<<RALPHEX:REVIEW_DONE>>>";
+        assert_eq!(detect_automation(content), Some("ralphex"));
+    }
+
+    #[test]
+    fn test_detect_automation_ralphex_all_tasks_done() {
+        let content = "Task done. <<<RALPHEX:ALL_TASKS_DONE>>>";
+        assert_eq!(detect_automation(content), Some("ralphex"));
+    }
+
+    #[test]
+    fn test_detect_automation_scheduled_task() {
+        let content = r#"<scheduled-task name="chezmoi-sync" file="/Users/user/.claude/scheduled-tasks/chezmoi-sync/SCHEDULE.md">"#;
+        assert_eq!(detect_automation(content), Some("scheduled"));
+    }
+
+    #[test]
+    fn test_detect_automation_no_marker() {
+        let content = "How do I sort a list in Python?";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_empty_content() {
+        assert_eq!(detect_automation(""), None);
+    }
+
+    #[test]
+    fn test_detect_automation_partial_marker_no_match() {
+        // Just "RALPHEX" without the <<< prefix should not match
+        let content = "discussing RALPHEX in a conversation";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_mark_synthetic_linear_record() {
+        let mut json = serde_json::json!({"type": "user"});
+        mark_synthetic_linear_record(&mut json);
+        assert!(is_synthetic_linear_record(&json));
+    }
+
+    #[test]
+    fn test_is_synthetic_linear_record_false_by_default() {
+        let json = serde_json::json!({"type": "user"});
+        assert!(!is_synthetic_linear_record(&json));
     }
 }

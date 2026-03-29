@@ -42,6 +42,14 @@ enum Commands {
         #[arg(long, default_value = "50")]
         limit: usize,
     },
+    #[cfg(not(windows))]
+    /// Update ccs to the latest version
+    Update,
+}
+
+fn is_ctrl_h(key: crossterm::event::KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('h') | KeyCode::Backspace)
 }
 
 fn main() -> io::Result<()> {
@@ -67,6 +75,14 @@ fn main() -> io::Result<()> {
         }
         Some(Commands::List { limit }) => {
             ccs::cli::cli_list(&ccs::get_search_paths(), limit);
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        Some(Commands::Update) => {
+            if let Err(e) = ccs::update::run() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
             return Ok(());
         }
         None => {}
@@ -103,7 +119,7 @@ fn main() -> io::Result<()> {
         }
 
         // Draw
-        terminal.draw(|frame| ccs::tui::render(frame, &app))?;
+        terminal.draw(|frame| ccs::tui::render(frame, &mut app))?;
 
         // Handle events
         if event::poll(Duration::from_millis(100))? {
@@ -163,7 +179,11 @@ fn main() -> io::Result<()> {
                     if key.code == KeyCode::Char('b')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        if !app.groups.is_empty() {
+                        if app.in_recent_sessions_mode() {
+                            if !app.recent_sessions.is_empty() {
+                                app.enter_tree_mode_recent();
+                            }
+                        } else if !app.groups.is_empty() {
                             app.enter_tree_mode();
                         }
                         continue;
@@ -214,6 +234,12 @@ fn main() -> io::Result<()> {
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         app.toggle_project_filter();
+                        continue;
+                    }
+
+                    // Ctrl+H: toggle automation filter (All / Manual / Auto)
+                    if is_ctrl_h(key) {
+                        app.toggle_automation_filter();
                         continue;
                     }
 
@@ -279,4 +305,34 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+
+    #[test]
+    fn test_is_ctrl_h_accepts_char_form() {
+        assert!(is_ctrl_h(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+        )));
+    }
+
+    #[test]
+    fn test_is_ctrl_h_accepts_backspace_form() {
+        assert!(is_ctrl_h(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::CONTROL,
+        )));
+    }
+
+    #[test]
+    fn test_is_ctrl_h_rejects_plain_backspace() {
+        assert!(!is_ctrl_h(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )));
+    }
 }
