@@ -76,10 +76,8 @@ pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
 
 /// Known automation tool markers found in user message content.
 /// Each entry is (marker_substring, tool_name).
-const AUTOMATION_MARKERS: &[(&str, &str)] = &[
-    ("<<<RALPHEX:", "ralphex"),
-    ("<scheduled-task", "scheduled"),
-];
+const AUTOMATION_MARKERS: &[(&str, &str)] =
+    &[("<<<RALPHEX:", "ralphex"), ("<scheduled-task", "scheduled")];
 const SYNTHETIC_LINEAR_FIELD: &str = "ccsSyntheticLinear";
 
 /// Detect whether message content was produced by a known automation tool.
