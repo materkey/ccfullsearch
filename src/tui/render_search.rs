@@ -659,9 +659,7 @@ fn find_case_insensitive_match(
             }
         }
 
-        let Some(next_char) = text_lower[lower_match_start..].chars().next() else {
-            return None;
-        };
+        let next_char = text_lower[lower_match_start..].chars().next()?;
         search_start = lower_match_start + next_char.len_utf8();
     }
 

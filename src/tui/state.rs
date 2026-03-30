@@ -15,9 +15,7 @@ const RECENT_SESSIONS_LIMIT: usize = 100;
 
 fn normalize_path_for_prefix_check(path: &str) -> String {
     let normalized = path.replace('\\', "/");
-    normalized
-        .trim_end_matches(|c| c == '/' || c == '\\')
-        .to_string()
+    normalized.trim_end_matches(['/', '\\']).to_string()
 }
 
 fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
