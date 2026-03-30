@@ -719,6 +719,7 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use filetime::{set_file_mtime, FileTime};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1030,9 +1031,8 @@ mod tests {
         let proj = dir.path().join("projects").join("-Users-user-proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        // Create files with different JSONL timestamps. If the filesystem mtime
-        // lands on the same tick for both files, the path fallback should still
-        // keep `newer.jsonl` ahead of `older.jsonl`.
+        // Create files with different JSONL timestamps, then set filesystem
+        // mtimes explicitly because recent-session ordering is based on mtime.
         let older_path = proj.join("older.jsonl");
         let mut f = std::fs::File::create(&older_path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Old question"}}]}},"sessionId":"sess-old","timestamp":"2025-01-01T10:00:00Z"}}"#).unwrap();
@@ -1040,6 +1040,19 @@ mod tests {
         let newer_path = proj.join("newer.jsonl");
         let mut f = std::fs::File::create(&newer_path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"New question"}}]}},"sessionId":"sess-new","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+
+        let older_mtime = Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap();
+        let newer_mtime = Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap();
+        set_file_mtime(
+            &older_path,
+            FileTime::from_unix_time(older_mtime.timestamp(), 0),
+        )
+        .unwrap();
+        set_file_mtime(
+            &newer_path,
+            FileTime::from_unix_time(newer_mtime.timestamp(), 0),
+        )
+        .unwrap();
 
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         let result = collect_recent_sessions(&paths, 50);
