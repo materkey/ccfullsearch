@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1 - 2026-03-30
+
+### Fixed
+- Stop marking manual sessions as automated when they only discuss or quote `ralphex`/`<scheduled-task>` markers
+- Resume branched sessions directly from the original session file instead of forcing a synthetic linear copy from recent-session view
+
 ## v0.6.0 - 2026-03-30
 
 ### New Features
