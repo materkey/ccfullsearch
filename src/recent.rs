@@ -650,6 +650,9 @@ fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 /// sorts by filesystem mtime descending, extracts summaries in parallel
 /// with rayon (filtering out non-session files), and returns the top
 /// `limit` results sorted by session timestamp descending.
+///
+/// When timestamps tie, file path is used as a deterministic fallback so
+/// equal-mtime files do not produce unstable ordering across platforms.
 pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<RecentSession> {
     let files = find_jsonl_files(search_paths);
 
@@ -663,7 +666,7 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
                 .map(|t| (p, t))
         })
         .collect();
-    files_with_mtime.sort_by(|a, b| b.1.cmp(&a.1));
+    files_with_mtime.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
     let files: Vec<PathBuf> = files_with_mtime.into_iter().map(|(p, _)| p).collect();
 
@@ -702,7 +705,11 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
     }
 
     // Sort by timestamp descending and apply limit
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sessions.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.file_path.cmp(&a.file_path))
+    });
     sessions.truncate(limit);
 
     sessions
@@ -1023,7 +1030,9 @@ mod tests {
         let proj = dir.path().join("projects").join("-Users-user-proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        // Create files with different JSONL timestamps
+        // Create files with different JSONL timestamps. If the filesystem mtime
+        // lands on the same tick for both files, the path fallback should still
+        // keep `newer.jsonl` ahead of `older.jsonl`.
         let older_path = proj.join("older.jsonl");
         let mut f = std::fs::File::create(&older_path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Old question"}}]}},"sessionId":"sess-old","timestamp":"2025-01-01T10:00:00Z"}}"#).unwrap();
@@ -1035,7 +1044,8 @@ mod tests {
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         let result = collect_recent_sessions(&paths, 50);
         assert_eq!(result.len(), 2);
-        // Final sort is by session timestamp descending
+        // Final sort is by extracted recency descending, with a deterministic
+        // file-path fallback when timestamps tie.
         assert_eq!(result[0].session_id, "sess-new");
         assert_eq!(result[1].session_id, "sess-old");
     }
