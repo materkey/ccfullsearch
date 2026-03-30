@@ -283,3 +283,48 @@ fn e2e_fork_triggers_for_branch_on_same_file() {
     // Clean up fork file
     let _ = fs::remove_file(&fork_path);
 }
+
+// =============================================================================
+// Scenario 7: Generic resume keeps original branched session
+// =============================================================================
+
+#[test]
+fn e2e_generic_resume_does_not_linearize_branched_session() {
+    let dir = TempDir::new().unwrap();
+    let project_dir = dir.path().join("projects");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    let session_id = "branched-session";
+    let session_file = project_dir.join(format!("{}.jsonl", session_id));
+    {
+        let mut f = fs::File::create(&session_file).unwrap();
+        writeln!(f, r#"{{"type":"progress","uuid":"p1","sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"Hello"}},"uuid":"u1","parentUuid":"p1","sessionId":"{}","timestamp":"2025-01-01T00:01:00Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"Hi"}},"uuid":"a1","parentUuid":"u1","sessionId":"{}","timestamp":"2025-01-01T00:02:00Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"Branch A"}},"uuid":"u2","parentUuid":"a1","sessionId":"{}","timestamp":"2025-01-01T00:03:00Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"A reply"}},"uuid":"a2","parentUuid":"u2","sessionId":"{}","timestamp":"2025-01-01T00:04:00Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"Branch B"}},"uuid":"u3","parentUuid":"a1","sessionId":"{}","timestamp":"2025-01-01T00:03:30Z"}}"#, session_id).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"B reply"}},"uuid":"a3","parentUuid":"u3","sessionId":"{}","timestamp":"2025-01-01T00:04:30Z"}}"#, session_id).unwrap();
+    }
+
+    let resume_id =
+        ccs::resume::test_prepare_cli_resume_session_id(session_id, session_file.to_str().unwrap())
+            .unwrap();
+
+    assert_eq!(resume_id, session_id);
+
+    let jsonl_files: Vec<_> = fs::read_dir(&project_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+        .collect();
+    assert_eq!(
+        jsonl_files.len(),
+        1,
+        "generic resume should not create a synthetic copy"
+    );
+    assert_eq!(
+        jsonl_files[0].file_name().to_string_lossy(),
+        format!("{}.jsonl", session_id)
+    );
+}

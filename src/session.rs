@@ -74,20 +74,59 @@ pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
     json.get("type").and_then(|v| v.as_str())
 }
 
-/// Known automation tool markers found in user message content.
-/// Each entry is (marker_substring, tool_name).
-const AUTOMATION_MARKERS: &[(&str, &str)] =
-    &[("<<<RALPHEX:", "ralphex"), ("<scheduled-task", "scheduled")];
+const RALPHEX_MARKER: &str = "<<<RALPHEX:";
+const SCHEDULED_TASK_MARKER: &str = "<scheduled-task";
+const RALPHEX_INSTRUCTION_CUES: &[&str] = &[
+    "output",
+    "emit",
+    "return",
+    "respond with",
+    "reply with",
+    "print",
+];
 const SYNTHETIC_LINEAR_FIELD: &str = "ccsSyntheticLinear";
+
+fn matches_scheduled_task_marker(content: &str) -> bool {
+    content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
+}
+
+fn ralphex_instruction_prefix(prefix: &str) -> String {
+    prefix
+        .lines()
+        .next_back()
+        .unwrap_or(prefix)
+        .trim_end_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(c, ':' | ';' | ',' | '.' | '-' | '>' | ')' | '(' | ']' | '[')
+        })
+        .to_ascii_lowercase()
+}
+
+fn matches_ralphex_marker(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.starts_with(RALPHEX_MARKER) {
+        return true;
+    }
+
+    trimmed.match_indices(RALPHEX_MARKER).any(|(idx, _)| {
+        let prefix = ralphex_instruction_prefix(&trimmed[..idx]);
+        RALPHEX_INSTRUCTION_CUES
+            .iter()
+            .any(|cue| prefix.ends_with(cue))
+    })
+}
 
 /// Detect whether message content was produced by a known automation tool.
 /// Returns the tool name if a marker is found, `None` otherwise.
 pub fn detect_automation(content: &str) -> Option<&'static str> {
-    for &(marker, tool_name) in AUTOMATION_MARKERS {
-        if content.contains(marker) {
-            return Some(tool_name);
-        }
+    if matches_scheduled_task_marker(content) {
+        return Some("scheduled");
     }
+
+    if matches_ralphex_marker(content) {
+        return Some("ralphex");
+    }
+
     None
 }
 
@@ -191,13 +230,13 @@ mod tests {
 
     #[test]
     fn test_detect_automation_ralphex_marker() {
-        let content = "Review complete. <<<RALPHEX:REVIEW_DONE>>>";
+        let content = "Path A - No issues: Output <<<RALPHEX:REVIEW_DONE>>>";
         assert_eq!(detect_automation(content), Some("ralphex"));
     }
 
     #[test]
     fn test_detect_automation_ralphex_all_tasks_done() {
-        let content = "Task done. <<<RALPHEX:ALL_TASKS_DONE>>>";
+        let content = "Follow the plan and emit <<<RALPHEX:ALL_TASKS_DONE>>> when complete";
         assert_eq!(detect_automation(content), Some("ralphex"));
     }
 
@@ -210,6 +249,18 @@ mod tests {
     #[test]
     fn test_detect_automation_no_marker() {
         let content = "How do I sort a list in Python?";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_ignores_quoted_ralphex_marker() {
+        let content = "Ralphex uses <<<RALPHEX:ALL_TASKS_DONE>>> signals.";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_ignores_quoted_scheduled_task_marker() {
+        let content = r#"такие тоже надо детектить <scheduled-task name="chezmoi-sync">"#;
         assert_eq!(detect_automation(content), None);
     }
 

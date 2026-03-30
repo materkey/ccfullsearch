@@ -65,6 +65,28 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
     None
 }
 
+fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
+    if session::extract_record_type(json) != Some("user") {
+        return None;
+    }
+
+    if json
+        .get("isMeta")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let message = json.get("message")?;
+    let content = message.get("content")?;
+    extract_text_content(content)
+}
+
+fn is_real_user_prompt(text: &str) -> bool {
+    !text.starts_with("<system-reminder>")
+}
+
 #[derive(Default)]
 struct HeadScan {
     lines_scanned: usize,
@@ -183,28 +205,10 @@ fn scan_head_with_chain(
             }
         }
 
-        if session::extract_record_type(&json) == Some("user") {
-            let is_meta = json
-                .get("isMeta")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            if !is_meta {
-                if let Some(message) = json.get("message") {
-                    if let Some(content) = message.get("content") {
-                        if let Some(text) = extract_text_content(content) {
-                            if scan.automation.is_none() {
-                                scan.automation =
-                                    session::detect_automation(&text).map(|s| s.to_string());
-                            }
-                            if scan.first_user_message.is_none()
-                                && !text.starts_with("<system-reminder>")
-                            {
-                                scan.first_user_message = Some(truncate_summary(&text, 100));
-                            }
-                        }
-                    }
-                }
+        if let Some(text) = extract_non_meta_user_text(&json) {
+            if scan.first_user_message.is_none() && is_real_user_prompt(&text) {
+                scan.automation = session::detect_automation(&text).map(|s| s.to_string());
+                scan.first_user_message = Some(truncate_summary(&text, 100));
             }
         }
 
@@ -226,13 +230,13 @@ fn scan_head(path: &Path, max_lines: usize) -> Option<HeadScan> {
 
 #[derive(Default)]
 struct TailSummaryScan {
-    summary: Option<(Option<String>, String, Option<String>)>,
+    summary: Option<(Option<String>, String)>,
     saw_off_chain_summary: bool,
 }
 
 /// Read the last `max_bytes` of a file and search for the last `type=summary` record.
 /// Compaction summaries are appended during context compaction, so they appear near
-/// the end of long session files. Returns (session_id, summary_text, automation) if found.
+/// the end of long session files. Returns (session_id, summary_text) if found.
 ///
 /// Reads into a byte buffer and skips to the first newline after the seek offset
 /// to avoid splitting multibyte UTF-8 characters or partial JSONL lines.
@@ -278,10 +282,8 @@ fn find_summary_from_tail_with_chain(
 
     // Find the last summary record in the tail, and track any sessionId from any record
     // so we have a fallback if the summary record itself lacks a sessionId.
-    // Also detect automation from user-type records in the tail.
     let mut last_summary: Option<(Option<String>, String)> = None;
     let mut any_sid: Option<String> = None;
-    let mut tail_automation: Option<String> = None;
     let mut saw_off_chain_summary = false;
     for line in tail.lines() {
         let json: serde_json::Value = match serde_json::from_str(line) {
@@ -293,22 +295,6 @@ fn find_summary_from_tail_with_chain(
         }
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
-        }
-        if tail_automation.is_none() && session::extract_record_type(&json) == Some("user") {
-            let is_meta = json
-                .get("isMeta")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if !is_meta {
-                if let Some(message) = json.get("message") {
-                    if let Some(content) = message.get("content") {
-                        if let Some(text) = extract_text_content(content) {
-                            tail_automation =
-                                session::detect_automation(&text).map(|s| s.to_string());
-                        }
-                    }
-                }
-            }
         }
         if session::extract_record_type(&json) == Some("summary") {
             if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
@@ -326,16 +312,13 @@ fn find_summary_from_tail_with_chain(
     }
 
     Some(TailSummaryScan {
-        summary: last_summary.map(|(sid, text)| (sid.or(any_sid), text, tail_automation)),
+        summary: last_summary.map(|(sid, text)| (sid.or(any_sid), text)),
         saw_off_chain_summary,
     })
 }
 
 #[cfg(test)]
-fn find_summary_from_tail(
-    path: &Path,
-    max_bytes: u64,
-) -> Option<(Option<String>, String, Option<String>)> {
+fn find_summary_from_tail(path: &Path, max_bytes: u64) -> Option<(Option<String>, String)> {
     find_summary_from_tail_with_chain(path, max_bytes, None)?.summary
 }
 
@@ -413,32 +396,16 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
             Err(_) => continue,
         };
 
-        if session::is_synthetic_linear_record(&json)
-            || session::extract_record_type(&json) != Some("user")
-        {
+        if session::is_synthetic_linear_record(&json) {
             continue;
         }
 
-        let is_meta = json
-            .get("isMeta")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if is_meta {
-            continue;
-        }
-
-        let Some(message) = json.get("message") else {
-            continue;
-        };
-        let Some(content) = message.get("content") else {
-            continue;
-        };
-        let Some(text) = extract_text_content(content) else {
+        let Some(text) = extract_non_meta_user_text(&json) else {
             continue;
         };
 
-        if let Some(automation) = session::detect_automation(&text) {
-            return Some(automation.to_string());
+        if is_real_user_prompt(&text) {
+            return session::detect_automation(&text).map(|s| s.to_string());
         }
     }
 
@@ -454,7 +421,7 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
 /// Uses a three-pass approach:
 /// 1. Check the last 256KB for summary records (compaction summaries at file end)
 /// 2. Scan first 30 lines for session_id, first user message, and summary records
-/// 3. If no summary found yet, scan remaining lines for summary records only
+/// 3. Scan the remaining lines for any missing summary/session-id/first-user metadata
 ///
 /// Uses file mtime as timestamp for accurate recency sorting.
 pub fn extract_summary(path: &Path) -> Option<RecentSession> {
@@ -475,7 +442,6 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let tail_scan = find_summary_from_tail_with_chain(path, TAIL_BYTES, latest_chain.as_ref())
         .unwrap_or_default();
     let tail_summary = tail_scan.summary;
-    let tail_scanned_user_fields = tail_summary.is_some();
 
     // Pass 2: reuse the head scan, then let the tail summary override it when present.
     let mut session_id = head_scan.session_id.clone();
@@ -487,11 +453,10 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         head_scan.saw_off_chain_summary || tail_scan.saw_off_chain_summary;
     let lines_scanned = head_scan.lines_scanned;
 
-    if let Some((tail_sid, summary_text, tail_automation)) = tail_summary {
+    if let Some((tail_sid, summary_text)) = tail_summary {
         session_id = tail_sid.clone().or(session_id);
         last_summary = Some(summary_text);
         last_summary_sid = tail_sid;
-        automation = tail_automation.or(automation);
     }
 
     // Pass 3: scan the middle region for any metadata the head/tail passes still
@@ -501,15 +466,13 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     //   first user message was beyond the head scan
     // - Automation markers or session IDs only appear in the unscanned middle of a large file
     //
-    // Once a summary record is already known, there is no need to keep scanning for the
-    // first user message fallback.
     let need_summary = last_summary.is_none();
-    let need_user_msg = last_summary.is_none() && first_user_message.is_none();
+    let need_user_msg = first_user_message.is_none();
     let need_sid = last_summary_sid.is_none() && session_id.is_none();
-    let need_automation = automation.is_none();
+    let need_automation = automation.is_none() && first_user_message.is_none();
     // For summaries, only scan the middle if tail_start > 0 (otherwise tail covered the whole
-    // file). For user messages, session_id, and automation, always scan beyond the head since
-    // the tail pass never looks for them.
+    // file). For the first user prompt, session_id, and automation, always scan beyond the head
+    // since the tail pass never looks for them.
     let should_scan_middle =
         (need_summary && tail_start > 0) || need_user_msg || need_sid || need_automation;
     if should_scan_middle && lines_scanned >= HEAD_SCAN_LINES {
@@ -527,15 +490,12 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             }
 
             // For summary scanning, stop before the tail region (already covered by pass 1).
-            // For user message scanning, continue through the tail since pass 1 never looks
-            // for user messages unless it already found a tail summary.
+            // For the first real user prompt, continue through the tail since pass 1 never
+            // looks for it.
             let in_tail_region = tail_start > 0 && bytes_read >= tail_start;
             let still_need_user_msg = need_user_msg && first_user_message.is_none();
             let still_need_sid = need_sid && session_id.is_none();
-            let still_need_auto = need_automation && automation.is_none();
-            let need_tail_user_scan = !tail_scanned_user_fields
-                && (still_need_user_msg || still_need_sid || still_need_auto);
-            if in_tail_region && !need_tail_user_scan {
+            if in_tail_region && !(still_need_user_msg || still_need_sid) {
                 break;
             }
 
@@ -549,14 +509,13 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             let have_summary = !need_summary || last_summary.is_some();
             let have_user_msg = !need_user_msg || first_user_message.is_some();
             let have_sid = !need_sid || session_id.is_some();
-            let have_auto = !need_automation || automation.is_some();
+            let have_auto = !need_automation || first_user_message.is_some();
             if have_summary && have_user_msg && have_sid && have_auto {
                 break;
             }
 
             let could_be_summary = need_summary && !in_tail_region && line.contains("\"summary\"");
-            let could_be_user =
-                (still_need_user_msg || still_need_auto) && line.contains("\"user\"");
+            let could_be_user = still_need_user_msg && line.contains("\"user\"");
 
             let could_have_sid = still_need_sid
                 && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
@@ -592,26 +551,11 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
                 }
             }
 
-            if could_be_user && session::extract_record_type(&json) == Some("user") {
-                let is_meta = json
-                    .get("isMeta")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !is_meta {
-                    if let Some(message) = json.get("message") {
-                        if let Some(content) = message.get("content") {
-                            if let Some(text) = extract_text_content(content) {
-                                if automation.is_none() {
-                                    automation =
-                                        session::detect_automation(&text).map(|s| s.to_string());
-                                }
-                                if first_user_message.is_none()
-                                    && !text.starts_with("<system-reminder>")
-                                {
-                                    first_user_message = Some(truncate_summary(&text, 100));
-                                }
-                            }
-                        }
+            if could_be_user {
+                if let Some(text) = extract_non_meta_user_text(&json) {
+                    if first_user_message.is_none() && is_real_user_prompt(&text) {
+                        automation = session::detect_automation(&text).map(|s| s.to_string());
+                        first_user_message = Some(truncate_summary(&text, 100));
                     }
                 }
             }
@@ -1163,7 +1107,7 @@ mod tests {
         // reading the last 200 bytes should land inside the Cyrillic/emoji text.
         let result = find_summary_from_tail(f.path(), 200);
         assert!(result.is_some());
-        let (sid, text, _auto) = result.unwrap();
+        let (sid, text) = result.unwrap();
         assert_eq!(text, "UTF-8 session summary");
         assert_eq!(sid, Some("sess-utf8".to_string()));
     }
@@ -1326,7 +1270,7 @@ mod tests {
             result.is_some(),
             "Summary at exact tail boundary should not be skipped"
         );
-        let (sid, text, _auto) = result.unwrap();
+        let (sid, text) = result.unwrap();
         assert_eq!(text, "Boundary summary found");
         assert_eq!(sid, Some("sess-boundary".to_string()));
     }
@@ -1399,7 +1343,7 @@ mod tests {
     #[test]
     fn test_extract_summary_tail_summary_uses_head_automation() {
         let mut f = NamedTempFile::new().unwrap();
-        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Bootstrap run. <<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"sess-tail-auto","timestamp":"2026-03-28T08:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"When done output <<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"sess-tail-auto","timestamp":"2026-03-28T08:00:00Z"}}"#).unwrap();
 
         let padding_line = format!(
             r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"sess-tail-auto","timestamp":"2026-03-28T08:01:00Z"}}"#,
@@ -1417,6 +1361,21 @@ mod tests {
             "Tail summary with automation marker only in head"
         );
         assert_eq!(result.automation, Some("ralphex".to_string()));
+    }
+
+    #[test]
+    fn test_extract_summary_ignores_later_quoted_scheduled_task_marker() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"How can I distinguish ralphex transcripts from manual sessions?"}}]}},"sessionId":"sess-manual","timestamp":"2026-03-28T08:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Let's inspect the markers."}}]}},"sessionId":"sess-manual","timestamp":"2026-03-28T08:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"такие тоже надо детектить <scheduled-task name=\"chezmoi-sync\">"}}]}},"sessionId":"sess-manual","timestamp":"2026-03-28T08:02:00Z"}}"#).unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(
+            result.summary,
+            "How can I distinguish ralphex transcripts from manual sessions?"
+        );
+        assert_eq!(result.automation, None);
     }
 
     #[test]

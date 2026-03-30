@@ -1,15 +1,20 @@
 use super::path_codec::decode_project_path;
 use crate::search::Message;
+#[cfg(test)]
 use crate::session;
+#[cfg(test)]
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+#[cfg(test)]
+use std::io::Write;
+use std::io::{BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
 const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
+#[cfg(test)]
 const SYNTHETIC_SOURCE_PATH_FIELD: &str = "ccsSyntheticSourcePath";
 
 /// Session metadata extracted from a single JSONL parse pass.
@@ -20,6 +25,7 @@ struct SessionAnalysis {
     last_ts: String,
     git_branch: String,
     /// Whether all user/assistant messages are on the latest parentUuid chain.
+    #[cfg(test)]
     is_linear: bool,
 }
 
@@ -34,8 +40,11 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
     let mut last_ts = String::new();
     let mut git_branch = String::new();
 
+    #[cfg(test)]
     let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
+    #[cfg(test)]
     let mut message_uuids = HashSet::new();
+    #[cfg(test)]
     let mut last_uuid: Option<String> = None;
 
     for line in reader.lines().map_while(Result::ok) {
@@ -44,6 +53,7 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
             Err(_) => continue,
         };
 
+        #[cfg(test)]
         if let Some(uuid) = session::extract_uuid(&json) {
             let parent = session::extract_parent_uuid(&json);
             uuid_to_parent.insert(uuid.clone(), parent);
@@ -60,6 +70,7 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
         }
 
         message_count += 1;
+        #[cfg(test)]
         if let Some(uuid) = session::extract_uuid(&json) {
             message_uuids.insert(uuid);
         }
@@ -92,18 +103,24 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
     }
 
     // Walk chain from tip to count reachable message UUIDs
+    #[cfg(test)]
     let mut on_chain = HashSet::new();
+    #[cfg(test)]
     let mut current = last_uuid;
+    #[cfg(test)]
     while let Some(uuid) = current {
         on_chain.insert(uuid.clone());
         current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
     }
 
-    let reachable_messages = message_uuids
-        .iter()
-        .filter(|uuid| on_chain.contains(*uuid))
-        .count();
-    let is_linear = message_uuids.is_empty() || reachable_messages == message_uuids.len();
+    #[cfg(test)]
+    let is_linear = {
+        let reachable_messages = message_uuids
+            .iter()
+            .filter(|uuid| on_chain.contains(*uuid))
+            .count();
+        message_uuids.is_empty() || reachable_messages == message_uuids.len()
+    };
 
     Some(SessionAnalysis {
         first_prompt,
@@ -111,6 +128,7 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
         first_ts,
         last_ts,
         git_branch,
+        #[cfg(test)]
         is_linear,
     })
 }
@@ -195,6 +213,7 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
     }
 }
 
+#[cfg(test)]
 fn cleanup_legacy_synthetic_sessions(
     project_dir: &Path,
     keep_file_path: &Path,
@@ -254,6 +273,7 @@ fn cleanup_legacy_synthetic_sessions(
     }
 }
 
+#[cfg(test)]
 fn disposable_synthetic_session_matches_source(path: &Path, source_file_path: &Path) -> bool {
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -302,6 +322,7 @@ pub fn ensure_project_dir(file_path: &str) -> Result<(), String> {
 /// Create a synthetic JSONL with a linear parentUuid chain.
 /// Claude CLI only shows messages in Rewind that are on the parentUuid chain
 /// from the last message. We rebuild as a flat sequence of user/assistant messages.
+#[cfg(test)]
 fn create_linear_session(file_path: &str) -> Result<(String, String), String> {
     let file =
         fs::File::open(file_path).map_err(|e| format!("Failed to open {}: {}", file_path, e))?;
@@ -427,6 +448,7 @@ fn create_linear_session(file_path: &str) -> Result<(String, String), String> {
     Ok((new_id, new_path.to_string_lossy().to_string()))
 }
 
+#[cfg(test)]
 fn synthetic_source_fingerprint(file: &fs::File) -> String {
     let metadata = match file.metadata() {
         Ok(metadata) => metadata,
@@ -444,6 +466,7 @@ fn synthetic_source_fingerprint(file: &fs::File) -> String {
     format!("{len}:{modified}")
 }
 
+#[cfg(test)]
 fn is_synthetic_linear_session_file(path: &Path) -> bool {
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -464,6 +487,7 @@ fn is_synthetic_linear_session_file(path: &Path) -> bool {
     false
 }
 
+#[cfg(test)]
 fn stable_synthetic_session_id(key: &str) -> String {
     let h1 = fnv1a64(key.as_bytes(), 0xcbf29ce484222325);
     let h2 = fnv1a64(key.as_bytes(), 0x84222325cbf29ce4);
@@ -478,6 +502,7 @@ fn stable_synthetic_session_id(key: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
     let mut hash = seed;
     for byte in bytes {
@@ -487,42 +512,30 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
     hash
 }
 
-/// Resume a Claude Code CLI session using exec.
-pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
+pub(super) fn prepare_resume_session_id(
+    session_id: &str,
+    file_path: &str,
+) -> Result<String, String> {
     ensure_project_dir(file_path)?;
 
     let analysis = analyze_session(file_path);
     let project_dir = Path::new(file_path).parent();
-
-    let is_branched = analysis.as_ref().map(|a| !a.is_linear).unwrap_or(false);
     let in_index = project_dir
         .map(|d| is_session_in_index(d, session_id))
         .unwrap_or(false);
 
-    let resume_id = if is_branched {
-        // Session has actual branching — create a linear copy
-        eprintln!("[ccs] Session has branched history, creating linear copy to resume...");
-        let (id, path) = create_linear_session(file_path)?;
-        cleanup_legacy_synthetic_sessions(
-            project_dir.ok_or("No parent directory")?,
-            Path::new(&path),
-            Path::new(file_path),
-        );
-        let linear_analysis = analyze_session(&path);
-        if let Some(ref a) = linear_analysis {
-            ensure_session_in_index(&id, &path, a);
-        }
-        id
-    } else {
-        // Linear session — just register in index if needed
-        if !in_index {
-            eprintln!("[ccs] Registering session in index...");
-        }
+    if !in_index {
         if let Some(ref a) = analysis {
             ensure_session_in_index(session_id, file_path, a);
         }
-        session_id.to_string()
-    };
+    }
+
+    Ok(session_id.to_string())
+}
+
+/// Resume a Claude Code CLI session using exec.
+pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
+    let resume_id = prepare_resume_session_id(session_id, file_path)?;
 
     let claude_path =
         which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;

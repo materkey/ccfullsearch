@@ -1,5 +1,4 @@
 use super::RipgrepMatch;
-use crate::session;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -60,13 +59,12 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
         }
     }
 
-    // Convert to vec, detect automation from matched user messages, and sort matches within
-    // each group (newest first).
+    // Convert to vec and sort matches within each group (newest first). Automation is
+    // resolved later from the full session file because partial search hits are not enough
+    // to classify session origin reliably.
     let mut groups: Vec<SessionGroup> = group_map.into_values().collect();
 
     for group in &mut groups {
-        group.automation = detect_automation_from_matches(&group.matches);
-
         group.matches.sort_by(|a, b| {
             let ta = a.message.as_ref().map(|m| m.timestamp);
             let tb = b.message.as_ref().map(|m| m.timestamp);
@@ -83,17 +81,6 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 
     groups
 }
-
-fn detect_automation_from_matches(matches: &[RipgrepMatch]) -> Option<String> {
-    matches.iter().find_map(|m| {
-        let msg = m.message.as_ref()?;
-        if msg.role != "user" {
-            return None;
-        }
-        session::detect_automation(&msg.content).map(|tool| tool.to_string())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_group_detects_ralphex_automation() {
+    fn test_group_leaves_automation_unset_without_session_scan() {
         let results = vec![
             make_match_with_content(
                 "rx-session",
@@ -305,7 +292,7 @@ mod tests {
 
         let groups = group_by_session(results);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].automation, Some("ralphex".to_string()));
+        assert_eq!(groups[0].automation, None);
     }
 
     #[test]

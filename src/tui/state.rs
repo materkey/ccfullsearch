@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn test_handle_search_result_detects_automation_outside_recent_sessions() {
         let mut session_file = NamedTempFile::new().unwrap();
-        writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"<<<RALPHEX: run automation >>>"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"When done output <<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
         writeln!(session_file, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Automation reply"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -754,6 +754,45 @@ mod tests {
         assert_eq!(app.all_groups.len(), 1);
         assert_eq!(app.all_groups[0].automation, Some("ralphex".to_string()));
         assert_eq!(app.groups.len(), 1);
+    }
+
+    #[test]
+    fn test_handle_search_result_ignores_later_quoted_automation_markers() {
+        let mut session_file = NamedTempFile::new().unwrap();
+        writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"How can I distinguish ralphex transcripts from manual sessions?"}}]}},"sessionId":"manual-session","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(session_file, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Let's inspect the markers."}}]}},"sessionId":"manual-session","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
+        writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"такие тоже надо детектить <scheduled-task name=\"chezmoi-sync\">"}}]}},"sessionId":"manual-session","timestamp":"2025-06-01T10:02:00Z"}}"#).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input = "detekt".to_string();
+        app.search_seq = 1;
+
+        let result = RipgrepMatch {
+            file_path: session_file.path().to_string_lossy().to_string(),
+            message: Some(Message {
+                session_id: "manual-session".to_string(),
+                role: "user".to_string(),
+                content: r#"такие тоже надо детектить <scheduled-task name="chezmoi-sync">"#
+                    .to_string(),
+                timestamp: Utc::now(),
+                branch: None,
+                line_number: 3,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result((
+            1,
+            "detekt".to_string(),
+            app.search_paths.clone(),
+            false,
+            Ok(vec![result]),
+        ));
+
+        assert_eq!(app.all_groups.len(), 1);
+        assert_eq!(app.all_groups[0].automation, None);
     }
 
     #[test]

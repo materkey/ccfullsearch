@@ -65,6 +65,14 @@ pub fn test_resolve_parent_session(session_id: &str, file_path: &str) -> (String
     resolve_parent_session(session_id, file_path)
 }
 
+#[doc(hidden)]
+pub fn test_prepare_cli_resume_session_id(
+    session_id: &str,
+    file_path: &str,
+) -> Result<String, String> {
+    launcher::prepare_resume_session_id(session_id, file_path)
+}
+
 /// Resume a Claude session based on its source.
 /// If `message_uuid` is provided and the message is not on the latest chain,
 /// creates a forked JSONL file and resumes from that instead.
