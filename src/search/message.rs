@@ -25,9 +25,6 @@ impl Message {
         use crate::session;
 
         let json: serde_json::Value = serde_json::from_str(line).ok()?;
-        if session::is_synthetic_linear_record(&json) {
-            return None;
-        }
 
         // Skip non-message types (summary, etc.)
         let msg_type = session::extract_record_type(&json)?;
@@ -268,18 +265,6 @@ mod tests {
 
         assert_eq!(msg.uuid, None);
         assert_eq!(msg.parent_uuid, None);
-    }
-
-    #[test]
-    fn test_skip_synthetic_linear_message() {
-        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hidden synthetic session"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z","ccsSyntheticLinear":true}"#;
-
-        let msg = Message::from_jsonl(jsonl, 1);
-
-        assert!(
-            msg.is_none(),
-            "Synthetic linear sessions should not be indexed"
-        );
     }
 
     #[test]

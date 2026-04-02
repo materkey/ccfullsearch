@@ -17,6 +17,8 @@ pub struct DagNode {
     pub role: Option<String>,
     /// First ~120 chars of content, sanitized
     pub content_preview: Option<String>,
+    /// True if this is a subagent sidechain message
+    pub is_sidechain: bool,
 }
 
 /// A flattened row ready for display in the tree view.
@@ -64,7 +66,6 @@ impl SessionTree {
         let mut nodes: HashMap<String, DagNode> = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut roots: Vec<String> = Vec::new();
-        let mut last_uuid: Option<String> = None;
         let mut session_id = String::new();
 
         for (line_idx, line_result) in reader.lines().enumerate() {
@@ -85,13 +86,15 @@ impl SessionTree {
                 None => continue,
             };
 
-            let parent_uuid = session::extract_parent_uuid(&json);
+            let parent_uuid = session::extract_parent_uuid_or_logical(&json);
 
             let record_type = session::extract_record_type(&json)
                 .unwrap_or("")
                 .to_string();
 
             let timestamp = session::extract_timestamp(&json);
+
+            let is_sidechain = session::is_sidechain(&json);
 
             // Extract role and content preview for displayable types
             let (role, content_preview) = if record_type == "user" || record_type == "assistant" {
@@ -148,13 +151,13 @@ impl SessionTree {
                     line_index: line_idx,
                     role,
                     content_preview,
+                    is_sidechain,
                 },
             );
-            last_uuid = Some(uuid);
         }
 
-        // Build latest chain
-        let latest_chain = build_latest_chain(&nodes, last_uuid.as_deref());
+        // Build latest chain using terminal message detection
+        let latest_chain = build_latest_chain(&nodes);
 
         let source = SessionSource::from_path(file_path);
 
@@ -233,7 +236,7 @@ impl SessionTree {
         let displayable_uuids: HashSet<String> = self
             .nodes
             .values()
-            .filter(|n| n.role.is_some() && n.content_preview.is_some())
+            .filter(|n| n.role.is_some() && n.content_preview.is_some() && !n.is_sidechain)
             .map(|n| n.uuid.clone())
             .collect();
 
@@ -425,19 +428,53 @@ impl SessionTree {
     }
 }
 
-/// Build the latest chain by walking backwards from the tip (last uuid in file).
-fn build_latest_chain(
-    nodes: &HashMap<String, DagNode>,
-    last_uuid: Option<&str>,
-) -> HashSet<String> {
+/// Build the latest chain by finding terminal messages and walking backwards from the tip.
+///
+/// A terminal message is one whose uuid does NOT appear as any other message's parentUuid.
+/// Among terminals, we pick the latest user/assistant that is NOT a sidechain message.
+/// This matches Claude Code's behavior in conversationRecovery.ts.
+fn build_latest_chain(nodes: &HashMap<String, DagNode>) -> HashSet<String> {
     let mut chain = HashSet::new();
-    let Some(tip) = last_uuid else {
+    if nodes.is_empty() {
+        return chain;
+    }
+
+    // Collect all parentUuids to find terminal nodes
+    let parent_uuids: HashSet<&str> = nodes
+        .values()
+        .filter_map(|n| n.parent_uuid.as_deref())
+        .collect();
+
+    // Terminal = uuid not referenced as anyone's parentUuid
+    // Filter to user/assistant, non-sidechain, with timestamp
+    let tip = nodes
+        .values()
+        .filter(|n| !parent_uuids.contains(n.uuid.as_str()))
+        .filter(|n| !n.is_sidechain)
+        .filter(|n| matches!(n.role.as_deref(), Some("user" | "assistant" | "compaction")))
+        .filter(|n| n.timestamp.is_some())
+        .max_by_key(|n| n.timestamp);
+
+    let Some(tip_node) = tip else {
+        // Fallback: if no displayable terminal found, use the last node by line_index
+        let fallback = nodes.values().max_by_key(|n| n.line_index);
+        if let Some(fb) = fallback {
+            let mut current = Some(fb.uuid.clone());
+            while let Some(uuid) = current {
+                if !chain.insert(uuid.clone()) {
+                    break; // cycle detected
+                }
+                current = nodes.get(&uuid).and_then(|n| n.parent_uuid.clone());
+            }
+        }
         return chain;
     };
 
-    let mut current = Some(tip.to_string());
+    let mut current = Some(tip_node.uuid.clone());
     while let Some(uuid) = current {
-        chain.insert(uuid.clone());
+        if !chain.insert(uuid.clone()) {
+            break; // cycle detected
+        }
         current = nodes.get(&uuid).and_then(|n| n.parent_uuid.clone());
     }
     chain
@@ -824,5 +861,246 @@ mod tests {
         let symbols = build_graph_symbols(1, &active, false, true);
         assert!(symbols.contains('|'));
         assert!(symbols.contains('*'));
+    }
+
+    #[test]
+    fn test_latest_chain_ignores_trailing_metadata() {
+        // Bug: old code used last_uuid (last line) as tip. If the last line is a
+        // metadata/summary record, it should NOT become the tip.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("trailing_meta.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Hi there"}}]}},"uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Trailing system record — has uuid but is not user/assistant
+        writeln!(f, r#"{{"type":"system","subtype":"attribution-snapshot","uuid":"sys1","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // u2 should be on latest chain (it's the latest user/assistant terminal)
+        // u1 should also be on latest chain (ancestor of u2)
+        let find_row = |content: &str| {
+            tree.rows
+                .iter()
+                .find(|r| r.content_preview.contains(content))
+                .unwrap()
+        };
+
+        assert!(find_row("Hello").is_on_latest_chain);
+        assert!(find_row("Hi there").is_on_latest_chain);
+    }
+
+    #[test]
+    fn test_latest_chain_ignores_sidechain_leaf() {
+        // Sidechain messages (subagent) should not become the tip even if they
+        // are terminal and have the latest timestamp.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sidechain_leaf.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Working on it"}}]}},"uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Sidechain leaf with later timestamp
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Subagent result"}}]}},"uuid":"sc1","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z","isSidechain":true}}"#).unwrap();
+        // Real continuation (earlier timestamp than sidechain but this is the real tip)
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Thanks"}}]}},"uuid":"u3","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        let find_row = |content: &str| {
+            tree.rows
+                .iter()
+                .find(|r| r.content_preview.contains(content))
+                .unwrap()
+        };
+
+        // u3 ("Thanks") should be on latest chain, not sc1 ("Subagent result")
+        assert!(find_row("Thanks").is_on_latest_chain);
+        assert!(find_row("Hello").is_on_latest_chain);
+        assert!(find_row("Working on it").is_on_latest_chain);
+    }
+
+    #[test]
+    fn test_latest_chain_picks_latest_terminal() {
+        // With multiple terminal branches, pick the one with the latest timestamp.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi_terminal.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Root"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        // Branch A: earlier terminal
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Branch A"}}]}},"uuid":"a1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Branch B: later terminal
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Branch B"}}]}},"uuid":"b1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        let find_row = |content: &str| {
+            tree.rows
+                .iter()
+                .find(|r| r.content_preview.contains(content))
+                .unwrap()
+        };
+
+        // Branch B has later timestamp, so it should be on latest chain
+        assert!(find_row("Branch B").is_on_latest_chain);
+        assert!(find_row("Root").is_on_latest_chain);
+        // Branch A should NOT be on latest chain
+        assert!(!find_row("Branch A").is_on_latest_chain);
+    }
+
+    #[test]
+    fn test_logical_parent_uuid_bridges_compact_boundary() {
+        // compact_boundary messages have parentUuid: null but logicalParentUuid
+        // preserves the link. Without this fallback, post-compact messages become
+        // orphaned roots and the tree breaks into disconnected pieces.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("logical_parent.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Pre-compact chain
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Before compact"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Reply before"}}]}},"uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // compact_boundary with logicalParentUuid bridging to u2
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"cb1","logicalParentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Post-compact chain continuing from compact_boundary
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"After compact"}}]}},"uuid":"u3","parentUuid":"cb1","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Reply after"}}]}},"uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // All messages should form one connected chain via logicalParentUuid bridge
+        assert_eq!(
+            tree.rows.len(),
+            4,
+            "Should have 4 displayable rows (u1, u2, u3, u4)"
+        );
+
+        let find_row = |content: &str| {
+            tree.rows
+                .iter()
+                .find(|r| r.content_preview.contains(content))
+                .unwrap()
+        };
+
+        // All should be on latest chain — the logicalParentUuid bridges the gap
+        assert!(find_row("Before compact").is_on_latest_chain);
+        assert!(find_row("Reply before").is_on_latest_chain);
+        assert!(find_row("After compact").is_on_latest_chain);
+        assert!(find_row("Reply after").is_on_latest_chain);
+
+        // Post-compact messages should NOT be orphaned roots
+        // (they should have display parents, not be at tree root level)
+        let after_idx = tree
+            .rows
+            .iter()
+            .position(|r| r.content_preview.contains("After compact"))
+            .unwrap();
+        let reply_before_idx = tree
+            .rows
+            .iter()
+            .position(|r| r.content_preview.contains("Reply before"))
+            .unwrap();
+        assert!(
+            after_idx > reply_before_idx,
+            "After compact should come after Reply before in display order"
+        );
+    }
+
+    #[test]
+    fn test_display_graph_bridges_progress_nodes() {
+        // Progress nodes are non-displayable (no role/content_preview).
+        // find_displayable_parent() should walk through them so that
+        // user(u1) -> progress(p1) -> user(u2) displays as u1 -> u2.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("progress_bridge.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"First message"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        // Progress node in the middle — has uuid/parentUuid but no role/content
+        writeln!(f, r#"{{"type":"progress","uuid":"p1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Second message"}}]}},"uuid":"u2","parentUuid":"p1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // Only u1 and u2 should be displayed (progress is not displayable)
+        assert_eq!(tree.rows.len(), 2, "Only user messages should be displayed");
+        assert!(tree.rows[0].content_preview.contains("First message"));
+        assert!(tree.rows[1].content_preview.contains("Second message"));
+
+        // Both should be on latest chain (connected through progress bridge)
+        assert!(tree.rows[0].is_on_latest_chain);
+        assert!(tree.rows[1].is_on_latest_chain);
+
+        // u2 should NOT be a root — it should be a child of u1 via the progress bridge
+        assert_eq!(
+            tree.branch_count(),
+            0,
+            "Should be linear chain, no branches"
+        );
+    }
+
+    #[test]
+    fn test_system_nodes_bridge_correctly() {
+        // System nodes (uuid/parentUuid but no role/content) are non-displayable.
+        // find_displayable_parent() should walk through them so that
+        // user(u1) -> system(s1) -> user(u2) displays as u1 -> u2.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("system_bridge.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Before system"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        // System node in the middle — has uuid/parentUuid but no message/role
+        writeln!(f, r#"{{"type":"system","uuid":"s1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"After system"}}]}},"uuid":"u2","parentUuid":"s1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // Only u1 and u2 should be displayed (system node is not displayable)
+        assert_eq!(tree.rows.len(), 2, "Only user messages should be displayed");
+        assert!(tree.rows[0].content_preview.contains("Before system"));
+        assert!(tree.rows[1].content_preview.contains("After system"));
+
+        // Both should be on latest chain (connected through system bridge)
+        assert!(tree.rows[0].is_on_latest_chain);
+        assert!(tree.rows[1].is_on_latest_chain);
+
+        // Should be linear — no branches
+        assert_eq!(
+            tree.branch_count(),
+            0,
+            "Should be linear chain, no branches"
+        );
+    }
+
+    #[test]
+    fn test_attachment_nodes_bridge_correctly() {
+        // Attachment nodes (uuid/parentUuid but no role/content) are non-displayable.
+        // find_displayable_parent() should walk through them so that
+        // user(u1) -> attachment(att1) -> assistant(u2) displays as u1 -> u2.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("attachment_bridge.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Upload file"}}]}},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        // Attachment node — has uuid/parentUuid but no message/role
+        writeln!(f, r#"{{"type":"attachment","uuid":"att1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"File received"}}]}},"uuid":"u2","parentUuid":"att1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        // Only u1 and u2 should be displayed (attachment node is not displayable)
+        assert_eq!(
+            tree.rows.len(),
+            2,
+            "Only user/assistant messages should be displayed"
+        );
+        assert!(tree.rows[0].content_preview.contains("Upload file"));
+        assert!(tree.rows[1].content_preview.contains("File received"));
+
+        // Both should be on latest chain (connected through attachment bridge)
+        assert!(tree.rows[0].is_on_latest_chain);
+        assert!(tree.rows[1].is_on_latest_chain);
+
+        // Should be linear — no branches
+        assert_eq!(
+            tree.branch_count(),
+            0,
+            "Should be linear chain, no branches"
+        );
     }
 }

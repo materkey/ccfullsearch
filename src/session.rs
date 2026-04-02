@@ -62,6 +62,17 @@ pub fn extract_parent_uuid(json: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Extract parentUuid, falling back to logicalParentUuid.
+/// At compact_boundary points, parentUuid is null but logicalParentUuid preserves
+/// the logical link to the pre-boundary chain.
+pub fn extract_parent_uuid_or_logical(json: &serde_json::Value) -> Option<String> {
+    extract_parent_uuid(json).or_else(|| {
+        json.get("logicalParentUuid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    })
+}
+
 /// Extract leafUuid from a JSON record.
 pub fn extract_leaf_uuid(json: &serde_json::Value) -> Option<String> {
     json.get("leafUuid")
@@ -74,6 +85,14 @@ pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
     json.get("type").and_then(|v| v.as_str())
 }
 
+/// Returns true if the JSON record has `isSidechain: true`.
+/// Sidechain messages are subagent messages that should not participate in the main chain.
+pub fn is_sidechain(json: &serde_json::Value) -> bool {
+    json.get("isSidechain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 const RALPHEX_MARKER: &str = "<<<RALPHEX:";
 const SCHEDULED_TASK_MARKER: &str = "<scheduled-task";
 const RALPHEX_INSTRUCTION_CUES: &[&str] = &[
@@ -84,8 +103,6 @@ const RALPHEX_INSTRUCTION_CUES: &[&str] = &[
     "reply with",
     "print",
 ];
-const SYNTHETIC_LINEAR_FIELD: &str = "ccsSyntheticLinear";
-
 fn matches_scheduled_task_marker(content: &str) -> bool {
     content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
 }
@@ -128,18 +145,6 @@ pub fn detect_automation(content: &str) -> Option<&'static str> {
     }
 
     None
-}
-
-/// Mark a JSON record as belonging to a synthetic linearized resume session.
-pub fn mark_synthetic_linear_record(json: &mut serde_json::Value) {
-    json[SYNTHETIC_LINEAR_FIELD] = serde_json::Value::Bool(true);
-}
-
-/// Whether a JSON record belongs to a synthetic linearized resume session.
-pub fn is_synthetic_linear_record(json: &serde_json::Value) -> bool {
-    json.get(SYNTHETIC_LINEAR_FIELD)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -274,18 +279,5 @@ mod tests {
         // Just "RALPHEX" without the <<< prefix should not match
         let content = "discussing RALPHEX in a conversation";
         assert_eq!(detect_automation(content), None);
-    }
-
-    #[test]
-    fn test_mark_synthetic_linear_record() {
-        let mut json = serde_json::json!({"type": "user"});
-        mark_synthetic_linear_record(&mut json);
-        assert!(is_synthetic_linear_record(&json));
-    }
-
-    #[test]
-    fn test_is_synthetic_linear_record_false_by_default() {
-        let json = serde_json::json!({"type": "user"});
-        assert!(!is_synthetic_linear_record(&json));
     }
 }

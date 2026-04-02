@@ -4,6 +4,8 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::session::is_sidechain;
+
 /// Check if a message uuid is on the latest parentUuid chain in a JSONL file.
 /// The "latest chain" is built by walking parentUuid backwards from the last line with a uuid.
 pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
@@ -38,8 +40,11 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
             Err(_) => continue,
         };
 
+        if is_sidechain(&json) {
+            continue;
+        }
         if let Some(uuid) = session::extract_uuid(&json) {
-            let parent = session::extract_parent_uuid(&json);
+            let parent = session::extract_parent_uuid_or_logical(&json);
             uuid_to_parent.insert(uuid.clone(), parent);
             last_uuid = Some(uuid);
         }
@@ -50,7 +55,9 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     let mut current = Some(tip);
 
     while let Some(uuid) = current {
-        chain.insert(uuid.clone());
+        if !chain.insert(uuid.clone()) {
+            break; // cycle detected
+        }
         current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
     }
 
@@ -76,6 +83,9 @@ pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
             Ok(json) => json,
             Err(_) => continue,
         };
+        if is_sidechain(&json) {
+            continue;
+        }
         if let Some(uuid) = session::extract_uuid(&json) {
             last_uuid = Some(uuid);
         }
@@ -90,16 +100,28 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
     let content = fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
 
-    // Build uuid→parent map and find the target's chain
+    // Single pass: parse each line once, build uuid→parent map and store parsed JSON
     let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
+    let mut parsed_lines: Vec<(serde_json::Value, Option<String>)> = Vec::new();
 
     for line in content.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-            if let Some(uuid) = session::extract_uuid(&json) {
-                let parent = session::extract_parent_uuid(&json);
-                uuid_to_parent.insert(uuid, parent);
-            }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if is_sidechain(&json) {
+            continue;
+        }
+        let uuid = session::extract_uuid(&json);
+        if let Some(ref u) = uuid {
+            let parent = session::extract_parent_uuid_or_logical(&json);
+            uuid_to_parent.insert(u.clone(), parent);
+        }
+        parsed_lines.push((json, uuid));
     }
 
     // Walk from target_uuid backwards to build the branch chain
@@ -113,30 +135,20 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
     // Generate new session ID
     let new_session_id = uuid::Uuid::new_v4().to_string();
 
-    // Filter lines: include lines whose uuid is in the branch, or lines without uuid (metadata)
+    // Filter and rewrite: include only lines whose uuid is in the branch chain.
+    // Chain walking already handles compact_boundary bridging via logicalParentUuid,
+    // so pre-boundary records that are part of the branch are correctly included.
     let mut forked_lines = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            let line_uuid = json.get("uuid").and_then(|v| v.as_str());
-
-            match line_uuid {
-                Some(uuid) if branch_uuids.contains(uuid) => {
-                    // Replace sessionId/session_id with new session ID
-                    let updated = replace_session_id(trimmed, &new_session_id);
-                    forked_lines.push(updated);
+    for (mut json, uuid) in parsed_lines {
+        match uuid {
+            Some(ref u) if branch_uuids.contains(u.as_str()) => {
+                replace_session_id_in_value(&mut json, &new_session_id);
+                if let Ok(s) = serde_json::to_string(&json) {
+                    forked_lines.push(s);
                 }
-                Some(_) => {
-                    // UUID not in branch — skip
-                }
-                None => {
-                    // No UUID (file-history-snapshot, etc.) — include as-is
-                    forked_lines.push(trimmed.to_string());
-                }
+            }
+            _ => {
+                // UUID not in branch or no UUID (metadata) — skip
             }
         }
     }
@@ -155,18 +167,13 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
     Ok((new_session_id, new_file_path_str))
 }
 
-/// Replace sessionId or session_id value in a JSON line
-fn replace_session_id(line: &str, new_id: &str) -> String {
-    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(line) {
-        if json.get("sessionId").is_some() {
-            json["sessionId"] = serde_json::Value::String(new_id.to_string());
-        }
-        if json.get("session_id").is_some() {
-            json["session_id"] = serde_json::Value::String(new_id.to_string());
-        }
-        serde_json::to_string(&json).unwrap_or_else(|_| line.to_string())
-    } else {
-        line.to_string()
+/// Replace sessionId/session_id in an already-parsed JSON value.
+fn replace_session_id_in_value(json: &mut serde_json::Value, new_id: &str) {
+    if json.get("sessionId").is_some() {
+        json["sessionId"] = serde_json::Value::String(new_id.to_string());
+    }
+    if json.get("session_id").is_some() {
+        json["session_id"] = serde_json::Value::String(new_id.to_string());
     }
 }
 
@@ -274,6 +281,308 @@ mod tests {
         assert!(pos("a2") < pos("a3"));
         assert!(pos("a3") < pos("a4"));
         assert!(pos("a4") < pos("a5"));
+    }
+
+    #[test]
+    fn test_build_chain_ignores_sidechain_records() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Normal chain: u1 -> u2 -> u3
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u3","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Sidechain record at end — should NOT become tip
+        writeln!(f, r#"{{"type":"assistant","uuid":"sc1","parentUuid":"u2","isSidechain":true,"sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+
+        let chain = build_chain_from_tip(path.to_str().unwrap()).unwrap();
+        let tip = latest_tip_uuid(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(tip, "u3", "Tip should be u3, not sidechain sc1");
+        assert!(chain.contains("u3"));
+        assert!(chain.contains("u2"));
+        assert!(chain.contains("u1"));
+        assert!(!chain.contains("sc1"), "Sidechain should not be in chain");
+    }
+
+    #[test]
+    fn test_create_fork_ignores_sidechain_records() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Chain: u1 -> u2 -> u3
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u3","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Sidechain branching from u2
+        writeln!(f, r#"{{"type":"assistant","uuid":"sc1","parentUuid":"u2","isSidechain":true,"sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+
+        let (_, new_path) = create_fork(path.to_str().unwrap(), "u3").unwrap();
+        let content = fs::read_to_string(&new_path).unwrap();
+
+        assert!(content.contains("\"uuid\":\"u1\""));
+        assert!(content.contains("\"uuid\":\"u2\""));
+        assert!(content.contains("\"uuid\":\"u3\""));
+        assert!(
+            !content.contains("\"uuid\":\"sc1\""),
+            "Sidechain record should not be in fork"
+        );
+    }
+
+    #[test]
+    fn test_build_chain_resets_on_compact_boundary() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Pre-boundary chain: u1 -> u2
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Compact boundary — should reset all state
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"cb1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Post-boundary chain: u3 -> u4
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+
+        let chain = build_chain_from_tip(path.to_str().unwrap()).unwrap();
+        let tip = latest_tip_uuid(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(tip, "u4", "Tip should be post-boundary u4");
+        assert!(chain.contains("u4"));
+        assert!(chain.contains("u3"));
+        assert!(
+            !chain.contains("u2"),
+            "Pre-boundary u2 should not be in chain"
+        );
+        assert!(
+            !chain.contains("u1"),
+            "Pre-boundary u1 should not be in chain"
+        );
+    }
+
+    #[test]
+    fn test_create_fork_handles_compact_boundary() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Pre-boundary chain
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Compact boundary
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"cb1","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Post-boundary chain: u3 -> u4 -> u5 (branch A), u3 -> u6 (branch B)
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u5","parentUuid":"u4","sessionId":"s1","timestamp":"2025-01-01T00:06:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u6","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:07:00Z"}}"#).unwrap();
+
+        // Fork from u5 (branch A) — should only include post-boundary records on that branch
+        let (_, new_path) = create_fork(path.to_str().unwrap(), "u5").unwrap();
+        let content = fs::read_to_string(&new_path).unwrap();
+
+        assert!(
+            !content.contains("\"uuid\":\"u1\""),
+            "Pre-boundary u1 should not be in fork"
+        );
+        assert!(
+            !content.contains("\"uuid\":\"u2\""),
+            "Pre-boundary u2 should not be in fork"
+        );
+        assert!(
+            !content.contains("compact_boundary"),
+            "Boundary itself should not be in fork"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u3\""),
+            "Post-boundary root u3 should be in fork"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u4\""),
+            "Branch A u4 should be in fork"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u5\""),
+            "Branch A u5 should be in fork"
+        );
+        assert!(
+            !content.contains("\"uuid\":\"u6\""),
+            "Branch B u6 should not be in fork"
+        );
+    }
+
+    #[test]
+    fn test_create_fork_skips_metadata_without_uuid() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Normal chain: u1 -> u2
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Metadata lines without uuid — should be skipped in fork
+        writeln!(
+            f,
+            r#"{{"type":"summary","sessionId":"s1","summary":"A conversation about testing"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","sessionId":"s1","title":"Test Session"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"tag","sessionId":"s1","tag":"important"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"file-history-snapshot","sessionId":"s1","files":[]}}"#
+        )
+        .unwrap();
+
+        let (_, new_path) = create_fork(path.to_str().unwrap(), "u2").unwrap();
+        let content = fs::read_to_string(&new_path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+
+        // Should contain the chain messages
+        assert!(content.contains("\"uuid\":\"u1\""));
+        assert!(content.contains("\"uuid\":\"u2\""));
+
+        // Should NOT contain any metadata lines
+        assert!(
+            !content.contains("\"type\":\"summary\""),
+            "Summary metadata should be skipped"
+        );
+        assert!(
+            !content.contains("\"type\":\"custom-title\""),
+            "Custom-title metadata should be skipped"
+        );
+        assert!(
+            !content.contains("\"type\":\"tag\""),
+            "Tag metadata should be skipped"
+        );
+        assert!(
+            !content.contains("\"type\":\"file-history-snapshot\""),
+            "File-history-snapshot metadata should be skipped"
+        );
+
+        // Only 2 lines should remain (u1 and u2)
+        assert_eq!(
+            lines.len(),
+            2,
+            "Fork should only contain uuid-bearing chain messages"
+        );
+    }
+
+    #[test]
+    fn test_build_chain_bridges_compact_boundary_via_logical_parent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Pre-boundary chain: u1 -> u2
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Compact boundary with logicalParentUuid bridging to u2
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"cb1","logicalParentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Post-boundary chain referencing cb1
+        writeln!(f, r#"{{"type":"user","uuid":"u3","parentUuid":"cb1","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+
+        let chain = build_chain_from_tip(path.to_str().unwrap()).unwrap();
+        let tip = latest_tip_uuid(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(tip, "u4", "Tip should be post-boundary u4");
+        assert!(chain.contains("u4"));
+        assert!(chain.contains("u3"));
+        assert!(
+            chain.contains("cb1"),
+            "Boundary cb1 should be in chain (bridge)"
+        );
+        assert!(
+            chain.contains("u2"),
+            "Pre-boundary u2 should be reachable via logicalParentUuid bridge"
+        );
+        assert!(
+            chain.contains("u1"),
+            "Pre-boundary u1 should be reachable via bridge"
+        );
+    }
+
+    #[test]
+    fn test_create_fork_bridges_compact_boundary_via_logical_parent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        // Pre-boundary chain: u1 -> u2
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        // Compact boundary with logicalParentUuid bridging to u2
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"cb1","logicalParentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        // Post-boundary: u3 -> u4 (latest chain), u3 -> u5 (off-latest branch)
+        writeln!(f, r#"{{"type":"user","uuid":"u3","parentUuid":"cb1","sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u4","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u5","parentUuid":"u3","sessionId":"s1","timestamp":"2025-01-01T00:06:00Z"}}"#).unwrap();
+
+        // Fork from u4 (branch that spans compact_boundary via logicalParentUuid)
+        let (_, new_path) = create_fork(path.to_str().unwrap(), "u4").unwrap();
+        let content = fs::read_to_string(&new_path).unwrap();
+
+        // Should include the full chain: u4 -> u3 -> cb1 -> u2 -> u1
+        assert!(
+            content.contains("\"uuid\":\"u1\""),
+            "Pre-boundary u1 should be in fork (reachable via logicalParentUuid bridge)"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u2\""),
+            "Pre-boundary u2 should be in fork (reachable via logicalParentUuid bridge)"
+        );
+        assert!(
+            content.contains("\"uuid\":\"cb1\""),
+            "Boundary cb1 should be in fork (part of chain)"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u3\""),
+            "Post-boundary u3 should be in fork"
+        );
+        assert!(
+            content.contains("\"uuid\":\"u4\""),
+            "Target u4 should be in fork"
+        );
+        assert!(
+            !content.contains("\"uuid\":\"u5\""),
+            "Off-branch u5 should NOT be in fork"
+        );
     }
 
     #[test]

@@ -77,6 +77,31 @@ pub fn test_prepare_cli_resume_session_id(
 /// If `message_uuid` is provided and the message is not on the latest chain,
 /// creates a forked JSONL file and resumes from that instead.
 /// For subagent sessions, automatically resumes the parent session.
+///
+/// # Why we use fork.rs instead of Claude's `--fork-session`
+///
+/// Claude Code CLI has `--fork-session` (creates a new session ID when resuming)
+/// and `--resume-session-at <uuid>` (truncates history to a specific message).
+/// Together they could theoretically replace our fork logic, but they can't:
+///
+/// 1. `--resume-session-at` is a hidden/internal flag ("use with --resume in print
+///    mode") — it linearly truncates the loaded message list by index, not by DAG
+///    structure. It doesn't walk `parentUuid` chains to extract a specific branch.
+///
+/// 2. `--fork-session` only changes the session ID — it doesn't select which branch
+///    to fork from. Without branch-aware extraction, it forks from the latest leaf
+///    (which is whatever Claude Code's own DAG resolver picks), not from the
+///    arbitrary branch tip the user selected in our tree view.
+///
+/// 3. Claude Code's own `/branch` command (commands/branch/branch.ts) does
+///    DAG-aware forking similar to our fork.rs — it walks the chain from the
+///    current message, rewrites parentUuids, and creates a new JSONL file.
+///    But it's an internal command, not exposed as a CLI flag.
+///
+/// Our fork.rs implements the same DAG-aware extraction: walk from selected tip
+/// to root via parentUuid, write only those records into a new JSONL with a
+/// rewritten sessionId. This is the correct approach for resuming from an
+/// arbitrary branch tip that is not the latest leaf.
 pub fn resume(
     session_id: &str,
     file_path: &str,

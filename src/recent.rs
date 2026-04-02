@@ -119,14 +119,15 @@ fn build_latest_chain(path: &Path) -> Option<HashSet<String>> {
             Err(_) => continue,
         };
 
-        if session::is_synthetic_linear_record(&json) {
+        if session::is_sidechain(&json) {
             continue;
         }
 
         let Some(uuid) = session::extract_uuid(&json) else {
             continue;
         };
-        parents.insert(uuid.clone(), session::extract_parent_uuid(&json));
+        let parent = session::extract_parent_uuid_or_logical(&json);
+        parents.insert(uuid.clone(), parent);
         last_uuid = Some(uuid);
     }
 
@@ -182,10 +183,6 @@ fn scan_head_with_chain(
             Ok(v) => v,
             Err(_) => continue,
         };
-
-        if session::is_synthetic_linear_record(&json) {
-            continue;
-        }
 
         if scan.session_id.is_none() {
             scan.session_id = session::extract_session_id(&json);
@@ -290,9 +287,6 @@ fn find_summary_from_tail_with_chain(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if session::is_synthetic_linear_record(&json) {
-            continue;
-        }
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
         }
@@ -341,9 +335,7 @@ fn extract_latest_user_message_on_chain(
             Err(_) => continue,
         };
 
-        if session::is_synthetic_linear_record(&json)
-            || session::extract_record_type(&json) != Some("user")
-        {
+        if session::extract_record_type(&json) != Some("user") {
             continue;
         }
 
@@ -395,10 +387,6 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-
-        if session::is_synthetic_linear_record(&json) {
-            continue;
-        }
 
         let Some(text) = extract_non_meta_user_text(&json) else {
             continue;
@@ -528,10 +516,6 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if session::is_synthetic_linear_record(&json) {
-                continue;
-            }
-
             // Extract session_id from any parsed record if still missing
             if session_id.is_none() {
                 session_id = session::extract_session_id(&json);
@@ -793,29 +777,6 @@ mod tests {
 
         let result = extract_summary(f.path());
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_summary_returns_none_for_synthetic_linear_bootstrap_only() {
-        let mut f = NamedTempFile::new().unwrap();
-        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Synthetic linear resume"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:00:00Z","ccsSyntheticLinear":true}}"#).unwrap();
-        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"reply"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:01:00Z","ccsSyntheticLinear":true}}"#).unwrap();
-
-        let result = extract_summary(f.path());
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_summary_keeps_resumed_synthetic_branch_visible() {
-        let mut f = NamedTempFile::new().unwrap();
-        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Synthetic linear resume"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:00:00Z","ccsSyntheticLinear":true}}"#).unwrap();
-        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"bootstrap reply"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:01:00Z","ccsSyntheticLinear":true}}"#).unwrap();
-        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Continue working on this branch"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:02:00Z"}}"#).unwrap();
-        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Continuing"}}]}},"sessionId":"sess-synth","timestamp":"2025-06-01T10:03:00Z"}}"#).unwrap();
-
-        let result = extract_summary(f.path()).unwrap();
-        assert_eq!(result.session_id, "sess-synth");
-        assert_eq!(result.summary, "Continue working on this branch");
     }
 
     #[test]
