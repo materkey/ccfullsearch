@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.7.0 - 2026-04-02
+
+### New Features
+- Support `CLAUDE_CONFIG_DIR` env var for custom Claude config directory
+- Add Linux Desktop session path (`~/.config/Claude/local-agent-mode-sessions/`)
+- Extract session titles from JSONL metadata (custom-title, ai-title, agent-name) with Claude Code priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage
+- Include thinking blocks in search content extraction
+- Filter agent/subagent files from search results and recent sessions
+- Deduplicate sessions across git worktrees by session_id
+
+### Fixed
+- Fix leaf finding: use terminal messages instead of last uuid in file
+- Add `isSidechain` filtering — subagent messages no longer hijack latest chain
+- Add `compact_boundary` handling — tree and fork no longer break at compaction points
+- Add `logicalParentUuid` fallback — tree stays connected across compaction boundaries
+- Skip metadata-only lines (summary, tag, custom-title) in fork output
+- Detect ralphex automation markers in assistant messages, not just first user message
+- Detect `<<<RALPHEX:` markers anywhere in message text (remove instruction-cue requirement)
+
+### Changed
+- Remove dead synthetic linearization code (-1062 lines)
+- Cross-project resume via decoded project path + session index registration
+- Deduplicate `logicalParentUuid` fallback into `session::extract_parent_uuid_or_logical()`
+- Eliminate triple JSON parsing in `create_fork` (single-pass with stored parsed values)
+
 ## v0.6.1 - 2026-03-30
 
 ### Fixed
