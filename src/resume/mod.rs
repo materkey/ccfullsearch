@@ -70,7 +70,7 @@ pub fn test_prepare_cli_resume_session_id(
     session_id: &str,
     file_path: &str,
 ) -> Result<String, String> {
-    launcher::prepare_resume_session_id(session_id, file_path)
+    launcher::prepare_resume(session_id, file_path)
 }
 
 /// Resume a Claude session based on its source.

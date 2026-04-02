@@ -285,7 +285,33 @@ fn e2e_fork_triggers_for_branch_on_same_file() {
 }
 
 // =============================================================================
-// Scenario 7: Generic resume keeps original branched session
+// Scenario 7: Resume returns session ID (cross-project handled via cwd + index)
+// =============================================================================
+
+#[test]
+fn e2e_resume_returns_session_id() {
+    let dir = TempDir::new().unwrap();
+    let project_dir = dir.path().join("proj");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    let session_id = "test-session-abc";
+    let session_file = project_dir.join(format!("{}.jsonl", session_id));
+    write_session(&session_file, session_id);
+
+    let resume_arg =
+        ccs::resume::test_prepare_cli_resume_session_id(session_id, session_file.to_str().unwrap())
+            .unwrap();
+
+    // Resume returns session ID; cross-project works because build_resume_command
+    // sets cwd to the decoded project dir and ensures session is in the index.
+    assert_eq!(
+        resume_arg, session_id,
+        "resume arg should be the session ID"
+    );
+}
+
+// =============================================================================
+// Scenario 8: Generic resume keeps original branched session
 // =============================================================================
 
 #[test]
@@ -307,11 +333,12 @@ fn e2e_generic_resume_does_not_linearize_branched_session() {
         writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"B reply"}},"uuid":"a3","parentUuid":"u3","sessionId":"{}","timestamp":"2025-01-01T00:04:30Z"}}"#, session_id).unwrap();
     }
 
-    let resume_id =
+    let resume_arg =
         ccs::resume::test_prepare_cli_resume_session_id(session_id, session_file.to_str().unwrap())
             .unwrap();
 
-    assert_eq!(resume_id, session_id);
+    // prepare_resume returns session ID
+    assert_eq!(resume_arg, session_id);
 
     let jsonl_files: Vec<_> = fs::read_dir(&project_dir)
         .unwrap()

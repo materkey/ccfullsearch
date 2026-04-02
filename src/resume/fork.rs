@@ -16,12 +16,14 @@ pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
     chain.contains(target_uuid)
 }
 
-/// Build the set of uuids on the latest chain (from the last message backwards).
+/// Build the set of uuids on the latest chain (from the terminal message backwards).
 pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     let file = fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
 
     let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
+    let mut parent_uuids: HashSet<String> = HashSet::new();
+    let mut displayable_uuids: Vec<String> = Vec::new();
     let mut last_uuid: Option<String> = None;
 
     for line in reader.lines() {
@@ -45,12 +47,31 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
         }
         if let Some(uuid) = session::extract_uuid(&json) {
             let parent = session::extract_parent_uuid_or_logical(&json);
+            if let Some(ref p) = parent {
+                parent_uuids.insert(p.clone());
+            }
             uuid_to_parent.insert(uuid.clone(), parent);
+
+            if matches!(
+                session::extract_record_type(&json),
+                Some("user" | "assistant" | "compaction")
+            ) {
+                displayable_uuids.push(uuid.clone());
+            }
             last_uuid = Some(uuid);
         }
     }
 
-    let tip = last_uuid?;
+    // Find terminal: displayable uuid not referenced as any parentUuid
+    let tip = displayable_uuids
+        .iter()
+        .rev()
+        .find(|uuid| !parent_uuids.contains(*uuid))
+        .cloned()
+        // Fallback to last uuid if no displayable terminal found
+        .or(last_uuid);
+
+    let tip = tip?;
     let mut chain = HashSet::new();
     let mut current = Some(tip);
 
@@ -64,10 +85,12 @@ pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     Some(chain)
 }
 
-/// Return the UUID of the last UUID-bearing record in the file.
+/// Return the UUID of the terminal displayable record in the file.
 pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
     let file = fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
+    let mut parent_uuids: HashSet<String> = HashSet::new();
+    let mut displayable_uuids: Vec<String> = Vec::new();
     let mut last_uuid: Option<String> = None;
 
     for line in reader.lines() {
@@ -87,11 +110,28 @@ pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
             continue;
         }
         if let Some(uuid) = session::extract_uuid(&json) {
+            let parent = session::extract_parent_uuid_or_logical(&json);
+            if let Some(ref p) = parent {
+                parent_uuids.insert(p.clone());
+            }
+            if matches!(
+                session::extract_record_type(&json),
+                Some("user" | "assistant" | "compaction")
+            ) {
+                displayable_uuids.push(uuid.clone());
+            }
             last_uuid = Some(uuid);
         }
     }
 
-    last_uuid
+    // Terminal displayable uuid not referenced as any parentUuid
+    displayable_uuids
+        .iter()
+        .rev()
+        .find(|uuid| !parent_uuids.contains(*uuid))
+        .cloned()
+        // Fallback to last uuid
+        .or(last_uuid)
 }
 
 /// Create a forked JSONL file containing only messages from the branch
@@ -128,7 +168,9 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
     let mut branch_uuids = HashSet::new();
     let mut current = Some(target_uuid.to_string());
     while let Some(uuid) = current {
-        branch_uuids.insert(uuid.clone());
+        if !branch_uuids.insert(uuid.clone()) {
+            break; // cycle detected
+        }
         current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
     }
 

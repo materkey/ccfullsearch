@@ -60,14 +60,14 @@ src/
 
 1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc
 2. **Tree mode**: Load full JSONL file → build DAG from `uuid`/`parentUuid` links (with `logicalParentUuid` fallback at compact_boundary points) → filter `isSidechain` records → find terminal messages (uuid not in any parentUuid set) → pick latest user/assistant terminal as tip → walk backward to build latest chain → mark branch points (nodes with >1 child) → flatten to `TreeRow` list
-3. **Resume**: On Enter, find `claude` binary via `which` → if selected message is NOT on latest chain, create a forked JSONL file (trace branch to root, skip `isSidechain` records, reset at `compact_boundary`, omit metadata lines without uuid) → exec/spawn `claude --resume <session-id>`
-4. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*`) → sort by mtime → take top 50 → rayon parallel extract first user message as summary → sort by timestamp desc → send via mpsc to TUI → render in empty-state view
+3. **Resume**: On Enter, find `claude` binary via `which` → if selected message is NOT on latest chain, create a forked JSONL file (trace branch to root, skip `isSidechain` records, reset at `compact_boundary`, omit metadata lines without uuid) → exec/spawn `claude --resume <file-path>` (absolute `.jsonl` path for cross-project support)
+4. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*` and `subagents/`) → sort by mtime → take top 50 → rayon parallel extract session title (priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage) → deduplicate by session_id (keep newest) → sort by timestamp desc → send via mpsc to TUI → render in empty-state view
 
 ### Dual format support
 
 The tool handles two session formats with different field names:
 - **Claude Code CLI** (`~/.claude/projects/`): `sessionId`, `timestamp`, has `branch`/`gitBranch`
-- **Claude Desktop** (`~/Library/Application Support/Claude/local-agent-mode-sessions/`): `session_id`, `_audit_timestamp`, no branch info
+- **Claude Desktop** (`~/Library/Application Support/Claude/local-agent-mode-sessions/` on macOS, `~/.config/Claude/local-agent-mode-sessions/` on Linux): `session_id`, `_audit_timestamp`, no branch info
 
 The `SessionSource` enum in `session.rs` drives format-specific parsing throughout.
 
@@ -81,6 +81,7 @@ The `SessionSource` enum in `session.rs` drives format-specific parsing througho
 ## Environment
 
 - `CCFS_SEARCH_PATH` — override default search paths (see `lib.rs:get_search_paths()`)
+- `CLAUDE_CONFIG_DIR` — override `~/.claude` as Claude config root (matches Claude Code's own env var)
 
 ## Release
 

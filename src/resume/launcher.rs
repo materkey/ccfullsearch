@@ -175,10 +175,16 @@ pub fn ensure_project_dir(file_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn prepare_resume_session_id(
-    session_id: &str,
-    file_path: &str,
-) -> Result<String, String> {
+/// Ensure the project directory and session index are set up for resume.
+/// Returns the session ID to pass to `claude --resume`.
+///
+/// Cross-project resume works because we:
+/// 1. Decode the project path from the JSONL file location
+/// 2. Set cwd to that project directory (in build_resume_command)
+/// 3. Ensure the session is registered in sessions-index.json
+///
+/// So `claude --resume <session-id>` finds it in the correct project dir.
+pub(super) fn prepare_resume(session_id: &str, file_path: &str) -> Result<String, String> {
     ensure_project_dir(file_path)?;
 
     let analysis = analyze_session(file_path);
@@ -196,32 +202,41 @@ pub(super) fn prepare_resume_session_id(
     Ok(session_id.to_string())
 }
 
-/// Resume a Claude Code CLI session using exec.
-pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
-    let resume_id = prepare_resume_session_id(session_id, file_path)?;
-
-    let claude_path =
-        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
+/// Build the resume command arguments. Returns (working_dir, resume_arg).
+/// Extracted for testability.
+pub(super) fn build_resume_command(
+    session_id: &str,
+    file_path: &str,
+) -> Result<(String, String), String> {
+    let resume_arg = prepare_resume(session_id, file_path)?;
 
     let decoded_project_dir = decode_project_path(file_path);
 
-    if let Some(ref dir) = decoded_project_dir {
+    let working_dir = if let Some(ref dir) = decoded_project_dir {
         if !Path::new(dir).exists() {
             fs::create_dir_all(dir)
                 .map_err(|e| format!("Failed to create project directory {}: {}", dir, e))?;
         }
+        dir.clone()
+    } else {
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/tmp".to_string())
+    };
 
-        let mut cmd = Command::new(&claude_path);
-        cmd.current_dir(dir).args(["--resume", &resume_id]);
-        return exec_command(&mut cmd);
-    }
+    Ok((working_dir, resume_arg))
+}
 
-    let home_dir = dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/tmp".to_string());
+/// Resume a Claude Code CLI session using exec.
+pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_resume_command(session_id, file_path)?;
+
+    let claude_path =
+        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
 
     let mut cmd = Command::new(&claude_path);
-    cmd.current_dir(&home_dir).args(["--resume", &resume_id]);
+    cmd.current_dir(&working_dir)
+        .args(["--resume", &resume_arg]);
     exec_command(&mut cmd)
 }
 
@@ -253,6 +268,7 @@ fn exec_command(cmd: &mut Command) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
@@ -264,5 +280,21 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(temp_dir.path().join("subdir").exists());
+    }
+
+    #[test]
+    fn test_prepare_resume_returns_session_id() {
+        let dir = TempDir::new().unwrap();
+        let session_id = "abc-123";
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let result = prepare_resume(session_id, session_file.to_str().unwrap()).unwrap();
+
+        // Should return session ID (Claude CLI doesn't accept file paths for --resume)
+        assert_eq!(result, session_id);
     }
 }

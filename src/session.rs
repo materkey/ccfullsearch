@@ -95,42 +95,12 @@ pub fn is_sidechain(json: &serde_json::Value) -> bool {
 
 const RALPHEX_MARKER: &str = "<<<RALPHEX:";
 const SCHEDULED_TASK_MARKER: &str = "<scheduled-task";
-const RALPHEX_INSTRUCTION_CUES: &[&str] = &[
-    "output",
-    "emit",
-    "return",
-    "respond with",
-    "reply with",
-    "print",
-];
 fn matches_scheduled_task_marker(content: &str) -> bool {
     content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
 }
 
-fn ralphex_instruction_prefix(prefix: &str) -> String {
-    prefix
-        .lines()
-        .next_back()
-        .unwrap_or(prefix)
-        .trim_end_matches(|c: char| {
-            c.is_whitespace()
-                || matches!(c, ':' | ';' | ',' | '.' | '-' | '>' | ')' | '(' | ']' | '[')
-        })
-        .to_ascii_lowercase()
-}
-
 fn matches_ralphex_marker(content: &str) -> bool {
-    let trimmed = content.trim();
-    if trimmed.starts_with(RALPHEX_MARKER) {
-        return true;
-    }
-
-    trimmed.match_indices(RALPHEX_MARKER).any(|(idx, _)| {
-        let prefix = ralphex_instruction_prefix(&trimmed[..idx]);
-        RALPHEX_INSTRUCTION_CUES
-            .iter()
-            .any(|cue| prefix.ends_with(cue))
-    })
+    content.contains(RALPHEX_MARKER)
 }
 
 /// Detect whether message content was produced by a known automation tool.
@@ -258,13 +228,14 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_automation_ignores_quoted_ralphex_marker() {
+    fn test_detect_automation_matches_ralphex_marker_anywhere() {
         let content = "Ralphex uses <<<RALPHEX:ALL_TASKS_DONE>>> signals.";
-        assert_eq!(detect_automation(content), None);
+        assert_eq!(detect_automation(content), Some("ralphex"));
     }
 
     #[test]
-    fn test_detect_automation_ignores_quoted_scheduled_task_marker() {
+    fn test_detect_automation_scheduled_task_not_at_start() {
+        // scheduled-task must start the message (trim_start), not appear mid-text
         let content = r#"такие тоже надо детектить <scheduled-task name="chezmoi-sync">"#;
         assert_eq!(detect_automation(content), None);
     }

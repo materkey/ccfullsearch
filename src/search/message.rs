@@ -105,6 +105,11 @@ impl Message {
                             }
                         }
                     }
+                    "thinking" => {
+                        if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
+                            parts.push(t.to_string());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -206,6 +211,19 @@ mod tests {
         let content = Message::extract_content(&raw);
 
         assert!(content.contains("File contents here"));
+    }
+
+    #[test]
+    fn test_extract_content_thinking_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "thinking", "thinking": "The user wants to refactor the auth module"},
+            {"type": "text", "text": "I'll help you refactor that."}
+        ]);
+
+        let content = Message::extract_content(&raw);
+
+        assert!(content.contains("The user wants to refactor the auth module"));
+        assert!(content.contains("I'll help you refactor that."));
     }
 
     #[test]

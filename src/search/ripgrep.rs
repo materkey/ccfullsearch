@@ -95,6 +95,10 @@ fn search_single_path(
 
     for line in reader.lines().map_while(Result::ok) {
         if let Some(m) = parse_ripgrep_json(&line) {
+            // Skip agent and subagent files
+            if is_agent_or_subagent_path(&m.file_path) {
+                continue;
+            }
             // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
             // This filters out false positives where query matched file path or metadata
             if let Some(ref msg) = m.message {
@@ -111,6 +115,20 @@ fn search_single_path(
     }
 
     Ok(results)
+}
+
+/// Check if a file path belongs to an agent or subagent session.
+/// Returns true for paths containing `/subagents/` or filenames starting with `agent-`.
+fn is_agent_or_subagent_path(path: &str) -> bool {
+    if path.contains("/subagents/") {
+        return true;
+    }
+    if let Some(filename) = path.rsplit('/').next() {
+        if filename.starts_with("agent-") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse ripgrep JSON output into RipgrepMatch
@@ -705,5 +723,70 @@ mod tests {
         let content = "\x1b(0Line drawing\x1b(B";
         let result = sanitize_content(content);
         assert_eq!(result, "Line drawing");
+    }
+
+    #[test]
+    fn test_search_filters_agent_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        // Create a normal session file and an agent file
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+        create_test_session(&temp_dir, "agent-task1.jsonl", session_content);
+
+        let results =
+            search("Hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        // Should find match in session.jsonl but NOT in agent-task1.jsonl
+        assert!(!results.is_empty(), "Should find matches in normal session");
+        for r in &results {
+            assert!(
+                !r.file_path.contains("agent-"),
+                "Should not include agent files, got: {}",
+                r.file_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_filters_subagent_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        // Create a normal session file and a subagent file
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+        let subagents_dir = temp_dir.path().join("subagents");
+        std::fs::create_dir_all(&subagents_dir).unwrap();
+        let subagent_path = subagents_dir.join("sub-session.jsonl");
+        std::fs::write(&subagent_path, session_content).unwrap();
+
+        let results =
+            search("Hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        // Should find match in session.jsonl but NOT in subagents/sub-session.jsonl
+        assert!(!results.is_empty(), "Should find matches in normal session");
+        for r in &results {
+            assert!(
+                !r.file_path.contains("/subagents/"),
+                "Should not include subagent files, got: {}",
+                r.file_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_agent_or_subagent_path() {
+        assert!(is_agent_or_subagent_path(
+            "/home/user/.claude/projects/foo/agent-task1.jsonl"
+        ));
+        assert!(is_agent_or_subagent_path(
+            "/home/user/.claude/projects/foo/abc123/subagents/sub.jsonl"
+        ));
+        assert!(!is_agent_or_subagent_path(
+            "/home/user/.claude/projects/foo/session.jsonl"
+        ));
+        assert!(!is_agent_or_subagent_path(
+            "/home/user/.claude/projects/foo/abc123.jsonl"
+        ));
     }
 }

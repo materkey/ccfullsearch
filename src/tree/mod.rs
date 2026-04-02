@@ -536,6 +536,11 @@ fn extract_preview(content: &serde_json::Value, max_chars: usize) -> String {
                 "tool_result" => {
                     parts.push("[tool_result]".to_string());
                 }
+                "thinking" => {
+                    if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
+                        parts.push(t.to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -838,6 +843,17 @@ mod tests {
         let preview = extract_preview(&content, 100);
         assert!(preview.contains("Part one"));
         assert!(preview.contains("[tool: Read]"));
+    }
+
+    #[test]
+    fn test_extract_preview_thinking_block() {
+        let content = serde_json::json!([
+            {"type": "thinking", "thinking": "Let me analyze the code structure"},
+            {"type": "text", "text": "Here is my analysis"},
+        ]);
+        let preview = extract_preview(&content, 100);
+        assert!(preview.contains("Let me analyze the code structure"));
+        assert!(preview.contains("Here is my analysis"));
     }
 
     #[test]

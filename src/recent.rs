@@ -87,6 +87,18 @@ fn is_real_user_prompt(text: &str) -> bool {
     !text.starts_with("<system-reminder>")
 }
 
+/// Extract text from user or assistant messages for automation detection.
+/// Ralphex markers appear in assistant responses, so we need to check both roles.
+fn extract_text_for_automation(json: &serde_json::Value) -> Option<String> {
+    let record_type = session::extract_record_type(json)?;
+    if record_type != "user" && record_type != "assistant" {
+        return None;
+    }
+    let message = json.get("message")?;
+    let content = message.get("content")?;
+    extract_text_content(content)
+}
+
 #[derive(Default)]
 struct HeadScan {
     lines_scanned: usize,
@@ -101,7 +113,10 @@ struct HeadScan {
 fn build_latest_chain(path: &Path) -> Option<HashSet<String>> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    let mut parents: HashMap<String, Option<String>> = HashMap::new();
+    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
+    let mut parent_uuids: HashSet<String> = HashSet::new();
+    // Track which UUIDs are user/assistant/compaction (displayable)
+    let mut displayable_uuids: Vec<String> = Vec::new();
     let mut last_uuid: Option<String> = None;
 
     for line in reader.lines() {
@@ -127,17 +142,36 @@ fn build_latest_chain(path: &Path) -> Option<HashSet<String>> {
             continue;
         };
         let parent = session::extract_parent_uuid_or_logical(&json);
-        parents.insert(uuid.clone(), parent);
+        if let Some(ref p) = parent {
+            parent_uuids.insert(p.clone());
+        }
+        uuid_to_parent.insert(uuid.clone(), parent);
+
+        if matches!(
+            session::extract_record_type(&json),
+            Some("user" | "assistant" | "compaction")
+        ) {
+            displayable_uuids.push(uuid.clone());
+        }
         last_uuid = Some(uuid);
     }
 
+    // Find terminal nodes: uuid not referenced as any parentUuid, and displayable
+    let tip = displayable_uuids
+        .iter()
+        .rev()
+        .find(|uuid| !parent_uuids.contains(*uuid))
+        .cloned()
+        // Fallback to last uuid if no displayable terminal found
+        .or(last_uuid);
+
     let mut chain = HashSet::new();
-    let mut current = last_uuid?;
+    let mut current = tip?;
     loop {
         if !chain.insert(current.clone()) {
             break;
         }
-        let Some(parent_uuid) = parents.get(&current).cloned().flatten() else {
+        let Some(parent_uuid) = uuid_to_parent.get(&current).cloned().flatten() else {
             break;
         };
         current = parent_uuid;
@@ -202,9 +236,15 @@ fn scan_head_with_chain(
             }
         }
 
+        // Check ALL messages (user + assistant) for automation markers
+        if scan.automation.is_none() {
+            if let Some(text) = extract_text_for_automation(&json) {
+                scan.automation = session::detect_automation(&text).map(|s| s.to_string());
+            }
+        }
+
         if let Some(text) = extract_non_meta_user_text(&json) {
             if scan.first_user_message.is_none() && is_real_user_prompt(&text) {
-                scan.automation = session::detect_automation(&text).map(|s| s.to_string());
                 scan.first_user_message = Some(truncate_summary(&text, 100));
             }
         }
@@ -229,6 +269,12 @@ fn scan_head(path: &Path, max_lines: usize) -> Option<HeadScan> {
 struct TailSummaryScan {
     summary: Option<(Option<String>, String)>,
     saw_off_chain_summary: bool,
+    /// Metadata records extracted from the tail of the JSONL file.
+    /// These are written by Claude Code as standalone records without uuid.
+    custom_title: Option<String>,
+    ai_title: Option<String>,
+    agent_name: Option<String>,
+    last_prompt: Option<String>,
 }
 
 /// Read the last `max_bytes` of a file and search for the last `type=summary` record.
@@ -282,6 +328,10 @@ fn find_summary_from_tail_with_chain(
     let mut last_summary: Option<(Option<String>, String)> = None;
     let mut any_sid: Option<String> = None;
     let mut saw_off_chain_summary = false;
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut agent_name: Option<String> = None;
+    let mut last_prompt: Option<String> = None;
     for line in tail.lines() {
         let json: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -290,24 +340,63 @@ fn find_summary_from_tail_with_chain(
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
         }
-        if session::extract_record_type(&json) == Some("summary") {
-            if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
-                let trimmed = summary_text.trim();
-                if !trimmed.is_empty() {
-                    if summary_is_on_latest_chain(&json, latest_chain) {
-                        let sid = session::extract_session_id(&json);
-                        last_summary = Some((sid, truncate_summary(trimmed, 100)));
-                    } else {
-                        saw_off_chain_summary = true;
+        match session::extract_record_type(&json) {
+            Some("summary") => {
+                if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
+                    let trimmed = summary_text.trim();
+                    if !trimmed.is_empty() {
+                        if summary_is_on_latest_chain(&json, latest_chain) {
+                            let sid = session::extract_session_id(&json);
+                            last_summary = Some((sid, truncate_summary(trimmed, 100)));
+                        } else {
+                            saw_off_chain_summary = true;
+                        }
                     }
                 }
             }
+            Some("custom-title") => {
+                if let Some(t) = json.get("customTitle").and_then(|v| v.as_str()) {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        custom_title = Some(truncate_summary(trimmed, 100));
+                    }
+                }
+            }
+            Some("ai-title") => {
+                if let Some(t) = json.get("aiTitle").and_then(|v| v.as_str()) {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        ai_title = Some(truncate_summary(trimmed, 100));
+                    }
+                }
+            }
+            Some("agent-name") => {
+                if let Some(t) = json.get("agentName").and_then(|v| v.as_str()) {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        agent_name = Some(truncate_summary(trimmed, 100));
+                    }
+                }
+            }
+            Some("last-prompt") => {
+                if let Some(t) = json.get("lastPrompt").and_then(|v| v.as_str()) {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        last_prompt = Some(truncate_summary(trimmed, 100));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
     Some(TailSummaryScan {
         summary: last_summary.map(|(sid, text)| (sid.or(any_sid), text)),
         saw_off_chain_summary,
+        custom_title,
+        ai_title,
+        agent_name,
+        last_prompt,
     })
 }
 
@@ -388,12 +477,11 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
             Err(_) => continue,
         };
 
-        let Some(text) = extract_non_meta_user_text(&json) else {
-            continue;
-        };
-
-        if is_real_user_prompt(&text) {
-            return session::detect_automation(&text).map(|s| s.to_string());
+        // Check both user and assistant messages for automation markers
+        if let Some(text) = extract_text_for_automation(&json) {
+            if let Some(tool) = session::detect_automation(&text) {
+                return Some(tool.to_string());
+            }
         }
     }
 
@@ -402,9 +490,13 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
 
 /// Extract a `RecentSession` from a JSONL session file.
 ///
-/// Priority for summary:
-/// 1. `type=summary` record -> use `.summary` field (scans file tail, head, then middle)
-/// 2. First `type=user` where `isMeta` is not true -> extract text content
+/// Priority for summary (highest to lowest):
+/// 1. `agentName` from `type=agent-name` metadata record
+/// 2. `customTitle` from `type=custom-title` metadata record
+/// 3. `aiTitle` from `type=ai-title` metadata record
+/// 4. `type=summary` record -> use `.summary` field (scans file tail, head, then middle)
+/// 5. `lastPrompt` from `type=last-prompt` metadata record
+/// 6. First `type=user` where `isMeta` is not true -> extract text content
 ///
 /// Uses a three-pass approach:
 /// 1. Check the last 256KB for summary records (compaction summaries at file end)
@@ -457,7 +549,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let need_summary = last_summary.is_none();
     let need_user_msg = first_user_message.is_none();
     let need_sid = last_summary_sid.is_none() && session_id.is_none();
-    let need_automation = automation.is_none() && first_user_message.is_none();
+    let need_automation = automation.is_none();
     // For summaries, only scan the middle if tail_start > 0 (otherwise tail covered the whole
     // file). For the first user prompt, session_id, and automation, always scan beyond the head
     // since the tail pass never looks for them.
@@ -483,7 +575,8 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             let in_tail_region = tail_start > 0 && bytes_read >= tail_start;
             let still_need_user_msg = need_user_msg && first_user_message.is_none();
             let still_need_sid = need_sid && session_id.is_none();
-            if in_tail_region && !(still_need_user_msg || still_need_sid) {
+            let still_need_auto = need_automation && automation.is_none();
+            if in_tail_region && !(still_need_user_msg || still_need_sid || still_need_auto) {
                 break;
             }
 
@@ -497,18 +590,19 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             let have_summary = !need_summary || last_summary.is_some();
             let have_user_msg = !need_user_msg || first_user_message.is_some();
             let have_sid = !need_sid || session_id.is_some();
-            let have_auto = !need_automation || first_user_message.is_some();
+            let have_auto = !need_automation || automation.is_some();
             if have_summary && have_user_msg && have_sid && have_auto {
                 break;
             }
-
             let could_be_summary = need_summary && !in_tail_region && line.contains("\"summary\"");
             let could_be_user = still_need_user_msg && line.contains("\"user\"");
+            let could_be_msg =
+                still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
 
             let could_have_sid = still_need_sid
                 && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
 
-            if !could_be_summary && !could_be_user && !could_have_sid {
+            if !could_be_summary && !could_be_user && !could_have_sid && !could_be_msg {
                 continue;
             }
 
@@ -538,12 +632,41 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             if could_be_user {
                 if let Some(text) = extract_non_meta_user_text(&json) {
                     if first_user_message.is_none() && is_real_user_prompt(&text) {
-                        automation = session::detect_automation(&text).map(|s| s.to_string());
                         first_user_message = Some(truncate_summary(&text, 100));
                     }
                 }
             }
+
+            // Check both user and assistant for automation markers
+            if still_need_auto {
+                if let Some(text) = extract_text_for_automation(&json) {
+                    if let Some(tool) = session::detect_automation(&text) {
+                        automation = Some(tool.to_string());
+                    }
+                }
+            }
         }
+    }
+
+    // Apply title priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage
+    let metadata_title = tail_scan
+        .agent_name
+        .or(tail_scan.custom_title)
+        .or(tail_scan.ai_title);
+
+    if let Some(title) = metadata_title {
+        let sid = last_summary_sid
+            .or(session_id)
+            .or_else(|| head_scan.session_id.clone())?;
+        return Some(RecentSession {
+            session_id: sid,
+            file_path: path_str.to_string(),
+            project,
+            source,
+            timestamp: mtime_timestamp,
+            summary: title,
+            automation,
+        });
     }
 
     // After pass 3, check if we found a summary in the middle region
@@ -556,6 +679,20 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             source,
             timestamp: mtime_timestamp,
             summary: summary_text,
+            automation,
+        });
+    }
+
+    // lastPrompt takes priority over firstUserMessage when no summary exists
+    if let Some(prompt) = tail_scan.last_prompt {
+        let session_id = session_id?;
+        return Some(RecentSession {
+            session_id,
+            file_path: path_str.to_string(),
+            project,
+            source,
+            timestamp: mtime_timestamp,
+            summary: prompt,
             automation,
         });
     }
@@ -617,6 +754,10 @@ fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
         if path.is_dir() {
             // Skip symlinks to avoid infinite loops from cyclic directory structures
             if path.is_symlink() {
+                continue;
+            }
+            // Skip subagents directories — they contain duplicate session data
+            if path.file_name().and_then(|n| n.to_str()) == Some("subagents") {
                 continue;
             }
             collect_jsonl_recursive(&path, files);
@@ -682,11 +823,36 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         sessions.extend(batch_sessions);
         offset = end;
 
-        // If we have enough sessions, stop processing more files
-        if sessions.len() >= limit {
+        // If we have enough *unique* sessions, stop processing more files.
+        // Count unique session_ids to account for worktree duplicates that will
+        // be collapsed during deduplication.
+        let unique_count = {
+            let mut seen = HashSet::new();
+            sessions
+                .iter()
+                .filter(|s| seen.insert(&s.session_id))
+                .count()
+        };
+        if unique_count >= limit {
             break;
         }
     }
+
+    // Deduplicate sessions by session_id, keeping the one with the newest timestamp.
+    // This handles git worktrees where the same session appears in multiple project dirs.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut deduped: Vec<RecentSession> = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        if let Some(&idx) = seen.get(&session.session_id) {
+            if session.timestamp > deduped[idx].timestamp {
+                deduped[idx] = session;
+            }
+        } else {
+            seen.insert(session.session_id.clone(), deduped.len());
+            deduped.push(session);
+        }
+    }
+    let mut sessions = deduped;
 
     // Sort by timestamp descending and apply limit
     sessions.sort_by(|a, b| {
@@ -1315,13 +1481,13 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_summary_marker_in_assistant_not_detected() {
+    fn test_extract_summary_marker_in_assistant_detected() {
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Tell me about ralphex"}}]}},"sessionId":"sess-001","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
         writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Ralphex uses <<<RALPHEX:ALL_TASKS_DONE>>> signals."}}]}},"sessionId":"sess-001","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
 
         let result = extract_summary(f.path()).unwrap();
-        assert_eq!(result.automation, None);
+        assert_eq!(result.automation, Some("ralphex".to_string()));
     }
 
     #[test]
@@ -1393,5 +1559,190 @@ mod tests {
             "Tail summary with automation marker only in middle"
         );
         assert_eq!(result.automation, Some("ralphex".to_string()));
+    }
+
+    #[test]
+    fn test_tail_extracts_custom_title() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello world"}}]}},"sessionId":"sess-ct","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"My Custom Session","sessionId":"sess-ct"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "My Custom Session");
+        assert_eq!(result.session_id, "sess-ct");
+    }
+
+    #[test]
+    fn test_tail_extracts_ai_title() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello world"}}]}},"sessionId":"sess-ai","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"ai-title","aiTitle":"Debugging auth flow","sessionId":"sess-ai"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "Debugging auth flow");
+        assert_eq!(result.session_id, "sess-ai");
+    }
+
+    #[test]
+    fn test_title_priority_custom_over_ai() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello world"}}]}},"sessionId":"sess-both","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"ai-title","aiTitle":"AI generated title","sessionId":"sess-both"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"User custom title","sessionId":"sess-both"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "User custom title");
+    }
+
+    #[test]
+    fn test_title_priority_agent_name_highest() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello world"}}]}},"sessionId":"sess-agent","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"ai-title","aiTitle":"AI title","sessionId":"sess-agent"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"Custom title","sessionId":"sess-agent"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"agent-name","agentName":"researcher","sessionId":"sess-agent"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "researcher");
+    }
+
+    #[test]
+    fn test_recent_skips_subagent_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Create a normal session file
+        let normal_path = base.join("session.jsonl");
+        std::fs::write(&normal_path, r#"{"type":"user","sessionId":"s1"}"#).unwrap();
+
+        // Create a subagents directory with a JSONL file inside
+        let subagents_dir = base.join("subagents");
+        std::fs::create_dir_all(&subagents_dir).unwrap();
+        let subagent_path = subagents_dir.join("sub-session.jsonl");
+        std::fs::write(&subagent_path, r#"{"type":"user","sessionId":"s2"}"#).unwrap();
+
+        let mut files = Vec::new();
+        collect_jsonl_recursive(base, &mut files);
+
+        // Should contain session.jsonl but NOT subagents/sub-session.jsonl
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].file_name().unwrap().to_str().unwrap(),
+            "session.jsonl"
+        );
+    }
+
+    fn write_test_session_with_ts(
+        dir: &std::path::Path,
+        filename: &str,
+        session_id: &str,
+        msg: &str,
+        ts: &str,
+    ) {
+        let path = dir.join(filename);
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"{}","timestamp":"{}"}}"#, msg, session_id, ts).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"reply"}}]}},"sessionId":"{}","timestamp":"{}"}}"#, session_id, ts).unwrap();
+    }
+
+    #[test]
+    fn test_dedup_sessions_keeps_newest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj1 = dir.path().join("projects").join("-Users-user-projA");
+        let proj2 = dir.path().join("projects").join("-Users-user-projB");
+        std::fs::create_dir_all(&proj1).unwrap();
+        std::fs::create_dir_all(&proj2).unwrap();
+
+        // Same session_id in two project dirs, different timestamps
+        write_test_session_with_ts(
+            &proj1,
+            "dup.jsonl",
+            "sess-dup-1",
+            "Old question",
+            "2025-06-01T10:00:00Z",
+        );
+        write_test_session_with_ts(
+            &proj2,
+            "dup.jsonl",
+            "sess-dup-1",
+            "New question",
+            "2025-06-02T10:00:00Z",
+        );
+
+        // Set file mtime so proj2's file is newer (matching its timestamp)
+        let old_mtime = FileTime::from_unix_time(1717200000, 0); // ~2024-06-01
+        let new_mtime = FileTime::from_unix_time(1717300000, 0);
+        set_file_mtime(proj1.join("dup.jsonl"), old_mtime).unwrap();
+        set_file_mtime(proj2.join("dup.jsonl"), new_mtime).unwrap();
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        let result = collect_recent_sessions(&paths, 50);
+
+        // Should have exactly 1 session after dedup
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].session_id, "sess-dup-1");
+        // Should keep the one with newer timestamp
+        assert_eq!(result[0].summary, "New question");
+    }
+
+    #[test]
+    fn test_dedup_sessions_different_ids_preserved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj1 = dir.path().join("projects").join("-Users-user-projA");
+        let proj2 = dir.path().join("projects").join("-Users-user-projB");
+        std::fs::create_dir_all(&proj1).unwrap();
+        std::fs::create_dir_all(&proj2).unwrap();
+
+        write_test_session_with_ts(
+            &proj1,
+            "a.jsonl",
+            "sess-unique-1",
+            "Question one",
+            "2025-06-01T10:00:00Z",
+        );
+        write_test_session_with_ts(
+            &proj2,
+            "b.jsonl",
+            "sess-unique-2",
+            "Question two",
+            "2025-06-02T10:00:00Z",
+        );
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        let result = collect_recent_sessions(&paths, 50);
+
+        // Different session IDs should both be preserved
+        assert_eq!(result.len(), 2);
+        let ids: HashSet<String> = result.iter().map(|s| s.session_id.clone()).collect();
+        assert!(ids.contains("sess-unique-1"));
+        assert!(ids.contains("sess-unique-2"));
     }
 }
