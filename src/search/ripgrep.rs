@@ -1,4 +1,5 @@
 use super::{Message, SessionSource};
+use crate::resume::resolve_parent_session;
 use regex::RegexBuilder;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -92,12 +93,24 @@ fn search_single_path(
         None
     };
     let query_lower = query.to_lowercase();
+    let mut resolve_cache: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
 
     for line in reader.lines().map_while(Result::ok) {
-        if let Some(m) = parse_ripgrep_json(&line) {
-            // Skip agent and subagent files
+        if let Some(mut m) = parse_ripgrep_json(&line) {
+            // Resolve agent/subagent files to their parent session
             if is_agent_or_subagent_path(&m.file_path) {
-                continue;
+                let Some(ref msg) = m.message else {
+                    continue; // No message to resolve — skip
+                };
+                let (resolved_sid, resolved_path) = resolve_cache
+                    .entry(m.file_path.clone())
+                    .or_insert_with(|| resolve_parent_session(&msg.session_id, &m.file_path))
+                    .clone();
+                m.file_path = resolved_path;
+                if let Some(msg) = m.message.as_mut() {
+                    msg.session_id = resolved_sid;
+                }
             }
             // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
             // This filters out false positives where query matched file path or metadata
@@ -726,49 +739,61 @@ mod tests {
     }
 
     #[test]
-    fn test_search_filters_agent_files() {
+    fn test_search_resolves_agent_files_to_parent() {
         let temp_dir = TempDir::new().unwrap();
-        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        let parent_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Parent session"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        let agent_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Agent unique content"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:01:00Z"}"#;
 
-        // Create a normal session file and an agent file
-        create_test_session(&temp_dir, "session.jsonl", session_content);
-        create_test_session(&temp_dir, "agent-task1.jsonl", session_content);
+        // Create parent session file and an agent file with same sessionId
+        create_test_session(&temp_dir, "abc123.jsonl", parent_content);
+        create_test_session(&temp_dir, "agent-task1.jsonl", agent_content);
 
-        let results =
-            search("Hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+        let results = search("Agent unique content", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
 
-        // Should find match in session.jsonl but NOT in agent-task1.jsonl
-        assert!(!results.is_empty(), "Should find matches in normal session");
+        // Match from agent file should be resolved to parent session
+        assert!(!results.is_empty(), "Should find match from agent file");
         for r in &results {
             assert!(
+                r.file_path.contains("abc123.jsonl"),
+                "Agent match should resolve to parent file, got: {}",
+                r.file_path
+            );
+            assert!(
                 !r.file_path.contains("agent-"),
-                "Should not include agent files, got: {}",
+                "File path should not be the agent file, got: {}",
                 r.file_path
             );
         }
     }
 
     #[test]
-    fn test_search_filters_subagent_files() {
+    fn test_search_resolves_subagent_files_to_parent() {
         let temp_dir = TempDir::new().unwrap();
-        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        let parent_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Parent session"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        let agent_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Subagent unique content"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:01:00Z"}"#;
 
-        // Create a normal session file and a subagent file
-        create_test_session(&temp_dir, "session.jsonl", session_content);
-        let subagents_dir = temp_dir.path().join("subagents");
+        // Create parent session file and a subagent file
+        create_test_session(&temp_dir, "abc123.jsonl", parent_content);
+        let subagents_dir = temp_dir.path().join("abc123").join("subagents");
         std::fs::create_dir_all(&subagents_dir).unwrap();
-        let subagent_path = subagents_dir.join("sub-session.jsonl");
-        std::fs::write(&subagent_path, session_content).unwrap();
+        let subagent_path = subagents_dir.join("agent-xyz.jsonl");
+        std::fs::write(&subagent_path, agent_content).unwrap();
 
-        let results =
-            search("Hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+        let results = search("Subagent unique content", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
 
-        // Should find match in session.jsonl but NOT in subagents/sub-session.jsonl
-        assert!(!results.is_empty(), "Should find matches in normal session");
+        // Match from subagent file should resolve to parent session
+        assert!(!results.is_empty(), "Should find match from subagent file");
         for r in &results {
             assert!(
+                r.file_path.contains("abc123.jsonl"),
+                "Subagent match should resolve to parent file, got: {}",
+                r.file_path
+            );
+            assert!(
                 !r.file_path.contains("/subagents/"),
-                "Should not include subagent files, got: {}",
+                "File path should not be the subagent file, got: {}",
                 r.file_path
             );
         }
