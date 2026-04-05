@@ -8,12 +8,90 @@ use crate::session::is_sidechain;
 
 /// Check if a message uuid is on the latest parentUuid chain in a JSONL file.
 /// The "latest chain" is built by walking parentUuid backwards from the last line with a uuid.
+///
+/// Returns `true` if:
+/// - The uuid is on the latest chain, OR
+/// - The uuid doesn't exist in the file at all (e.g. it came from a subagent file
+///   that was resolved to this parent file — forking would be wrong since the uuid
+///   has no meaning in this file's DAG)
+/// - The chain can't be determined
 pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
-    let chain = match build_chain_from_tip(file_path) {
+    let (chain, all_uuids) = match build_chain_and_all_uuids(file_path) {
         Some(c) => c,
         None => return true, // Can't determine chain, assume it's on latest
     };
+    // If the uuid doesn't exist in this file at all, don't treat it as "off-chain"
+    if !all_uuids.contains(target_uuid) {
+        return true;
+    }
     chain.contains(target_uuid)
+}
+
+/// Build both the latest chain and the set of all uuids in the file.
+fn build_chain_and_all_uuids(file_path: &str) -> Option<(HashSet<String>, HashSet<String>)> {
+    let file = fs::File::open(file_path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
+    let mut parent_uuids: HashSet<String> = HashSet::new();
+    let mut displayable_uuids: Vec<String> = Vec::new();
+    let mut all_uuids: HashSet<String> = HashSet::new();
+    let mut last_uuid: Option<String> = None;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
+
+        if is_sidechain(&json) {
+            continue;
+        }
+        if let Some(uuid) = session::extract_uuid(&json) {
+            let parent = session::extract_parent_uuid_or_logical(&json);
+            if let Some(ref p) = parent {
+                parent_uuids.insert(p.clone());
+            }
+            uuid_to_parent.insert(uuid.clone(), parent);
+            all_uuids.insert(uuid.clone());
+
+            if matches!(
+                session::extract_record_type(&json),
+                Some("user" | "assistant" | "compaction")
+            ) {
+                displayable_uuids.push(uuid.clone());
+            }
+            last_uuid = Some(uuid);
+        }
+    }
+
+    let tip = displayable_uuids
+        .iter()
+        .rev()
+        .find(|uuid| !parent_uuids.contains(*uuid))
+        .cloned()
+        .or(last_uuid);
+
+    let tip = tip?;
+    let mut chain = HashSet::new();
+    let mut current = Some(tip);
+
+    while let Some(uuid) = current {
+        if !chain.insert(uuid.clone()) {
+            break;
+        }
+        current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
+    }
+
+    Some((chain, all_uuids))
 }
 
 /// Build the set of uuids on the latest chain (from the terminal message backwards).
@@ -645,5 +723,32 @@ mod tests {
         assert!(chain.contains("b3"));
         assert!(chain.contains("a2"));
         assert!(!chain.contains("a5"));
+    }
+
+    #[test]
+    fn test_is_on_latest_chain_unknown_uuid_returns_true() {
+        // UUID from a subagent file doesn't exist in the parent session file.
+        // is_on_latest_chain should return true (don't fork) rather than false.
+        let dir = TempDir::new().unwrap();
+        let path = create_branched_session(&dir);
+
+        // "nonexistent-uuid" is not in the file at all
+        assert!(
+            is_on_latest_chain(path.to_str().unwrap(), "nonexistent-uuid"),
+            "Unknown UUID should be treated as on-chain to avoid spurious forks"
+        );
+    }
+
+    #[test]
+    fn test_is_on_latest_chain_off_branch_uuid_returns_false() {
+        // UUID that IS in the file but on a non-latest branch should return false.
+        let dir = TempDir::new().unwrap();
+        let path = create_branched_session(&dir);
+
+        // a5 is on branch A (not latest — branch B with b5 is latest)
+        assert!(
+            !is_on_latest_chain(path.to_str().unwrap(), "a5"),
+            "UUID on non-latest branch should return false"
+        );
     }
 }

@@ -16,6 +16,9 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 - **Session resume** — press `Enter` to resume any session directly from search results or the recent sessions list
 - **Async search** — non-blocking background search with debounce
 - **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
+- **Picker mode** — `ccs pick` subcommand for machine-readable session selection (key-value output)
+- **Overlay mode** — `ccs --overlay` resumes sessions as child processes, returning to TUI after exit
+- **Claude Code plugin** — built-in plugin with overlay picker for session resume from Claude Code
 - **Cross-platform** — supports both Claude Code CLI (`~/.claude/projects`) and Claude Desktop sessions
 
 ## Installation
@@ -116,6 +119,39 @@ ccs search "OOM|OutOfMemory" --regex
 ccs list --limit 20
 ```
 
+### Picker mode
+
+Pick a session interactively and output its info in key-value format. Designed for scripting and tool integration.
+
+```bash
+# Pick a session (outputs to stdout)
+ccs pick
+
+# Pick with a pre-filled query
+ccs pick "docker"
+
+# Write output to a file instead of stdout
+ccs pick --output /tmp/session.txt
+```
+
+Output format (exit code 0 on selection, 1 on cancel):
+
+```
+session_id: abc-123
+file_path: /path/to/session.jsonl
+source: CLI
+project: my-project
+```
+
+### Overlay mode
+
+Resume sessions as child processes instead of replacing the TUI process. After exiting Claude, you return to the TUI to pick another session.
+
+```bash
+# Launch TUI in overlay mode
+ccs --overlay
+```
+
 ## Keybindings
 
 ### Recent sessions (empty input)
@@ -154,15 +190,20 @@ ccs list --limit 20
 | `Ctrl+C` / `b` / `Esc` | Back to search |
 | `q` | Quit |
 
-## Claude Code Skill
+## Claude Code Plugin
 
-The repo includes a [Claude Code skill](skill/SKILL.md) so Claude can search your sessions automatically. To install:
+The repo includes a [Claude Code plugin](.claude-plugin/) with a skill for searching and resuming sessions. The plugin supports two modes:
+
+- **CLI mode** — `ccs search` and `ccs list` for non-interactive use
+- **Overlay picker mode** — opens a TUI overlay popup (tmux/kitty/wezterm) to pick a session, then offers to resume it
+
+To install, add the plugin path to your Claude Code settings or symlink:
 
 ```bash
-cp -r skill ~/.claude/skills/claude-session-search
+# The plugin is auto-discovered from the repo's .claude-plugin/ directory
 ```
 
-Then Claude will use `ccs` when you ask things like "find where we discussed docker" or "list my recent sessions".
+Then Claude will use `ccs` when you ask things like "find where we discussed docker", "list my recent sessions", or "resume a previous conversation".
 
 ## Releasing
 

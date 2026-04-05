@@ -108,8 +108,20 @@ pub fn resume(
     source: SessionSource,
     message_uuid: Option<&str>,
 ) -> Result<(), String> {
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
+            session_id, file_path, source, message_uuid
+        );
+    }
     let (session_id, resolved_file_path) = resolve_parent_session(session_id, file_path);
     let file_changed = resolved_file_path != file_path;
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume] resolved: session_id={}, file_path={}, file_changed={}",
+            session_id, resolved_file_path, file_changed
+        );
+    }
 
     // Only attempt fork if the file wasn't redirected.
     // When resolve_parent_session changes the file, the message UUID belongs to the
@@ -120,6 +132,12 @@ pub fn resume(
             && !fork::is_on_latest_chain(&resolved_file_path, uuid)
         {
             let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
+            if std::env::var("CCS_DEBUG").is_ok() {
+                eprintln!(
+                    "[ccs:resume] forking: fork_session_id={}, fork_file_path={}",
+                    fork_session_id, fork_file_path
+                );
+            }
             return launcher::resume_cli(&fork_session_id, &fork_file_path);
         }
     }
@@ -127,6 +145,54 @@ pub fn resume(
     match source {
         SessionSource::ClaudeCodeCLI => launcher::resume_cli(&session_id, &resolved_file_path),
         SessionSource::ClaudeDesktop => launcher::resume_desktop(),
+    }
+}
+
+/// Resume a Claude session as a child process (returns when claude exits).
+/// Same resolution logic as `resume()`, but uses `resume_cli_child()` instead of exec.
+/// Used in overlay mode where TUI needs to regain control after claude exits.
+pub fn resume_child(
+    session_id: &str,
+    file_path: &str,
+    source: SessionSource,
+    message_uuid: Option<&str>,
+) -> Result<(), String> {
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume_child] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
+            session_id, file_path, source, message_uuid
+        );
+    }
+    let (session_id, resolved_file_path) = resolve_parent_session(session_id, file_path);
+    let file_changed = resolved_file_path != file_path;
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume_child] resolved: session_id={}, file_path={}, file_changed={}",
+            session_id, resolved_file_path, file_changed
+        );
+    }
+
+    if let Some(uuid) = message_uuid {
+        if !file_changed
+            && source == SessionSource::ClaudeCodeCLI
+            && !fork::is_on_latest_chain(&resolved_file_path, uuid)
+        {
+            let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
+            if std::env::var("CCS_DEBUG").is_ok() {
+                eprintln!(
+                    "[ccs:resume_child] forking: fork_session_id={}, fork_file_path={}",
+                    fork_session_id, fork_file_path
+                );
+            }
+            return launcher::resume_cli_child(&fork_session_id, &fork_file_path);
+        }
+    }
+
+    match source {
+        SessionSource::ClaudeCodeCLI => {
+            launcher::resume_cli_child(&session_id, &resolved_file_path)
+        }
+        SessionSource::ClaudeDesktop => launcher::resume_desktop_child(),
     }
 }
 
@@ -249,10 +315,10 @@ mod tests {
         assert_eq!(sid, "64cd6570-parent");
         assert_eq!(fpath, parent_jsonl.to_string_lossy());
 
-        // agent-uuid-1 is NOT in parent file, so is_on_latest_chain returns false
-        // This should NOT trigger a fork — the file was redirected
-        assert!(!fork::is_on_latest_chain(&fpath, "agent-uuid-1"));
-        // After fix: resume should detect redirect and skip fork logic
+        // agent-uuid-1 is NOT in parent file — is_on_latest_chain returns true
+        // (unknown uuid = don't fork), so fork is correctly skipped
+        assert!(fork::is_on_latest_chain(&fpath, "agent-uuid-1"));
+        // The file_changed flag in resume() provides a second safety net
     }
 
     #[test]

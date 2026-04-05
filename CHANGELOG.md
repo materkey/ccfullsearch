@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.0 - 2026-04-05
+
+### New Features
+- Add `ccs pick` subcommand for machine-readable session selection (key-value output with exit code 0/1)
+- Add `--overlay` flag for TUI loop mode: resume sessions as child processes, return to TUI after exit
+- Add `[PICK]` status bar indicator when running in picker mode
+- Add `resume_cli_child()` for spawning Claude as a child process instead of exec()
+- Add shell launcher script (`launch-ccs.sh`) with tmux/kitty/wezterm overlay support
+- Add Claude Code plugin structure (`.claude-plugin/`) with overlay picker skill
+
+### Changed
+- Refactor TUI lifecycle into `run_tui()` returning `TuiOutcome` enum (Quit/Resume/Pick)
+- Extract `PickedSession` struct with `to_key_value()` serialization
+
 ## v0.7.0 - 2026-04-02
 
 ### New Features

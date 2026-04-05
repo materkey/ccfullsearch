@@ -190,16 +190,16 @@ fn e2e_fork_skipped_when_file_redirected() {
     let file_changed = fpath != agent_file.to_str().unwrap();
     assert!(file_changed, "file should have changed");
 
-    // Step 2: agent-u1 is NOT on main file's latest chain
+    // Step 2: agent-u1 doesn't exist in main file — is_on_latest_chain returns true
+    // (unknown uuid = safe to resume without fork)
     let on_chain = ccs::resume::fork::is_on_latest_chain(&fpath, "agent-u1");
     assert!(
-        !on_chain,
-        "agent UUID should NOT be found in main file's chain"
+        on_chain,
+        "unknown UUID should be treated as on-chain (no fork needed)"
     );
 
-    // Step 3: because file_changed=true, fork should be SKIPPED
-    // (this is the logic in resume() — we verify the condition here)
-    // The fix: when file_changed && !on_chain, we do NOT fork
+    // Step 3: file_changed=true provides a second safety net — fork is SKIPPED
+    // even if is_on_latest_chain were to return false
     assert!(
         file_changed,
         "file_changed flag should prevent fork from triggering"

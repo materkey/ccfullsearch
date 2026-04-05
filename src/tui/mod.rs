@@ -6,3 +6,5 @@ mod tree_mode;
 
 pub use render_search::render;
 pub use state::App;
+pub use state::PickedSession;
+pub use state::TuiOutcome;

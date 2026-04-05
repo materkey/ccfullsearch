@@ -609,6 +609,28 @@ fn is_context_loss_message(content_preview: &Option<String>) -> bool {
         || lower.contains("compacted (ctrl+o to see full summary)")
 }
 
+impl SessionTree {
+    /// Create a SessionTree with minimal fields for testing.
+    #[cfg(test)]
+    pub fn new_for_test(
+        session_id: String,
+        file_path: String,
+        source: SessionSource,
+        rows: Vec<TreeRow>,
+    ) -> Self {
+        Self {
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            roots: Vec::new(),
+            latest_chain: HashSet::new(),
+            rows,
+            session_id,
+            file_path,
+            source,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

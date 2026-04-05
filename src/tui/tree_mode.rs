@@ -1,4 +1,6 @@
+use crate::search::extract_project_from_path;
 use crate::tree::SessionTree;
+use crate::tui::state::PickedSession;
 use crate::tui::App;
 use std::sync::mpsc;
 use std::thread;
@@ -52,61 +54,8 @@ impl App {
     }
 
     /// Search for a JSONL file by session ID across search paths.
-    /// Checks both CLI format (projects/<encoded>/<id>.jsonl) and
-    /// Desktop format (deep hierarchy with audit.jsonl containing session_id).
     fn find_session_file(&self, session_id: &str) -> Option<String> {
-        use std::fs;
-        let target_filename = format!("{}.jsonl", session_id);
-
-        for search_path in &self.search_paths {
-            if let Ok(entries) = fs::read_dir(search_path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        // CLI: ~/.claude/projects/<encoded-path>/<session-id>.jsonl
-                        let candidate = path.join(&target_filename);
-                        if candidate.exists() {
-                            return Some(candidate.to_string_lossy().to_string());
-                        }
-                        // Desktop: deeper hierarchy, recurse one more level
-                        if let Ok(subentries) = fs::read_dir(&path) {
-                            for subentry in subentries.flatten() {
-                                let subpath = subentry.path();
-                                if subpath.is_dir() {
-                                    let candidate = subpath.join(&target_filename);
-                                    if candidate.exists() {
-                                        return Some(candidate.to_string_lossy().to_string());
-                                    }
-                                    // Desktop local_<id>/audit.jsonl — check by reading first line
-                                    let audit = subpath.join("audit.jsonl");
-                                    if audit.exists()
-                                        && Self::file_contains_session_id(&audit, session_id)
-                                    {
-                                        return Some(audit.to_string_lossy().to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Quick check if a JSONL file contains the given session ID (reads first 5 lines).
-    fn file_contains_session_id(path: &std::path::Path, session_id: &str) -> bool {
-        use std::io::{BufRead, BufReader};
-        let Ok(file) = std::fs::File::open(path) else {
-            return false;
-        };
-        let reader = BufReader::new(file);
-        for line in reader.lines().take(5).flatten() {
-            if line.contains(session_id) {
-                return true;
-            }
-        }
-        false
+        crate::session::find_session_file_in_paths(session_id, &self.search_paths)
     }
 
     pub fn exit_tree_mode(&mut self) {
@@ -185,10 +134,21 @@ impl App {
 
         if let Some(ref tree) = self.session_tree {
             if let Some(row) = tree.rows.get(self.tree_cursor) {
-                self.resume_uuid = Some(row.uuid.clone());
-                self.resume_id = Some(tree.session_id.clone());
-                self.resume_file_path = Some(tree.file_path.clone());
-                self.resume_source = Some(tree.source);
+                if self.picker_mode {
+                    let project = extract_project_from_path(&tree.file_path);
+                    self.picked_session = Some(PickedSession {
+                        session_id: tree.session_id.clone(),
+                        file_path: tree.file_path.clone(),
+                        source: tree.source,
+                        project,
+                        message_uuid: Some(row.uuid.clone()),
+                    });
+                } else {
+                    self.resume_uuid = Some(row.uuid.clone());
+                    self.resume_id = Some(tree.session_id.clone());
+                    self.resume_file_path = Some(tree.file_path.clone());
+                    self.resume_source = Some(tree.source);
+                }
                 self.should_quit = true;
             }
         }
@@ -238,5 +198,47 @@ mod tests {
         app.exit_tree_mode();
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_on_enter_tree_picker_mode_sets_picked_session() {
+        use crate::search::SessionSource;
+        use crate::tree::{SessionTree, TreeRow};
+        use chrono::Utc;
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+        app.tree_mode = true;
+
+        let tree = SessionTree::new_for_test(
+            "tree-sess-1".to_string(),
+            "/home/user/.claude/projects/-Users-user-projects-coolapp/session.jsonl".to_string(),
+            SessionSource::ClaudeCodeCLI,
+            vec![TreeRow {
+                uuid: "uuid-tree-1".to_string(),
+                role: "user".to_string(),
+                timestamp: Utc::now(),
+                content_preview: "hello world".to_string(),
+                depth: 0,
+                graph_symbols: "│ ".to_string(),
+                is_on_latest_chain: true,
+                is_branch_point: false,
+                is_compaction: false,
+            }],
+        );
+        app.session_tree = Some(tree);
+        app.tree_cursor = 0;
+
+        app.on_enter_tree();
+
+        assert!(app.should_quit);
+        assert!(app.picked_session.is_some());
+        let picked = app.picked_session.unwrap();
+        assert_eq!(picked.session_id, "tree-sess-1");
+        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(picked.project, "coolapp");
+        // resume_* should NOT be set in picker mode
+        assert!(app.resume_id.is_none());
+        assert!(app.resume_uuid.is_none());
     }
 }

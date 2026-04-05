@@ -109,6 +109,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     use crate::tui::state::AutomationFilter;
     let mut search_title = String::from("Search");
+    if app.picker_mode {
+        search_title.push_str(" [PICK]");
+    }
     if app.regex_mode {
         search_title.push_str(" [Regex]");
     }
@@ -1751,5 +1754,41 @@ mod tests {
             24,
             "0 recent sessions (1 hidden by filter)"
         ));
+    }
+
+    #[test]
+    fn test_picker_mode_shows_pick_indicator() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render in picker mode should not panic");
+
+        assert!(
+            buffer_contains(terminal.backend().buffer(), 100, 24, "[PICK]"),
+            "Status bar should contain [PICK] indicator when picker_mode is true"
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_no_pick_indicator() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = false;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render in normal mode should not panic");
+
+        assert!(
+            !buffer_contains(terminal.backend().buffer(), 100, 24, "[PICK]"),
+            "Status bar should NOT contain [PICK] indicator in normal mode"
+        );
     }
 }

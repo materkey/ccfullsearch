@@ -234,10 +234,50 @@ pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
     let claude_path =
         which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
 
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume_cli] claude={} cwd={} --resume {}",
+            claude_path.display(),
+            working_dir,
+            resume_arg
+        );
+    }
+
     let mut cmd = Command::new(&claude_path);
     cmd.current_dir(&working_dir)
         .args(["--resume", &resume_arg]);
     exec_command(&mut cmd)
+}
+
+/// Resume a Claude Code CLI session as a child process (returns when claude exits).
+/// Unlike `resume_cli()` which uses exec() and replaces the current process,
+/// this spawns claude as a child and waits for it to finish, allowing the caller
+/// to continue afterwards (e.g., return to TUI in overlay mode).
+pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_resume_command(session_id, file_path)?;
+
+    let claude_path =
+        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
+
+    if std::env::var("CCS_DEBUG").is_ok() {
+        eprintln!(
+            "[ccs:resume_cli_child] claude={} cwd={} --resume {}",
+            claude_path.display(),
+            working_dir,
+            resume_arg
+        );
+    }
+
+    // Any exit code is acceptable — Claude CLI exits non-zero on Ctrl-C (130),
+    // /exit, or other normal termination paths. In overlay mode we just need to
+    // know that the process finished so we can return to the TUI.
+    Command::new(&claude_path)
+        .current_dir(&working_dir)
+        .args(["--resume", &resume_arg])
+        .status()
+        .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+
+    Ok(())
 }
 
 /// Open Claude Desktop app for Desktop sessions
@@ -245,6 +285,19 @@ pub fn resume_desktop() -> Result<(), String> {
     let mut cmd = Command::new("open");
     cmd.args(["-a", "Claude"]);
     exec_command(&mut cmd)
+}
+
+/// Open Claude Desktop app as a child process and wait for it to close.
+/// Uses `open -W` so the TUI regains control only after the user closes Claude Desktop.
+pub fn resume_desktop_child() -> Result<(), String> {
+    // Ignore exit code: `open -W` can return non-zero for benign reasons
+    // (e.g., app already running). Same approach as resume_cli_child().
+    Command::new("open")
+        .args(["-W", "-a", "Claude"])
+        .status()
+        .map_err(|e| format!("Failed to open Claude Desktop: {}", e))?;
+
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -296,5 +349,69 @@ mod tests {
 
         // Should return session ID (Claude CLI doesn't accept file paths for --resume)
         assert_eq!(result, session_id);
+    }
+
+    #[test]
+    fn test_build_resume_command_returns_working_dir_and_session_id() {
+        // Place session file inside a .claude/projects/<encoded-dir>/ structure
+        // so decode_project_path can resolve the working directory
+        let dir = TempDir::new().unwrap();
+        let project_dir = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-tmp-myproject");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_id = "test-build-cmd";
+        let session_file = project_dir.join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let (working_dir, resume_arg) =
+            build_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
+
+        assert_eq!(resume_arg, session_id);
+        // working_dir should be a valid directory
+        assert!(
+            Path::new(&working_dir).exists(),
+            "working_dir should exist: {}",
+            working_dir
+        );
+    }
+
+    #[test]
+    fn test_resume_cli_child_fails_without_claude_binary() {
+        // resume_cli_child should fail gracefully when claude is not in PATH
+        let dir = TempDir::new().unwrap();
+        let project_dir = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-tmp-testproj");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_id = "child-test";
+        let session_file = project_dir.join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        // Override PATH to ensure claude is not found
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        unsafe { std::env::set_var("PATH", dir.path()) };
+
+        let result = resume_cli_child(session_id, session_file.to_str().unwrap());
+
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("not found"),
+            "Should report claude binary not found"
+        );
     }
 }

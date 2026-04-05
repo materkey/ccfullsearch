@@ -3,6 +3,9 @@ name: claude-session-search
 description: Search across all Claude Code and Claude Desktop sessions. Find past conversations by content, list recent sessions, locate specific discussions. Use when user asks to find something in previous sessions, recall past conversations, or list Claude sessions.
 ---
 
+> **Note:** This skill is also available as a Claude Code plugin with overlay picker support.
+> See `.claude-plugin/` for the plugin version with `ccs pick` overlay mode.
+
 # Claude Session Search
 
 Full-text search across Claude Code CLI and Claude Desktop sessions using `ccs`.

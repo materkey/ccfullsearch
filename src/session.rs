@@ -103,6 +103,88 @@ fn matches_ralphex_marker(content: &str) -> bool {
     content.contains(RALPHEX_MARKER)
 }
 
+/// Check if `dir` contains `<session_id>.jsonl` or an `audit.jsonl` whose first
+/// 50 lines mention `session_id`. Returns the matching file path if found.
+fn check_dir_for_session(
+    dir: &std::path::Path,
+    target_filename: &str,
+    session_id: &str,
+) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+
+    let candidate = dir.join(target_filename);
+    if candidate.exists() {
+        return Some(candidate.to_string_lossy().to_string());
+    }
+    let audit = dir.join("audit.jsonl");
+    if audit.exists() {
+        if let Ok(file) = std::fs::File::open(&audit) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().take(50).flatten() {
+                if line.contains(session_id) {
+                    return Some(audit.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Search for a JSONL file by session ID across the given search paths.
+/// Checks CLI format (projects/<encoded>/<id>.jsonl) and Desktop format.
+/// Desktop paths can be up to 3 levels deep:
+///   local-agent-mode-sessions/<uuid>/<uuid>/local_xxx/audit.jsonl
+pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> Option<String> {
+    use std::fs;
+    let target_filename = format!("{}.jsonl", session_id);
+
+    for search_path in search_paths {
+        if let Ok(entries) = fs::read_dir(search_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                // Level 1: search_root/<dir>/
+                if let Some(found) = check_dir_for_session(&path, &target_filename, session_id) {
+                    return Some(found);
+                }
+                // Level 2: search_root/<dir>/<subdir>/
+                if let Ok(subentries) = fs::read_dir(&path) {
+                    for subentry in subentries.flatten() {
+                        let subpath = subentry.path();
+                        if !subpath.is_dir() {
+                            continue;
+                        }
+                        if let Some(found) =
+                            check_dir_for_session(&subpath, &target_filename, session_id)
+                        {
+                            return Some(found);
+                        }
+                        // Level 3: search_root/<dir>/<subdir>/<subsubdir>/
+                        // Desktop: <uuid>/<uuid>/local_xxx/audit.jsonl
+                        if let Ok(deep_entries) = fs::read_dir(&subpath) {
+                            for deep_entry in deep_entries.flatten() {
+                                let deep_path = deep_entry.path();
+                                if deep_path.is_dir() {
+                                    if let Some(found) = check_dir_for_session(
+                                        &deep_path,
+                                        &target_filename,
+                                        session_id,
+                                    ) {
+                                        return Some(found);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Detect whether message content was produced by a known automation tool.
 /// Returns the tool name if a marker is found, `None` otherwise.
 pub fn detect_automation(content: &str) -> Option<&'static str> {

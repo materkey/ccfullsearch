@@ -1,4 +1,5 @@
-use crate::search::{RipgrepMatch, SessionGroup};
+use crate::search::{extract_project_from_path, RipgrepMatch, SessionGroup};
+use crate::tui::state::PickedSession;
 use crate::tui::App;
 use std::time::Instant;
 
@@ -168,13 +169,23 @@ impl App {
             return;
         }
 
-        // Recent sessions: resume selected session
+        // Recent sessions: resume/pick selected session
         if self.in_recent_sessions_mode() {
             if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
-                self.resume_id = Some(session.session_id.clone());
-                self.resume_file_path = Some(session.file_path.clone());
-                self.resume_source = Some(session.source);
-                self.resume_uuid = None;
+                if self.picker_mode {
+                    self.picked_session = Some(PickedSession {
+                        session_id: session.session_id.clone(),
+                        file_path: session.file_path.clone(),
+                        source: session.source,
+                        project: session.project.clone(),
+                        message_uuid: None,
+                    });
+                } else {
+                    self.resume_id = Some(session.session_id.clone());
+                    self.resume_file_path = Some(session.file_path.clone());
+                    self.resume_source = Some(session.source);
+                    self.resume_uuid = None;
+                }
                 self.should_quit = true;
             }
             return;
@@ -193,10 +204,25 @@ impl App {
         });
 
         if let Some((session_id, file_path, source, uuid)) = resume_info {
-            self.resume_id = Some(session_id);
-            self.resume_file_path = Some(file_path);
-            self.resume_source = Some(source);
-            self.resume_uuid = uuid;
+            if self.picker_mode {
+                let project = extract_project_from_path(&file_path);
+                self.picked_session = Some(PickedSession {
+                    session_id,
+                    file_path,
+                    source,
+                    project,
+                    message_uuid: uuid,
+                });
+            } else {
+                self.resume_id = Some(session_id);
+                self.resume_file_path = Some(file_path);
+                self.resume_source = Some(source);
+                // Don't pass message uuid from search results — it triggers
+                // fork logic when the message is not on the latest chain.
+                // UUID-based resume is only meaningful from tree view where
+                // the user explicitly selects a specific branch point.
+                self.resume_uuid = None;
+            }
             self.should_quit = true;
         }
     }
@@ -539,5 +565,90 @@ mod tests {
         // Back in recent sessions mode — cursor preserved (not reset by clear_input)
         assert!(app.in_recent_sessions_mode());
         assert_eq!(app.recent_cursor, 1);
+    }
+
+    // =========================================================================
+    // Picker mode tests
+    // =========================================================================
+
+    #[test]
+    fn test_on_enter_picker_mode_sets_picked_session() {
+        use crate::search::message::Message;
+        use chrono::Utc;
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+
+        // Set up a search result with a message
+        app.groups = vec![SessionGroup {
+            session_id: "sess-123".to_string(),
+            file_path: "/home/user/.claude/projects/-Users-user-projects-myapp/session.jsonl"
+                .to_string(),
+            matches: vec![RipgrepMatch {
+                file_path: "/home/user/.claude/projects/-Users-user-projects-myapp/session.jsonl"
+                    .to_string(),
+                message: Some(Message {
+                    session_id: "sess-123".to_string(),
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                    timestamp: Utc::now(),
+                    branch: None,
+                    line_number: 1,
+                    uuid: Some("uuid-1".to_string()),
+                    parent_uuid: None,
+                }),
+                source: SessionSource::ClaudeCodeCLI,
+            }],
+            automation: None,
+        }];
+        app.input = "hello".to_string();
+
+        app.on_enter();
+
+        assert!(app.should_quit);
+        assert!(app.picked_session.is_some());
+        let picked = app.picked_session.unwrap();
+        assert_eq!(picked.session_id, "sess-123");
+        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(picked.project, "myapp");
+        // resume_* should NOT be set in picker mode
+        assert!(app.resume_id.is_none());
+    }
+
+    #[test]
+    fn test_on_enter_picker_mode_from_recent_sessions() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+        app.recent_loading = false;
+        app.recent_sessions = vec![
+            make_recent_session("s1", "proj-a", "first"),
+            make_recent_session("s2", "proj-b", "second"),
+        ];
+
+        app.on_down();
+        app.on_enter();
+
+        assert!(app.should_quit);
+        assert!(app.picked_session.is_some());
+        let picked = app.picked_session.unwrap();
+        assert_eq!(picked.session_id, "s2");
+        assert_eq!(picked.project, "proj-b");
+        assert_eq!(picked.file_path, "/tmp/s2.jsonl");
+        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        // resume_* should NOT be set
+        assert!(app.resume_id.is_none());
+    }
+
+    #[test]
+    fn test_esc_in_picker_mode_leaves_picked_session_none() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+        app.recent_loading = false;
+        app.recent_sessions = vec![make_recent_session("s1", "proj-a", "first")];
+
+        // Esc clears input (if any) or quits — picked_session stays None
+        app.clear_input();
+
+        assert!(app.picked_session.is_none());
     }
 }

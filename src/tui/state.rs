@@ -71,6 +71,69 @@ fn apply_recent_automation_to_groups(
     }
 }
 
+/// A session selected in picker mode, ready for output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickedSession {
+    pub session_id: String,
+    pub file_path: String,
+    pub source: SessionSource,
+    pub project: String,
+    pub message_uuid: Option<String>,
+}
+
+impl PickedSession {
+    pub fn to_key_value(&self) -> String {
+        let mut out = format!(
+            "session_id: {}\nfile_path: {}\nsource: {}\nproject: {}",
+            self.session_id,
+            self.file_path,
+            self.source.display_name(),
+            self.project,
+        );
+        if let Some(ref uuid) = self.message_uuid {
+            out.push_str(&format!("\nmessage_uuid: {}", uuid));
+        }
+        out
+    }
+
+    pub fn write_output(&self, output_path: Option<&str>) -> Result<(), String> {
+        let content = self.to_key_value();
+        match output_path {
+            Some(path) => {
+                // Add trailing newline for file output so parsers can reliably read the last line
+                std::fs::write(path, format!("{}\n", content))
+                    .map_err(|e| format!("Failed to write output to {}: {}", path, e))
+            }
+            None => {
+                use std::io::Write;
+                // Use println + flush to ensure output is written before process::exit()
+                println!("{}", content);
+                std::io::stdout()
+                    .flush()
+                    .map_err(|e| format!("Failed to flush stdout: {}", e))
+            }
+        }
+    }
+}
+
+/// Result of TUI interaction — what the user chose to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiOutcome {
+    /// User quit without selecting anything (Esc, Ctrl-C)
+    Quit,
+    /// User selected a session to resume in normal mode
+    Resume {
+        session_id: String,
+        file_path: String,
+        source: SessionSource,
+        uuid: Option<String>,
+        /// Current search query to restore on return (overlay mode)
+        query: String,
+    },
+    /// User picked a session in picker mode
+    Pick(PickedSession),
+}
+
 /// Filter mode for automated vs manual sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationFilter {
@@ -171,6 +234,10 @@ pub struct App {
     pub recent_loading: bool,
     /// Channel to receive recent sessions from background loader
     pub(crate) recent_load_rx: Option<Receiver<Vec<RecentSession>>>,
+    /// Picker mode: on_enter sets picked_session instead of resume_*
+    pub picker_mode: bool,
+    /// Session picked in picker mode (set by on_enter/on_enter_tree)
+    pub picked_session: Option<PickedSession>,
 }
 
 impl App {
@@ -265,6 +332,8 @@ impl App {
             recent_scroll_offset: 0,
             recent_loading: true,
             recent_load_rx: Some(recent_rx),
+            picker_mode: false,
+            picked_session: None,
         }
     }
 
@@ -296,6 +365,31 @@ impl App {
             self.typing = true;
             self.last_keystroke = Some(Instant::now());
         }
+    }
+
+    /// Determine the outcome of the TUI session based on app state after the loop exits.
+    pub fn into_outcome(self) -> TuiOutcome {
+        if let Some(picked) = self.picked_session {
+            return TuiOutcome::Pick(picked);
+        }
+        if let (Some(session_id), Some(file_path), Some(source)) =
+            (self.resume_id, self.resume_file_path, self.resume_source)
+        {
+            if std::env::var("CCS_DEBUG").is_ok() {
+                eprintln!(
+                    "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
+                    session_id, file_path, source, self.resume_uuid
+                );
+            }
+            return TuiOutcome::Resume {
+                session_id,
+                file_path,
+                source,
+                uuid: self.resume_uuid,
+                query: self.input,
+            };
+        }
+        TuiOutcome::Quit
     }
 
     /// Reset all search result state to idle (no results, no error, no status).
@@ -1192,5 +1286,155 @@ mod tests {
         app.delete_word_right();
         assert_eq!(app.input, "hello");
         assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_picked_session_to_key_value_cli() {
+        let picked = PickedSession {
+            session_id: "abc-123".to_string(),
+            file_path: "/path/to/session.jsonl".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            project: "my-project".to_string(),
+            message_uuid: None,
+        };
+        let output = picked.to_key_value();
+        assert_eq!(
+            output,
+            "session_id: abc-123\nfile_path: /path/to/session.jsonl\nsource: CLI\nproject: my-project"
+        );
+    }
+
+    #[test]
+    fn test_picked_session_to_key_value_desktop() {
+        let picked = PickedSession {
+            session_id: "desk-456".to_string(),
+            file_path: "/Library/Application Support/Claude/local-agent-mode-sessions/sess.jsonl"
+                .to_string(),
+            source: SessionSource::ClaudeDesktop,
+            project: "desktop-proj".to_string(),
+            message_uuid: None,
+        };
+        let output = picked.to_key_value();
+        assert!(output.contains("source: Desktop"));
+        assert!(output.contains("session_id: desk-456"));
+        assert!(output.contains("project: desktop-proj"));
+    }
+
+    #[test]
+    fn test_picked_session_write_output_to_file() {
+        let picked = PickedSession {
+            session_id: "file-out-test".to_string(),
+            file_path: "/sessions/test.jsonl".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            project: "proj".to_string(),
+            message_uuid: None,
+        };
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        picked.write_output(Some(&path)).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, format!("{}\n", picked.to_key_value()));
+    }
+
+    #[test]
+    fn test_picked_session_write_output_to_stdout() {
+        let picked = PickedSession {
+            session_id: "stdout-test".to_string(),
+            file_path: "/sessions/test.jsonl".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            project: "proj".to_string(),
+            message_uuid: None,
+        };
+        // write_output(None) writes to stdout; just verify it doesn't error
+        let result = picked.write_output(None);
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // TuiOutcome tests
+    // =========================================================================
+
+    #[test]
+    fn test_into_outcome_quit_when_no_selection() {
+        let app = App::new(vec!["/test".to_string()]);
+        assert_eq!(app.into_outcome(), TuiOutcome::Quit);
+    }
+
+    #[test]
+    fn test_into_outcome_resume_when_resume_fields_set() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.resume_id = Some("sess-1".to_string());
+        app.resume_file_path = Some("/path/to/session.jsonl".to_string());
+        app.resume_source = Some(SessionSource::ClaudeCodeCLI);
+        app.resume_uuid = Some("uuid-42".to_string());
+        app.input = "my search query".to_string();
+
+        let outcome = app.into_outcome();
+        assert_eq!(
+            outcome,
+            TuiOutcome::Resume {
+                session_id: "sess-1".to_string(),
+                file_path: "/path/to/session.jsonl".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                uuid: Some("uuid-42".to_string()),
+                query: "my search query".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_into_outcome_pick_when_picked_session_set() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+        app.picked_session = Some(PickedSession {
+            session_id: "pick-1".to_string(),
+            file_path: "/pick/session.jsonl".to_string(),
+            source: SessionSource::ClaudeDesktop,
+            project: "my-project".to_string(),
+            message_uuid: None,
+        });
+
+        let outcome = app.into_outcome();
+        assert_eq!(
+            outcome,
+            TuiOutcome::Pick(PickedSession {
+                session_id: "pick-1".to_string(),
+                file_path: "/pick/session.jsonl".to_string(),
+                source: SessionSource::ClaudeDesktop,
+                project: "my-project".to_string(),
+                message_uuid: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_into_outcome_quit_when_picker_mode_no_selection() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.picker_mode = true;
+        // No picked_session set (user pressed Esc)
+        assert_eq!(app.into_outcome(), TuiOutcome::Quit);
+    }
+
+    #[test]
+    fn test_into_outcome_pick_takes_priority_over_resume() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        // Both picked_session and resume_* are set — Pick should win
+        app.picked_session = Some(PickedSession {
+            session_id: "pick-1".to_string(),
+            file_path: "/pick/session.jsonl".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            project: "proj".to_string(),
+            message_uuid: None,
+        });
+        app.resume_id = Some("resume-1".to_string());
+        app.resume_file_path = Some("/resume/session.jsonl".to_string());
+        app.resume_source = Some(SessionSource::ClaudeCodeCLI);
+
+        match app.into_outcome() {
+            TuiOutcome::Pick(p) => assert_eq!(p.session_id, "pick-1"),
+            other => panic!("Expected Pick, got {:?}", other),
+        }
     }
 }

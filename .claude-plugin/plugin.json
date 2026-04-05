@@ -1,0 +1,17 @@
+{
+  "name": "ccs",
+  "version": "0.7.0",
+  "description": "Search and browse Claude Code CLI and Claude Desktop session history",
+  "author": {
+    "name": "materkey"
+  },
+  "repository": "https://github.com/materkey/ccs",
+  "license": "MIT",
+  "keywords": [
+    "session-search",
+    "claude-code",
+    "tui",
+    "picker"
+  ],
+  "skills": "../.claude/skills/"
+}
