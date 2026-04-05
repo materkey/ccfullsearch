@@ -184,8 +184,8 @@ ccs --overlay
 | Key | Action |
 |-----|--------|
 | `Up` / `Down` | Navigate messages |
-| `Left` / `Right` | Scroll content horizontally |
-| `Tab` | Jump to next branch point |
+| `Left` / `Right` | Jump to previous/next branch point |
+| `Tab` | Toggle preview pane |
 | `Enter` | Resume session at selected message |
 | `Ctrl+C` / `b` / `Esc` | Back to search |
 | `q` | Quit |
