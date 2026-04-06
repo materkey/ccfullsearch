@@ -16,3 +16,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# External plugin skills (installed by plugins, not part of this project)
+.claude/skills/bmad-*/
+.claude/skills/wds-*/
+_bmad/
