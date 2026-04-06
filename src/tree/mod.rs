@@ -1,5 +1,6 @@
 use crate::session::{self, SessionSource};
 use chrono::{DateTime, Utc};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -9,8 +10,6 @@ use std::io::{BufRead, BufReader};
 pub struct DagNode {
     pub uuid: String,
     pub parent_uuid: Option<String>,
-    #[allow(dead_code)]
-    record_type: String,
     pub timestamp: Option<DateTime<Utc>>,
     pub line_index: usize,
     /// Only populated for user/assistant
@@ -28,8 +27,6 @@ pub struct TreeRow {
     pub role: String,
     pub timestamp: DateTime<Utc>,
     pub content_preview: String,
-    #[allow(dead_code)]
-    pub depth: usize,
     pub graph_symbols: String,
     pub is_on_latest_chain: bool,
     pub is_branch_point: bool,
@@ -43,9 +40,6 @@ pub struct SessionTree {
     nodes: HashMap<String, DagNode>,
     /// parent_uuid -> vec of child uuids (ordered by line_index)
     children: HashMap<String, Vec<String>>,
-    /// Root uuids (no parent)
-    #[allow(dead_code)]
-    roots: Vec<String>,
     /// Set of uuids on the latest chain
     latest_chain: HashSet<String>,
     /// Flattened display rows (only user/assistant messages)
@@ -54,6 +48,8 @@ pub struct SessionTree {
     pub session_id: String,
     pub file_path: String,
     pub source: SessionSource,
+    /// Cache for full message content to avoid re-reading file on every navigation keystroke
+    content_cache: RefCell<HashMap<String, String>>,
 }
 
 impl SessionTree {
@@ -146,7 +142,6 @@ impl SessionTree {
                 DagNode {
                     uuid: uuid.clone(),
                     parent_uuid,
-                    record_type,
                     timestamp,
                     line_index: line_idx,
                     role,
@@ -164,12 +159,12 @@ impl SessionTree {
         let mut tree = SessionTree {
             nodes,
             children,
-            roots,
             latest_chain,
             rows: Vec::new(),
             session_id,
             file_path: file_path.to_string(),
             source,
+            content_cache: RefCell::new(HashMap::new()),
         };
 
         tree.flatten_to_rows();
@@ -182,7 +177,14 @@ impl SessionTree {
     }
 
     /// Get the full content of a message by reading its JSONL line from file.
+    /// Caches the result so repeated calls for the same uuid (e.g. on every
+    /// render tick during tree navigation) don't re-read the file.
     pub fn get_full_content(&self, uuid: &str) -> Option<String> {
+        // Check cache first
+        if let Some(cached) = self.content_cache.borrow().get(uuid) {
+            return Some(cached.clone());
+        }
+
         let node = self.nodes.get(uuid)?;
         let file = fs::File::open(&self.file_path).ok()?;
         let reader = BufReader::new(file);
@@ -190,7 +192,16 @@ impl SessionTree {
         let line = reader.lines().nth(node.line_index)?.ok()?;
         let json: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
         let content_raw = json.get("message")?.get("content")?;
-        Some(crate::search::Message::extract_content(content_raw))
+        let content = crate::search::Message::extract_content(content_raw);
+
+        // Cache the result (keep cache bounded to avoid unbounded memory growth)
+        let mut cache = self.content_cache.borrow_mut();
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(uuid.to_string(), content.clone());
+
+        Some(content)
     }
 
     /// Build the display graph (only user/assistant) and flatten via DFS.
@@ -347,7 +358,6 @@ impl SessionTree {
             role: node.role.clone().unwrap_or_else(|| "?".to_string()),
             timestamp: node.timestamp.unwrap_or_else(Utc::now),
             content_preview: node.content_preview.clone().unwrap_or_default(),
-            depth: column,
             graph_symbols: graph,
             is_on_latest_chain: is_on_latest,
             is_branch_point,
@@ -621,12 +631,12 @@ impl SessionTree {
         Self {
             nodes: HashMap::new(),
             children: HashMap::new(),
-            roots: Vec::new(),
             latest_chain: HashSet::new(),
             rows,
             session_id,
             file_path,
             source,
+            content_cache: RefCell::new(HashMap::new()),
         }
     }
 }

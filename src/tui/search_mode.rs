@@ -406,7 +406,7 @@ mod tests {
 
         app.handle_search_result(stale_result);
 
-        assert!(app.results.is_empty());
+        assert_eq!(app.results_count, 0);
         assert!(app.groups.is_empty());
         assert!(app.searching);
     }

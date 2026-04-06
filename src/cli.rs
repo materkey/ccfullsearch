@@ -84,6 +84,10 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
     // Sort by last_active descending
     sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
+    // Deduplicate by session_id (keep newest)
+    let mut seen = std::collections::HashSet::new();
+    sessions.retain(|s| seen.insert(s.session_id.clone()));
+
     for session in sessions.iter().take(limit) {
         if let Ok(json) = serde_json::to_string(session) {
             println!("{}", json);
@@ -91,7 +95,8 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
     }
 }
 
-/// Recursively find .jsonl files and extract session metadata
+/// Recursively find .jsonl files and extract session metadata.
+/// Skips `agent-*.jsonl` files and `subagents/` directories (duplicates of parent sessions).
 fn collect_sessions(dir: &str, results: &mut Vec<ListResult>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -100,10 +105,17 @@ fn collect_sessions(dir: &str, results: &mut Vec<ListResult>) {
 
     for entry in entries.flatten() {
         let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if path.is_dir() {
+            if name == "subagents" {
+                continue;
+            }
             collect_sessions(path.to_str().unwrap_or(""), results);
         } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+            if name.starts_with("agent-") {
+                continue;
+            }
             if let Some(session) = extract_session_metadata(&path) {
                 results.push(session);
             }

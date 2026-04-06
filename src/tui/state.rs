@@ -157,7 +157,7 @@ pub(crate) type SearchResult = (
 
 pub struct App {
     pub input: String,
-    pub results: Vec<RipgrepMatch>,
+    pub results_count: usize,
     /// All search result groups (unfiltered)
     pub(crate) all_groups: Vec<SessionGroup>,
     /// Search result groups filtered by automation filter
@@ -204,6 +204,8 @@ pub struct App {
     pub tree_cursor: usize,
     /// Vertical scroll offset for tree view
     pub tree_scroll_offset: usize,
+    /// Last rendered visible height for tree (updated by render)
+    pub tree_visible_height: usize,
     /// Whether tree is currently loading
     pub tree_loading: bool,
     /// Channel to receive loaded tree from background thread
@@ -286,7 +288,7 @@ impl App {
 
         Self {
             input: String::new(),
-            results: vec![],
+            results_count: 0,
             all_groups: vec![],
             groups: vec![],
             group_cursor: 0,
@@ -317,6 +319,7 @@ impl App {
             session_tree: None,
             tree_cursor: 0,
             tree_scroll_offset: 0,
+            tree_visible_height: 20,
             tree_loading: false,
             tree_load_rx: None,
             tree_mode_standalone: false,
@@ -396,7 +399,7 @@ impl App {
     /// Shared by `clear_input()` (Ctrl-C) and `tick()` (backspace-to-empty).
     fn reset_search_state(&mut self) {
         self.last_query.clear();
-        self.results.clear();
+        self.results_count = 0;
         self.all_groups.clear();
         self.groups.clear();
         self.results_query.clear();
@@ -439,32 +442,45 @@ impl App {
     }
 
     pub fn move_cursor_word_left(&mut self) {
-        let bytes = self.input.as_bytes();
-        let mut pos = self.cursor_pos;
+        let before = &self.input[..self.cursor_pos];
+        let mut chars = before.char_indices().rev();
         // Skip non-alphanumeric
-        while pos > 0 && !bytes[pos - 1].is_ascii_alphanumeric() {
-            pos -= 1;
+        while let Some((i, c)) = chars.next() {
+            if c.is_alphanumeric() {
+                // Found alphanumeric — now skip the rest of the word
+                self.cursor_pos = i;
+                for (j, c2) in chars {
+                    if !c2.is_alphanumeric() {
+                        self.cursor_pos = j + c2.len_utf8();
+                        return;
+                    }
+                    self.cursor_pos = j;
+                }
+                self.cursor_pos = 0;
+                return;
+            }
         }
-        // Skip alphanumeric
-        while pos > 0 && bytes[pos - 1].is_ascii_alphanumeric() {
-            pos -= 1;
-        }
-        self.cursor_pos = pos;
+        self.cursor_pos = 0;
     }
 
     pub fn move_cursor_word_right(&mut self) {
-        let bytes = self.input.as_bytes();
-        let len = bytes.len();
-        let mut pos = self.cursor_pos;
+        let after = &self.input[self.cursor_pos..];
+        let mut chars = after.char_indices();
         // Skip alphanumeric
-        while pos < len && bytes[pos].is_ascii_alphanumeric() {
-            pos += 1;
+        while let Some((_i, c)) = chars.next() {
+            if !c.is_alphanumeric() {
+                // Found non-alphanumeric — now skip to next word
+                for (j, c2) in chars {
+                    if c2.is_alphanumeric() {
+                        self.cursor_pos += j;
+                        return;
+                    }
+                }
+                self.cursor_pos = self.input.len();
+                return;
+            }
         }
-        // Skip non-alphanumeric
-        while pos < len && !bytes[pos].is_ascii_alphanumeric() {
-            pos += 1;
-        }
-        self.cursor_pos = pos;
+        self.cursor_pos = self.input.len();
     }
 
     pub fn move_cursor_home(&mut self) {
@@ -586,7 +602,8 @@ impl App {
         match result {
             Ok(results) => {
                 self.results_query = query;
-                let mut groups = group_by_session(results.clone());
+                let count = results.len();
+                let mut groups = group_by_session(results);
                 apply_recent_automation_to_groups(
                     &mut groups,
                     &self.all_recent_sessions,
@@ -594,7 +611,7 @@ impl App {
                 );
                 self.all_groups = groups;
                 self.apply_groups_filter();
-                self.results = results;
+                self.results_count = count;
                 self.group_cursor = 0;
                 self.sub_cursor = 0;
                 self.expanded = false;
@@ -936,11 +953,7 @@ mod tests {
         app.cursor_pos = 5;
         app.last_query = "hello".to_string();
         app.results_query = "hello".to_string();
-        app.results = vec![RipgrepMatch {
-            file_path: "/test/file.jsonl".to_string(),
-            message: None,
-            source: SessionSource::ClaudeCodeCLI,
-        }];
+        app.results_count = 1;
         app.groups = vec![SessionGroup {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
@@ -967,7 +980,7 @@ mod tests {
         );
         assert!(!app.searching, "searching should be false");
         assert!(app.last_query.is_empty(), "last_query should be cleared");
-        assert!(app.results.is_empty(), "results should be cleared");
+        assert_eq!(app.results_count, 0, "results_count should be cleared");
         assert!(app.groups.is_empty(), "groups should be cleared");
         assert!(
             app.results_query.is_empty(),
@@ -1217,11 +1230,7 @@ mod tests {
         app.input = String::new(); // empty — user backspaced everything
         app.last_query = "hello".to_string(); // previous query that produced results
         app.results_query = "hello".to_string();
-        app.results = vec![RipgrepMatch {
-            file_path: "/test/file.jsonl".to_string(),
-            message: None,
-            source: SessionSource::ClaudeCodeCLI,
-        }];
+        app.results_count = 1;
         app.groups = vec![SessionGroup {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
@@ -1242,9 +1251,9 @@ mod tests {
 
         app.tick();
 
-        assert!(
-            app.results.is_empty(),
-            "results should be cleared after tick with empty query"
+        assert_eq!(
+            app.results_count, 0,
+            "results_count should be cleared after tick with empty query"
         );
         assert!(
             app.groups.is_empty(),

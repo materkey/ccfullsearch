@@ -106,6 +106,7 @@ fn is_session_in_index(project_dir: &Path, session_id: &str) -> bool {
 }
 
 /// Register a session in Claude CLI's sessions-index.json (if index exists and session is missing).
+/// Uses atomic write (temp file + rename) to prevent corruption on crash/interruption.
 fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &SessionAnalysis) {
     let project_dir = match Path::new(file_path).parent() {
         Some(d) => d,
@@ -157,8 +158,12 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
         "isSidechain": false
     }));
 
+    // Atomic write: temp file + rename prevents corruption on crash
     if let Ok(json_str) = serde_json::to_string_pretty(&index) {
-        let _ = fs::write(&index_path, json_str);
+        let tmp_path = project_dir.join(format!(".{}.tmp", SESSIONS_INDEX_FILE));
+        if fs::write(&tmp_path, &json_str).is_ok() {
+            let _ = fs::rename(&tmp_path, &index_path);
+        }
     }
 }
 

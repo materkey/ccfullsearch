@@ -463,10 +463,14 @@ fn extract_latest_user_message_on_chain(
 }
 
 pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
+    // Automation markers appear early in the file (first user message),
+    // so limit scan to avoid reading entire large JSONL files on the main thread.
+    const MAX_LINES: usize = 50;
+
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
-    for line in reader.lines() {
+    for line in reader.lines().take(MAX_LINES) {
         let line = match line {
             Ok(line) => line,
             Err(_) => continue,

@@ -83,7 +83,7 @@ fn snapshot_search_with_results() {
         matches: vec![m.clone()],
         automation: None,
     }];
-    app.results = vec![m];
+    app.results_count = 1;
     app.results_query = "sort".to_string();
 
     terminal.draw(|frame| render(frame, &mut app)).unwrap();

@@ -51,9 +51,17 @@ if [ -n "$KITTY_SOCK" ] && command -v kitty >/dev/null 2>&1; then
     fi
     KITTY_ARGS+=(sh -c "$RESUME_CMD; touch '$SENTINEL'")
 
-    "${KITTY_ARGS[@]}" >/dev/null 2>&1
+    if ! "${KITTY_ARGS[@]}" >/dev/null 2>&1; then
+        echo "error: kitty overlay launch failed" >&2
+        exit 1
+    fi
 
-    while [ ! -f "$SENTINEL" ]; do sleep 0.3; done
+    TIMEOUT=3600  # 1 hour max wait
+    ELAPSED=0
+    while [ ! -f "$SENTINEL" ] && [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+        sleep 0.3
+        ELAPSED=$((ELAPSED + 1))
+    done
     rm -f "$SENTINEL"
     exit 0
 fi
@@ -66,10 +74,18 @@ if [ -n "${WEZTERM_PANE:-}" ] && command -v wezterm >/dev/null 2>&1; then
 
     WEZTERM_PCT="${CCS_POPUP_HEIGHT:-90%}"
     WEZTERM_PCT="${WEZTERM_PCT%%%}"
-    PATH="$PATH" wezterm cli split-pane --bottom --percent "$WEZTERM_PCT" \
-        --pane-id "$WEZTERM_PANE" --cwd "$WORK_DIR" -- sh -c "$RESUME_CMD; touch '$SENTINEL'" >/dev/null 2>&1
+    if ! PATH="$PATH" wezterm cli split-pane --bottom --percent "$WEZTERM_PCT" \
+        --pane-id "$WEZTERM_PANE" --cwd "$WORK_DIR" -- sh -c "$RESUME_CMD; touch '$SENTINEL'" >/dev/null 2>&1; then
+        echo "error: wezterm split-pane launch failed" >&2
+        exit 1
+    fi
 
-    while [ ! -f "$SENTINEL" ]; do sleep 0.3; done
+    TIMEOUT=3600
+    ELAPSED=0
+    while [ ! -f "$SENTINEL" ] && [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+        sleep 0.3
+        ELAPSED=$((ELAPSED + 1))
+    done
     rm -f "$SENTINEL"
     exit 0
 fi

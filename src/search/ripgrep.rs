@@ -1,8 +1,13 @@
 use super::{Message, SessionSource};
 use crate::resume::resolve_parent_session;
 use regex::RegexBuilder;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+
+static DESKTOP_TITLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// A match from ripgrep search
 #[derive(Debug, Clone)]
@@ -42,7 +47,6 @@ pub fn search_multiple_paths(
             continue;
         }
 
-        // Check if path exists
         if !std::path::Path::new(search_path).exists() {
             continue;
         }
@@ -68,7 +72,6 @@ fn search_single_path(
         "1000".to_string(),
     ];
 
-    // Use fixed-strings for literal search, omit for regex
     if !use_regex {
         args.push("--fixed-strings".to_string());
     }
@@ -86,7 +89,6 @@ fn search_single_path(
     let reader = BufReader::new(&output.stdout[..]);
     let mut results = Vec::new();
 
-    // Build matcher: regex or literal (case-insensitive)
     let regex_matcher = if use_regex {
         RegexBuilder::new(query).case_insensitive(true).build().ok()
     } else {
@@ -148,7 +150,6 @@ fn is_agent_or_subagent_path(path: &str) -> bool {
 pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
 
-    // Only process "match" type entries
     let msg_type = parsed.get("type")?.as_str()?;
     if msg_type != "match" {
         return None;
@@ -159,7 +160,6 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let line_text = data.get("lines")?.get("text")?.as_str()?;
     let line_number = data.get("line_number")?.as_u64()? as usize;
 
-    // Parse the JSONL line content
     let message = Message::from_jsonl(line_text.trim(), line_number);
     let source = SessionSource::from_path(&file_path);
 
@@ -263,26 +263,38 @@ pub fn extract_project_from_path(path: &str) -> String {
         .to_string()
 }
 
-/// Read Desktop session title from the sibling JSON metadata file
+/// Read Desktop session title from the sibling JSON metadata file (cached).
 /// Path: .../local_xxx/audit.jsonl -> .../local_xxx.json
 fn read_desktop_session_title(audit_path: &str) -> Option<String> {
+    if let Ok(cache) = DESKTOP_TITLE_CACHE.lock() {
+        if let Some(cached) = cache.get(audit_path) {
+            return cached.clone();
+        }
+    }
+
+    let result = read_desktop_session_title_uncached(audit_path);
+
+    if let Ok(mut cache) = DESKTOP_TITLE_CACHE.lock() {
+        cache.insert(audit_path.to_string(), result.clone());
+    }
+
+    result
+}
+
+fn read_desktop_session_title_uncached(audit_path: &str) -> Option<String> {
     use std::path::Path;
 
     let path = Path::new(audit_path);
 
-    // Get the parent directory (local_xxx)
     let local_dir = path.parent()?;
     let local_dir_name = local_dir.file_name()?.to_str()?;
 
-    // Build the JSON metadata file path (sibling of local_xxx directory)
     let parent_of_local = local_dir.parent()?;
     let json_path = parent_of_local.join(format!("{}.json", local_dir_name));
 
-    // Try to read and parse the JSON file
     let content = std::fs::read_to_string(&json_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-    // Extract the title field
     json.get("title")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string())

@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-pub(crate) fn render_tree_mode(frame: &mut Frame, app: &App) {
+pub(crate) fn render_tree_mode(frame: &mut Frame, app: &mut App) {
     let [header_area, tree_area, help_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
@@ -62,7 +62,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &App) {
     frame.render_widget(help, help_area);
 }
 
-fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     // Clear area
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
@@ -91,6 +91,7 @@ fn render_tree(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     let visible_height = area.height as usize;
+    app.tree_visible_height = visible_height;
     let start = app
         .tree_scroll_offset
         .min(tree.rows.len().saturating_sub(1));

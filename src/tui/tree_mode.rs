@@ -164,7 +164,7 @@ impl App {
     }
 
     fn adjust_tree_scroll(&mut self) {
-        let visible = 20; // approximate visible height
+        let visible = self.tree_visible_height;
         if self.tree_cursor < self.tree_scroll_offset {
             self.tree_scroll_offset = self.tree_cursor;
         } else if self.tree_cursor >= self.tree_scroll_offset + visible {
@@ -219,7 +219,6 @@ mod tests {
                 role: "user".to_string(),
                 timestamp: Utc::now(),
                 content_preview: "hello world".to_string(),
-                depth: 0,
                 graph_symbols: "│ ".to_string(),
                 is_on_latest_chain: true,
                 is_branch_point: false,

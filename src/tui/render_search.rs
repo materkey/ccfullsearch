@@ -26,7 +26,7 @@ fn search_results_status_text(app: &App) -> Option<String> {
     if hidden == 0 {
         return Some(format!(
             "Found {} matches in {} sessions",
-            app.results.len(),
+            app.results_count,
             app.groups.len()
         ));
     }
@@ -39,7 +39,7 @@ fn search_results_status_text(app: &App) -> Option<String> {
 
     Some(format!(
         "Found {} matches in {} sessions ({})",
-        app.results.len(),
+        app.results_count,
         app.groups.len(),
         hidden_text
     ))
@@ -1688,7 +1688,7 @@ mod tests {
 
         let mut app = App::new(vec!["/test".to_string()]);
         app.results_query = "later".to_string();
-        app.results = vec![RipgrepMatch {
+        let test_match = RipgrepMatch {
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
                 session_id: "sess-1".to_string(),
@@ -1701,11 +1701,12 @@ mod tests {
                 parent_uuid: None,
             }),
             source: SessionSource::ClaudeCodeCLI,
-        }];
+        };
+        app.results_count = 1;
         app.all_groups = vec![SessionGroup {
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
-            matches: app.results.clone(),
+            matches: vec![test_match],
             automation: Some("ralphex".to_string()),
         }];
         app.groups = vec![];

@@ -33,11 +33,9 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
         return vec![];
     }
 
-    // Group by session ID
     let mut group_map: HashMap<String, SessionGroup> = HashMap::new();
 
     for m in results {
-        // Skip matches without messages
         let Some(ref msg) = m.message else {
             continue;
         };
@@ -72,7 +70,6 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
         });
     }
 
-    // Sort groups by newest message timestamp
     groups.sort_by(|a, b| {
         let ta = a.latest_timestamp();
         let tb = b.latest_timestamp();
