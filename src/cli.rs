@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 #[derive(Serialize)]
-struct SearchResult {
+struct CliSearchResult {
     session_id: String,
     project: String,
     source: String,
@@ -30,7 +30,7 @@ struct ListResult {
 
 /// Run CLI search command
 pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: usize) {
-    let results = match search_multiple_paths(query, search_paths, use_regex) {
+    let search_result = match search_multiple_paths(query, search_paths, use_regex) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Search error: {}", e);
@@ -38,7 +38,11 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
         }
     };
 
-    let groups = group_by_session(results);
+    if search_result.truncated {
+        eprintln!("Warning: results may be incomplete (per-file match limit reached)");
+    }
+
+    let groups = group_by_session(search_result.matches);
     let mut count = 0;
 
     for group in &groups {
@@ -51,7 +55,7 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
             }
 
             if let Some(ref msg) = m.message {
-                let result = SearchResult {
+                let result = CliSearchResult {
                     session_id: msg.session_id.clone(),
                     project: project.clone(),
                     source: source.display_name().to_string(),

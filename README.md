@@ -14,6 +14,7 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 - **Session grouping** — results grouped by session with timestamps and project context
 - **Tree view** — visualize conversation branches, forks, and context compactions (`Ctrl+B`)
 - **Session resume** — press `Enter` to resume any session directly from search results or the recent sessions list
+- **Truncation warning** — alerts when search results may be incomplete due to per-file match limits
 - **Async search** — non-blocking background search with debounce
 - **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
 - **Picker mode** — `ccs pick` subcommand for machine-readable session selection (key-value output)

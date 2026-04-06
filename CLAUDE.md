@@ -50,7 +50,7 @@ src/
 │   ├── mod.rs        # Resume orchestration (CLI exec vs Desktop open, resume_child for overlay)
 │   ├── path_codec.rs # Encodes/decodes filesystem paths to Claude's dash-separated format
 │   ├── fork.rs       # Creates forked JSONL files for branch-aware resume
-│   └── launcher.rs   # Process exec (Unix) / spawn (Windows), resume_cli_child() for overlay child-process resume
+│   └── launcher.rs   # Process exec (Unix) / spawn (Windows), resume_cli_child() for overlay, safe path fallback (decode→parent→$HOME→/tmp), atomic session index
 └── tui/
     ├── state.rs      # App struct, TuiOutcome enum, PickedSession struct, debounced async search (300ms), MPSC channels
     ├── search_mode.rs# Search navigation, filtering, input handling, recent sessions navigation
@@ -67,9 +67,9 @@ src/
 
 ### Key data flow
 
-1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc
+1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc → if any file hit the per-file match limit (1000), flag `truncated` and show warning in status bar
 2. **Tree mode**: Load full JSONL file → build DAG from `uuid`/`parentUuid` links (with `logicalParentUuid` fallback at compact_boundary points) → filter `isSidechain` records → find terminal messages (uuid not in any parentUuid set) → pick latest user/assistant terminal as tip → walk backward to build latest chain → mark branch points (nodes with >1 child) → flatten to `TreeRow` list
-3. **Resume**: On Enter, find `claude` binary via `which` → if selected message is NOT on latest chain, create a forked JSONL file (trace branch to root, skip `isSidechain` records, reset at `compact_boundary`, omit metadata lines without uuid) → exec/spawn `claude --resume <file-path>` (absolute `.jsonl` path for cross-project support)
+3. **Resume**: On Enter, find `claude` binary via `which` → resolve project working directory from session path (only use decoded path if it exists on disk; fall back to session file parent → `$HOME` → `/tmp`) → if selected message is NOT on latest chain, create a forked JSONL file (trace branch to root, skip `isSidechain` records, reset at `compact_boundary`, omit metadata lines without uuid) → exec/spawn `claude --resume <file-path>` (absolute `.jsonl` path for cross-project support). Session index uses per-process temp files for atomic writes.
 4. **TUI lifecycle**: `main()` calls `run_tui()` → returns `TuiOutcome` (Quit, Resume, Pick). In overlay mode (`--overlay`), `Resume` spawns Claude as child via `resume_cli_child()` and loops back. In normal mode, `Resume` calls `resume()` (exec, replaces process). `Pick` writes `PickedSession` key-value output and exits 0/1.
 5. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*` and `subagents/`) → sort by mtime → take top 50 → rayon parallel extract session title (priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage) → deduplicate by session_id (keep newest) → sort by timestamp desc → send via mpsc to TUI → render in empty-state view
 

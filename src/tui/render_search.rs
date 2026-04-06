@@ -19,15 +19,28 @@ fn search_results_status_text(app: &App) -> Option<String> {
 
     let total_groups = app.all_groups.len().max(app.groups.len());
     if total_groups == 0 {
+        if app.search_truncated {
+            return Some(
+                "No matches found (results may be incomplete — try a more specific query)"
+                    .to_string(),
+            );
+        }
         return Some("No matches found".to_string());
     }
+
+    let truncation_warning = if app.search_truncated {
+        " (results may be incomplete)"
+    } else {
+        ""
+    };
 
     let hidden = total_groups.saturating_sub(app.groups.len());
     if hidden == 0 {
         return Some(format!(
-            "Found {} matches in {} sessions",
+            "Found {} matches in {} sessions{}",
             app.results_count,
-            app.groups.len()
+            app.groups.len(),
+            truncation_warning
         ));
     }
 
@@ -37,11 +50,17 @@ fn search_results_status_text(app: &App) -> Option<String> {
         format!("{} hidden by filter", hidden)
     };
 
+    let suffix = if app.search_truncated {
+        format!("({}; results may be incomplete)", hidden_text)
+    } else {
+        format!("({})", hidden_text)
+    };
+
     Some(format!(
-        "Found {} matches in {} sessions ({})",
+        "Found {} matches in {} sessions {}",
         app.results_count,
         app.groups.len(),
-        hidden_text
+        suffix
     ))
 }
 
@@ -1720,6 +1739,92 @@ mod tests {
             100,
             24,
             "Found 1 matches in 0 sessions (all hidden by filter)"
+        ));
+    }
+
+    #[test]
+    fn test_search_truncation_surfaces_in_status_bar() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.results_query = "test".to_string();
+        let test_match = RipgrepMatch {
+            file_path: "/test/session.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "sess-1".to_string(),
+                role: "assistant".to_string(),
+                content: "test answer".to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+        app.results_count = 1;
+        app.all_groups = vec![SessionGroup {
+            session_id: "sess-1".to_string(),
+            file_path: "/test/session.jsonl".to_string(),
+            matches: vec![test_match],
+            automation: None,
+        }];
+        app.groups = app.all_groups.clone();
+        app.search_truncated = true;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render with truncation should not panic");
+
+        assert!(buffer_contains(
+            terminal.backend().buffer(),
+            120,
+            24,
+            "results may be incomplete"
+        ));
+    }
+
+    #[test]
+    fn test_search_no_truncation_hides_warning() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.results_query = "test".to_string();
+        let test_match = RipgrepMatch {
+            file_path: "/test/session.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "sess-1".to_string(),
+                role: "assistant".to_string(),
+                content: "test answer".to_string(),
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+                branch: None,
+                line_number: 1,
+                uuid: None,
+                parent_uuid: None,
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+        app.results_count = 1;
+        app.all_groups = vec![SessionGroup {
+            session_id: "sess-1".to_string(),
+            file_path: "/test/session.jsonl".to_string(),
+            matches: vec![test_match],
+            automation: None,
+        }];
+        app.groups = app.all_groups.clone();
+        app.search_truncated = false;
+
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("Render without truncation should not panic");
+
+        assert!(!buffer_contains(
+            terminal.backend().buffer(),
+            120,
+            24,
+            "results may be incomplete"
         ));
     }
 

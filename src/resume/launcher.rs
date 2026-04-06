@@ -158,11 +158,23 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
         "isSidechain": false
     }));
 
-    // Atomic write: temp file + rename prevents corruption on crash
+    // Atomic write: temp file (unique per process) + rename prevents corruption on crash.
+    // PID in temp name avoids temp-file collisions; lost-update race on read-modify-write
+    // is accepted since the index is advisory (Claude CLI rebuilds it on next session list).
     if let Ok(json_str) = serde_json::to_string_pretty(&index) {
-        let tmp_path = project_dir.join(format!(".{}.tmp", SESSIONS_INDEX_FILE));
-        if fs::write(&tmp_path, &json_str).is_ok() {
-            let _ = fs::rename(&tmp_path, &index_path);
+        let tmp_path = project_dir.join(format!(
+            ".{}.{}.tmp",
+            SESSIONS_INDEX_FILE,
+            std::process::id()
+        ));
+        if let Err(e) = fs::write(&tmp_path, &json_str) {
+            eprintln!("[ccs] failed to write session index temp file: {}", e);
+            return;
+        }
+        if let Err(e) = fs::rename(&tmp_path, &index_path) {
+            eprintln!("[ccs] failed to rename session index temp file: {}", e);
+            // Clean up orphaned temp file
+            let _ = fs::remove_file(&tmp_path);
         }
     }
 }
@@ -217,16 +229,20 @@ pub(super) fn build_resume_command(
 
     let decoded_project_dir = decode_project_path(file_path);
 
-    let working_dir = if let Some(ref dir) = decoded_project_dir {
-        if !Path::new(dir).exists() {
-            fs::create_dir_all(dir)
-                .map_err(|e| format!("Failed to create project directory {}: {}", dir, e))?;
+    // Use decoded project path only if it already exists on disk.
+    // Never create directories for decoded paths — the decode is lossy
+    // and could point to a wrong location.
+    let working_dir = match decoded_project_dir {
+        Some(ref dir) if Path::new(dir).exists() => dir.clone(),
+        _ => {
+            // Fallback: session file's parent dir (always exists) → $HOME → /tmp
+            Path::new(file_path)
+                .parent()
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().to_string())
+                .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "/tmp".to_string())
         }
-        dir.clone()
-    } else {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/tmp".to_string())
     };
 
     Ok((working_dir, resume_arg))
@@ -384,6 +400,234 @@ mod tests {
             Path::new(&working_dir).exists(),
             "working_dir should exist: {}",
             working_dir
+        );
+    }
+
+    #[test]
+    fn test_build_resume_command_does_not_create_nonexistent_project_dir() {
+        // When decode_project_path returns a path that doesn't exist on disk,
+        // build_resume_command should NOT create it — it should fall back safely.
+        let dir = TempDir::new().unwrap();
+        // Create a sibling tempdir for the "decoded" target that we immediately delete,
+        // guaranteeing the path cannot exist on any machine.
+        let ghost_dir = TempDir::new().unwrap();
+        let ghost_path = ghost_dir.path().to_path_buf();
+        drop(ghost_dir); // remove the directory
+        assert!(
+            !ghost_path.exists(),
+            "ghost dir should not exist after drop"
+        );
+
+        // Encode the ghost path in Claude's dash-separated format.
+        // decode_project_path will decode it back, but the directory won't exist.
+        let encoded = ghost_path.to_str().unwrap().replace('/', "-");
+        let project_dir = dir.path().join(".claude").join("projects").join(&encoded);
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_id = "nodir-test";
+        let session_file = project_dir.join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let result = build_resume_command(session_id, session_file.to_str().unwrap());
+        assert!(result.is_ok());
+
+        let (working_dir, _) = result.unwrap();
+        // The decoded ghost path must NOT have been created
+        assert!(
+            !ghost_path.exists(),
+            "build_resume_command should not create non-existent decoded project directories"
+        );
+        // working_dir should still be a valid, existing directory (fallback)
+        assert!(
+            Path::new(&working_dir).exists(),
+            "working_dir should exist (fallback): {}",
+            working_dir
+        );
+    }
+
+    #[test]
+    fn test_build_resume_command_uses_existing_decoded_path() {
+        // When decode_project_path returns a path that already exists,
+        // it should be used as the working directory.
+        let dir = TempDir::new().unwrap();
+        // Create both the .claude/projects/<encoded> dir and the real project dir
+        let real_project = dir.path().join("myproject");
+        fs::create_dir_all(&real_project).unwrap();
+
+        // Encode the temp path so decode_project_path can resolve it
+        let encoded_name = crate::resume::path_codec::encode_path_for_claude(
+            dir.path().join("myproject").to_str().unwrap(),
+        );
+        let project_dir = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join(&encoded_name);
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_id = "existing-dir-test";
+        let session_file = project_dir.join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let (working_dir, _) =
+            build_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
+
+        // Should use the real existing project directory
+        assert_eq!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            real_project.canonicalize().unwrap(),
+            "Should use the existing decoded project path as working dir"
+        );
+    }
+
+    #[test]
+    fn test_build_resume_command_falls_back_to_session_parent() {
+        // When decode_project_path fails (no .claude/projects/ in path),
+        // the fallback should be the session file's parent directory.
+        let dir = TempDir::new().unwrap();
+        // Place file directly in temp dir — no .claude/projects/ structure
+        let session_id = "fallback-test";
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let (working_dir, _) =
+            build_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
+
+        // Should fall back to session file's parent directory
+        assert_eq!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap(),
+            "Should fall back to session file parent dir"
+        );
+    }
+
+    #[test]
+    fn test_ensure_session_in_index_uses_unique_tmp_file() {
+        // Verify temp file name includes process ID for uniqueness.
+        // We place a sentinel file at the OLD fixed temp name and verify it's
+        // not overwritten — proving the function uses a different (PID-based) name.
+        let dir = TempDir::new().unwrap();
+        let session_id = "unique-tmp-test";
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        // Create an existing index so ensure_session_in_index will add to it
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(
+            &index_path,
+            r#"{"version":1,"entries":[],"originalPath":""}"#,
+        )
+        .unwrap();
+
+        // Place a sentinel at the OLD fixed temp name
+        let old_tmp = dir.path().join(format!(".{}.tmp", SESSIONS_INDEX_FILE));
+        fs::write(&old_tmp, "SENTINEL").unwrap();
+
+        let analysis = analyze_session(session_file.to_str().unwrap()).unwrap();
+        ensure_session_in_index(session_id, session_file.to_str().unwrap(), &analysis);
+
+        // Sentinel must be intact — the function should not have touched the old fixed name.
+        // If the function still uses the fixed name, the sentinel gets overwritten then renamed away.
+        let sentinel_content = fs::read_to_string(&old_tmp).unwrap_or_default();
+        assert_eq!(
+            sentinel_content, "SENTINEL",
+            "Fixed-name temp file was overwritten or removed; temp names must include PID"
+        );
+
+        // The index should be updated
+        let content = fs::read_to_string(&index_path).unwrap();
+        assert!(content.contains(session_id));
+    }
+
+    #[test]
+    fn test_ensure_session_in_index_atomic_rename() {
+        // Verify that after ensure_session_in_index, the index file is valid JSON.
+        let dir = TempDir::new().unwrap();
+        let session_id = "atomic-rename-test";
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(
+            &index_path,
+            r#"{"version":1,"entries":[],"originalPath":""}"#,
+        )
+        .unwrap();
+
+        let analysis = analyze_session(session_file.to_str().unwrap()).unwrap();
+        ensure_session_in_index(session_id, session_file.to_str().unwrap(), &analysis);
+
+        // Index must be valid JSON after the write
+        let content = fs::read_to_string(&index_path).unwrap();
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&content);
+        assert!(
+            parsed.is_ok(),
+            "Index file must be valid JSON after atomic write"
+        );
+
+        // No stale temp files should remain
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "No temp files should remain after successful atomic rename"
+        );
+    }
+
+    #[test]
+    fn test_ensure_session_in_index_idempotent() {
+        // Calling twice with the same session_id should not duplicate the entry.
+        let dir = TempDir::new().unwrap();
+        let session_id = "idempotent-test";
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(
+            &index_path,
+            r#"{"version":1,"entries":[],"originalPath":""}"#,
+        )
+        .unwrap();
+
+        let analysis = analyze_session(session_file.to_str().unwrap()).unwrap();
+
+        // Call twice
+        ensure_session_in_index(session_id, session_file.to_str().unwrap(), &analysis);
+        ensure_session_in_index(session_id, session_file.to_str().unwrap(), &analysis);
+
+        // Count entries with this session_id — should be exactly 1
+        let content = fs::read_to_string(&index_path).unwrap();
+        let index: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let count = index["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["sessionId"].as_str() == Some(session_id))
+            .count();
+        assert_eq!(
+            count, 1,
+            "Session should appear exactly once in index, not duplicated"
         );
     }
 

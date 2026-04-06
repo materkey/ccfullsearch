@@ -17,30 +17,41 @@ pub struct RipgrepMatch {
     pub source: SessionSource,
 }
 
-/// Search for query in JSONL files using ripgrep
-/// If use_regex is true, treats query as a regex pattern; otherwise uses literal string matching
+/// Result of a search operation.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SearchResult {
+    /// The matches found by the search.
+    pub matches: Vec<RipgrepMatch>,
+    /// Whether any file hit the per-file match limit, meaning results may be incomplete.
+    pub truncated: bool,
+}
+
+/// Search for query in JSONL files using ripgrep (test helper, discards truncation flag)
 #[cfg(test)]
 pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, String> {
     search_with_options(query, search_path, false)
 }
 
-/// Search with explicit regex mode option (single path)
+/// Search with explicit regex mode option (single path, test helper, discards truncation flag)
 #[cfg(test)]
 fn search_with_options(
     query: &str,
     search_path: &str,
     use_regex: bool,
 ) -> Result<Vec<RipgrepMatch>, String> {
-    search_multiple_paths(query, &[search_path.to_string()], use_regex)
+    search_multiple_paths(query, &[search_path.to_string()], use_regex).map(|result| result.matches)
 }
 
-/// Search multiple paths with explicit regex mode option
+/// Search multiple paths with explicit regex mode option.
+/// Returns a `SearchResult` with matches and a truncation flag.
 pub fn search_multiple_paths(
     query: &str,
     search_paths: &[String],
     use_regex: bool,
-) -> Result<Vec<RipgrepMatch>, String> {
+) -> Result<SearchResult, String> {
     let mut all_results = Vec::new();
+    let mut any_truncated = false;
 
     for search_path in search_paths {
         if search_path.is_empty() {
@@ -51,25 +62,32 @@ pub fn search_multiple_paths(
             continue;
         }
 
-        let results = search_single_path(query, search_path, use_regex)?;
+        let (results, truncated) = search_single_path(query, search_path, use_regex)?;
         all_results.extend(results);
+        any_truncated |= truncated;
     }
 
-    Ok(all_results)
+    Ok(SearchResult {
+        matches: all_results,
+        truncated: any_truncated,
+    })
 }
 
-/// Search a single path
+const MAX_COUNT_PER_FILE: usize = 1000;
+
+/// Search a single path.
+/// Returns (matches, truncated) where truncated is true if any file hit the per-file match limit.
 fn search_single_path(
     query: &str,
     search_path: &str,
     use_regex: bool,
-) -> Result<Vec<RipgrepMatch>, String> {
+) -> Result<(Vec<RipgrepMatch>, bool), String> {
     let mut args = vec![
         "--json".to_string(),
         "--glob".to_string(),
         "*.jsonl".to_string(),
         "--max-count".to_string(),
-        "1000".to_string(),
+        MAX_COUNT_PER_FILE.to_string(),
     ];
 
     if !use_regex {
@@ -88,6 +106,9 @@ fn search_single_path(
 
     let reader = BufReader::new(&output.stdout[..]);
     let mut results = Vec::new();
+    let mut truncated = false;
+    let mut file_match_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     let regex_matcher = if use_regex {
         RegexBuilder::new(query).case_insensitive(true).build().ok()
@@ -100,6 +121,16 @@ fn search_single_path(
 
     for line in reader.lines().map_while(Result::ok) {
         if let Some(mut m) = parse_ripgrep_json(&line) {
+            // Track raw ripgrep matches per file to detect --max-count truncation.
+            // Uses a HashMap so interleaved multi-threaded ripgrep output is handled
+            // correctly. Count uses the original file path (before agent resolution)
+            // because that is what ripgrep's --max-count applies to.
+            let count = file_match_counts.entry(m.file_path.clone()).or_insert(0);
+            *count += 1;
+            if *count >= MAX_COUNT_PER_FILE {
+                truncated = true;
+            }
+
             // Resolve agent/subagent files to their parent session
             if is_agent_or_subagent_path(&m.file_path) {
                 let Some(ref msg) = m.message else {
@@ -129,7 +160,7 @@ fn search_single_path(
         }
     }
 
-    Ok(results)
+    Ok((results, truncated))
 }
 
 /// Check if a file path belongs to an agent or subagent session.
@@ -825,5 +856,45 @@ mod tests {
         assert!(!is_agent_or_subagent_path(
             "/home/user/.claude/projects/foo/abc123.jsonl"
         ));
+    }
+
+    #[test]
+    fn test_search_returns_truncated_flag_when_max_count_hit() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a JSONL file with MAX_COUNT_PER_FILE + 10 lines all containing the query.
+        // ripgrep --max-count will stop at MAX_COUNT_PER_FILE matches, and we should detect truncation.
+        let mut content = String::new();
+        for i in 0..(MAX_COUNT_PER_FILE + 10) {
+            content.push_str(&format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"findme line {}"}}]}},"sessionId":"sess1","timestamp":"2025-01-09T10:00:{:02}Z"}}"#,
+                i, i % 60
+            ));
+            content.push('\n');
+        }
+        create_test_session(&temp_dir, "big_session.jsonl", &content);
+
+        let (_, truncated) = search_single_path("findme", temp_dir.path().to_str().unwrap(), false)
+            .expect("Search should succeed");
+
+        assert!(
+            truncated,
+            "Should detect truncation when file has more matches than max-count"
+        );
+    }
+
+    #[test]
+    fn test_search_no_truncation_flag_for_small_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let (_, truncated) = search_single_path("Hello", temp_dir.path().to_str().unwrap(), false)
+            .expect("Search should succeed");
+
+        assert!(
+            !truncated,
+            "Should not flag truncation for small result sets"
+        );
     }
 }

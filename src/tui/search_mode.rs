@@ -397,11 +397,14 @@ mod tests {
             "query".to_string(),
             vec!["/all".to_string()],
             false,
-            Ok(vec![RipgrepMatch {
-                file_path: "/all/session.jsonl".to_string(),
-                message: None,
-                source: SessionSource::ClaudeCodeCLI,
-            }]),
+            Ok(crate::search::SearchResult {
+                matches: vec![RipgrepMatch {
+                    file_path: "/all/session.jsonl".to_string(),
+                    message: None,
+                    source: SessionSource::ClaudeCodeCLI,
+                }],
+                truncated: false,
+            }),
         );
 
         app.handle_search_result(stale_result);

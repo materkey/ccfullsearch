@@ -1,8 +1,6 @@
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
 use crate::resume::encode_path_for_claude;
-use crate::search::{
-    group_by_session, search_multiple_paths, RipgrepMatch, SessionGroup, SessionSource,
-};
+use crate::search::{group_by_session, search_multiple_paths, SessionGroup, SessionSource};
 use crate::tree::SessionTree;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -146,13 +144,13 @@ pub enum AutomationFilter {
 }
 
 /// Result from background search thread:
-/// (request seq, query, search paths, regex mode, search result)
-pub(crate) type SearchResult = (
+/// (request seq, query, search paths, regex mode, search result with truncation flag)
+pub(crate) type BackgroundSearchResult = (
     u64,
     String,
     Vec<String>,
     bool,
-    Result<Vec<RipgrepMatch>, String>,
+    Result<crate::search::SearchResult, String>,
 );
 
 pub struct App {
@@ -189,7 +187,7 @@ pub struct App {
     /// Track last search path scope used for search
     pub(crate) last_search_paths: Vec<String>,
     /// Channel to receive search results from background thread
-    pub(crate) search_rx: Receiver<SearchResult>,
+    pub(crate) search_rx: Receiver<BackgroundSearchResult>,
     /// Channel to send search requests to background thread
     pub(crate) search_tx: Sender<(u64, String, Vec<String>, bool)>,
     /// Monotonic request sequence to ignore stale async results
@@ -236,6 +234,8 @@ pub struct App {
     pub recent_loading: bool,
     /// Channel to receive recent sessions from background loader
     pub(crate) recent_load_rx: Option<Receiver<Vec<RecentSession>>>,
+    /// Whether the last search hit the per-file match limit (results may be incomplete)
+    pub search_truncated: bool,
     /// Picker mode: on_enter sets picked_session instead of resume_*
     pub picker_mode: bool,
     /// Session picked in picker mode (set by on_enter/on_enter_tree)
@@ -245,7 +245,7 @@ pub struct App {
 impl App {
     pub fn new(search_paths: Vec<String>) -> Self {
         // Create channels for async search
-        let (result_tx, result_rx) = mpsc::channel::<SearchResult>();
+        let (result_tx, result_rx) = mpsc::channel::<BackgroundSearchResult>();
         let (query_tx, query_rx) = mpsc::channel::<(u64, String, Vec<String>, bool)>();
 
         // Spawn background search thread
@@ -335,6 +335,7 @@ impl App {
             recent_scroll_offset: 0,
             recent_loading: true,
             recent_load_rx: Some(recent_rx),
+            search_truncated: false,
             picker_mode: false,
             picked_session: None,
         }
@@ -400,6 +401,7 @@ impl App {
     fn reset_search_state(&mut self) {
         self.last_query.clear();
         self.results_count = 0;
+        self.search_truncated = false;
         self.all_groups.clear();
         self.groups.clear();
         self.results_query.clear();
@@ -588,7 +590,7 @@ impl App {
 
     pub(crate) fn handle_search_result(
         &mut self,
-        (seq, query, paths, use_regex, result): SearchResult,
+        (seq, query, paths, use_regex, result): BackgroundSearchResult,
     ) {
         // Ignore stale async results if query text, mode, path scope, or request sequence changed.
         if seq != self.search_seq
@@ -600,10 +602,11 @@ impl App {
         }
 
         match result {
-            Ok(results) => {
+            Ok(search_result) => {
                 self.results_query = query;
-                let count = results.len();
-                let mut groups = group_by_session(results);
+                let count = search_result.matches.len();
+                self.search_truncated = search_result.truncated;
+                let mut groups = group_by_session(search_result.matches);
                 apply_recent_automation_to_groups(
                     &mut groups,
                     &self.all_recent_sessions,
@@ -622,6 +625,7 @@ impl App {
             Err(e) => {
                 self.error = Some(e);
                 self.searching = false;
+                self.search_truncated = false;
             }
         }
     }
@@ -690,6 +694,7 @@ impl App {
         self.last_regex_mode = self.regex_mode;
         self.last_search_paths = self.search_paths.clone();
         self.searching = true;
+        self.search_truncated = false;
         let _ = self.search_tx.send((
             self.search_seq,
             self.input.clone(),
@@ -702,7 +707,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::Message;
+    use crate::search::{Message, RipgrepMatch};
     use chrono::Utc;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -821,7 +826,10 @@ mod tests {
             "later".to_string(),
             app.search_paths.clone(),
             false,
-            Ok(vec![result]),
+            Ok(crate::search::SearchResult {
+                matches: vec![result],
+                truncated: false,
+            }),
         ));
 
         assert_eq!(app.all_groups.len(), 1);
@@ -859,7 +867,10 @@ mod tests {
             "reply".to_string(),
             app.search_paths.clone(),
             false,
-            Ok(vec![result]),
+            Ok(crate::search::SearchResult {
+                matches: vec![result],
+                truncated: false,
+            }),
         ));
 
         assert_eq!(app.all_groups.len(), 1);
@@ -899,11 +910,49 @@ mod tests {
             "detekt".to_string(),
             app.search_paths.clone(),
             false,
-            Ok(vec![result]),
+            Ok(crate::search::SearchResult {
+                matches: vec![result],
+                truncated: false,
+            }),
         ));
 
         assert_eq!(app.all_groups.len(), 1);
         assert_eq!(app.all_groups[0].automation, None);
+    }
+
+    #[test]
+    fn test_search_truncated_clears_on_non_truncated_result() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search_seq = 1;
+        app.input = "query".to_string();
+        app.regex_mode = false;
+
+        // First result: truncated
+        app.handle_search_result((
+            1,
+            "query".to_string(),
+            app.search_paths.clone(),
+            false,
+            Ok(crate::search::SearchResult {
+                matches: vec![],
+                truncated: true,
+            }),
+        ));
+        assert!(app.search_truncated);
+
+        // Second result: not truncated — flag must clear
+        app.search_seq = 2;
+        app.handle_search_result((
+            2,
+            "query".to_string(),
+            app.search_paths.clone(),
+            false,
+            Ok(crate::search::SearchResult {
+                matches: vec![],
+                truncated: false,
+            }),
+        ));
+        assert!(!app.search_truncated);
     }
 
     #[test]
