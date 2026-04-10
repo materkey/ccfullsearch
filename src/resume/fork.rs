@@ -6,8 +6,89 @@ use std::path::Path;
 
 use crate::session::is_sidechain;
 
+/// Parsed DAG structure from a JSONL session file.
+/// Single-pass extraction of all UUID relationships needed for chain operations.
+struct DagInfo {
+    uuid_to_parent: HashMap<String, Option<String>>,
+    parent_uuids: HashSet<String>,
+    displayable_uuids: Vec<String>,
+    last_uuid: Option<String>,
+}
+
+/// Parse a JSONL session file once, extracting the full DAG structure.
+/// Session logs are append-only, so partially written tail lines are safely skipped.
+fn parse_dag(file_path: &str) -> Option<DagInfo> {
+    let file = fs::File::open(file_path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut dag = DagInfo {
+        uuid_to_parent: HashMap::new(),
+        parent_uuids: HashSet::new(),
+        displayable_uuids: Vec::new(),
+        last_uuid: None,
+    };
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
+
+        if is_sidechain(&json) {
+            continue;
+        }
+        if let Some(uuid) = session::extract_uuid(&json) {
+            let parent = session::extract_parent_uuid_or_logical(&json);
+            if let Some(ref p) = parent {
+                dag.parent_uuids.insert(p.clone());
+            }
+            dag.uuid_to_parent.insert(uuid.clone(), parent);
+
+            if matches!(
+                session::extract_record_type(&json),
+                Some("user" | "assistant" | "compaction")
+            ) {
+                dag.displayable_uuids.push(uuid.clone());
+            }
+            dag.last_uuid = Some(uuid);
+        }
+    }
+
+    Some(dag)
+}
+
+/// Find the terminal (tip) UUID: last displayable uuid not referenced as any parentUuid.
+fn find_tip(dag: &DagInfo) -> Option<String> {
+    dag.displayable_uuids
+        .iter()
+        .rev()
+        .find(|uuid| !dag.parent_uuids.contains(*uuid))
+        .cloned()
+        .or_else(|| dag.last_uuid.clone())
+}
+
+/// Walk parentUuid chain backwards from `tip`, collecting all uuids on the chain.
+fn build_chain(dag: &DagInfo, tip: &str) -> HashSet<String> {
+    let mut chain = HashSet::new();
+    let mut current = Some(tip.to_string());
+    while let Some(uuid) = current {
+        if !chain.insert(uuid.clone()) {
+            break; // cycle detected
+        }
+        current = dag.uuid_to_parent.get(&uuid).and_then(|p| p.clone());
+    }
+    chain
+}
+
 /// Check if a message uuid is on the latest parentUuid chain in a JSONL file.
-/// The "latest chain" is built by walking parentUuid backwards from the last line with a uuid.
 ///
 /// Returns `true` if:
 /// - The uuid is on the latest chain, OR
@@ -16,200 +97,32 @@ use crate::session::is_sidechain;
 ///   has no meaning in this file's DAG)
 /// - The chain can't be determined
 pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
-    let (chain, all_uuids) = match build_chain_and_all_uuids(file_path) {
-        Some(c) => c,
-        None => return true, // Can't determine chain, assume it's on latest
+    let dag = match parse_dag(file_path) {
+        Some(d) => d,
+        None => return true,
     };
     // If the uuid doesn't exist in this file at all, don't treat it as "off-chain"
-    if !all_uuids.contains(target_uuid) {
+    if !dag.uuid_to_parent.contains_key(target_uuid) {
         return true;
     }
-    chain.contains(target_uuid)
-}
-
-/// Build both the latest chain and the set of all uuids in the file.
-fn build_chain_and_all_uuids(file_path: &str) -> Option<(HashSet<String>, HashSet<String>)> {
-    let file = fs::File::open(file_path).ok()?;
-    let reader = BufReader::new(file);
-
-    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
-    let mut parent_uuids: HashSet<String> = HashSet::new();
-    let mut displayable_uuids: Vec<String> = Vec::new();
-    let mut all_uuids: HashSet<String> = HashSet::new();
-    let mut last_uuid: Option<String> = None;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let json: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-
-        if is_sidechain(&json) {
-            continue;
-        }
-        if let Some(uuid) = session::extract_uuid(&json) {
-            let parent = session::extract_parent_uuid_or_logical(&json);
-            if let Some(ref p) = parent {
-                parent_uuids.insert(p.clone());
-            }
-            uuid_to_parent.insert(uuid.clone(), parent);
-            all_uuids.insert(uuid.clone());
-
-            if matches!(
-                session::extract_record_type(&json),
-                Some("user" | "assistant" | "compaction")
-            ) {
-                displayable_uuids.push(uuid.clone());
-            }
-            last_uuid = Some(uuid);
-        }
-    }
-
-    let tip = displayable_uuids
-        .iter()
-        .rev()
-        .find(|uuid| !parent_uuids.contains(*uuid))
-        .cloned()
-        .or(last_uuid);
-
-    let tip = tip?;
-    let mut chain = HashSet::new();
-    let mut current = Some(tip);
-
-    while let Some(uuid) = current {
-        if !chain.insert(uuid.clone()) {
-            break;
-        }
-        current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
-    }
-
-    Some((chain, all_uuids))
+    let tip = match find_tip(&dag) {
+        Some(t) => t,
+        None => return true,
+    };
+    build_chain(&dag, &tip).contains(target_uuid)
 }
 
 /// Build the set of uuids on the latest chain (from the terminal message backwards).
 pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
-    let file = fs::File::open(file_path).ok()?;
-    let reader = BufReader::new(file);
-
-    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
-    let mut parent_uuids: HashSet<String> = HashSet::new();
-    let mut displayable_uuids: Vec<String> = Vec::new();
-    let mut last_uuid: Option<String> = None;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Session logs are append-only, so a partially written tail line should not
-        // discard the latest valid branch metadata we already parsed.
-        let json: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-
-        if is_sidechain(&json) {
-            continue;
-        }
-        if let Some(uuid) = session::extract_uuid(&json) {
-            let parent = session::extract_parent_uuid_or_logical(&json);
-            if let Some(ref p) = parent {
-                parent_uuids.insert(p.clone());
-            }
-            uuid_to_parent.insert(uuid.clone(), parent);
-
-            if matches!(
-                session::extract_record_type(&json),
-                Some("user" | "assistant" | "compaction")
-            ) {
-                displayable_uuids.push(uuid.clone());
-            }
-            last_uuid = Some(uuid);
-        }
-    }
-
-    // Find terminal: displayable uuid not referenced as any parentUuid
-    let tip = displayable_uuids
-        .iter()
-        .rev()
-        .find(|uuid| !parent_uuids.contains(*uuid))
-        .cloned()
-        // Fallback to last uuid if no displayable terminal found
-        .or(last_uuid);
-
-    let tip = tip?;
-    let mut chain = HashSet::new();
-    let mut current = Some(tip);
-
-    while let Some(uuid) = current {
-        if !chain.insert(uuid.clone()) {
-            break; // cycle detected
-        }
-        current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
-    }
-
-    Some(chain)
+    let dag = parse_dag(file_path)?;
+    let tip = find_tip(&dag)?;
+    Some(build_chain(&dag, &tip))
 }
 
 /// Return the UUID of the terminal displayable record in the file.
 pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
-    let file = fs::File::open(file_path).ok()?;
-    let reader = BufReader::new(file);
-    let mut parent_uuids: HashSet<String> = HashSet::new();
-    let mut displayable_uuids: Vec<String> = Vec::new();
-    let mut last_uuid: Option<String> = None;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let json: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-        if is_sidechain(&json) {
-            continue;
-        }
-        if let Some(uuid) = session::extract_uuid(&json) {
-            let parent = session::extract_parent_uuid_or_logical(&json);
-            if let Some(ref p) = parent {
-                parent_uuids.insert(p.clone());
-            }
-            if matches!(
-                session::extract_record_type(&json),
-                Some("user" | "assistant" | "compaction")
-            ) {
-                displayable_uuids.push(uuid.clone());
-            }
-            last_uuid = Some(uuid);
-        }
-    }
-
-    // Terminal displayable uuid not referenced as any parentUuid
-    displayable_uuids
-        .iter()
-        .rev()
-        .find(|uuid| !parent_uuids.contains(*uuid))
-        .cloned()
-        // Fallback to last uuid
-        .or(last_uuid)
+    let dag = parse_dag(file_path)?;
+    find_tip(&dag)
 }
 
 /// Create a forked JSONL file containing only messages from the branch
@@ -242,20 +155,18 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
         parsed_lines.push((json, uuid));
     }
 
-    // Walk from target_uuid backwards to build the branch chain
-    let mut branch_uuids = HashSet::new();
-    let mut current = Some(target_uuid.to_string());
-    while let Some(uuid) = current {
-        if !branch_uuids.insert(uuid.clone()) {
-            break; // cycle detected
-        }
-        current = uuid_to_parent.get(&uuid).and_then(|p| p.clone());
-    }
+    // Reuse build_chain() via a lightweight DagInfo
+    let fork_dag = DagInfo {
+        uuid_to_parent,
+        parent_uuids: HashSet::new(),
+        displayable_uuids: Vec::new(),
+        last_uuid: None,
+    };
+    let branch_uuids = build_chain(&fork_dag, target_uuid);
 
     // Generate new session ID
     let new_session_id = uuid::Uuid::new_v4().to_string();
 
-    // Filter and rewrite: include only lines whose uuid is in the branch chain.
     // Chain walking already handles compact_boundary bridging via logicalParentUuid,
     // so pre-boundary records that are part of the branch are correctly included.
     let mut forked_lines = Vec::new();

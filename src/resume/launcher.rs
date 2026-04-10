@@ -255,14 +255,12 @@ pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
     let claude_path =
         which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
 
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume_cli] claude={} cwd={} --resume {}",
-            claude_path.display(),
-            working_dir,
-            resume_arg
-        );
-    }
+    ccs_debug!(
+        "[ccs:resume_cli] claude={} cwd={} --resume {}",
+        claude_path.display(),
+        working_dir,
+        resume_arg
+    );
 
     let mut cmd = Command::new(&claude_path);
     cmd.current_dir(&working_dir)
@@ -280,14 +278,12 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
     let claude_path =
         which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
 
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume_cli_child] claude={} cwd={} --resume {}",
-            claude_path.display(),
-            working_dir,
-            resume_arg
-        );
-    }
+    ccs_debug!(
+        "[ccs:resume_cli_child] claude={} cwd={} --resume {}",
+        claude_path.display(),
+        working_dir,
+        resume_arg
+    );
 
     // Any exit code is acceptable — Claude CLI exits non-zero on Ctrl-C (130),
     // /exit, or other normal termination paths. In overlay mode we just need to

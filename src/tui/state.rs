@@ -379,12 +379,13 @@ impl App {
         if let (Some(session_id), Some(file_path), Some(source)) =
             (self.resume_id, self.resume_file_path, self.resume_source)
         {
-            if std::env::var("CCS_DEBUG").is_ok() {
-                eprintln!(
-                    "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
-                    session_id, file_path, source, self.resume_uuid
-                );
-            }
+            ccs_debug!(
+                "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
+                session_id,
+                file_path,
+                source,
+                self.resume_uuid
+            );
             return TuiOutcome::Resume {
                 session_id,
                 file_path,

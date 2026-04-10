@@ -73,10 +73,16 @@ pub fn test_prepare_cli_resume_session_id(
     launcher::prepare_resume(session_id, file_path)
 }
 
-/// Resume a Claude session based on its source.
-/// If `message_uuid` is provided and the message is not on the latest chain,
-/// creates a forked JSONL file and resumes from that instead.
-/// For subagent sessions, automatically resumes the parent session.
+/// Whether to replace the current process (exec) or spawn a child and wait.
+#[derive(Clone, Copy)]
+enum ResumeMode {
+    /// Replace current process with claude (normal mode)
+    Exec,
+    /// Spawn claude as child, return when it exits (overlay mode)
+    Child,
+}
+
+/// Core resume logic shared by `resume()` and `resume_child()`.
 ///
 /// # Why we use fork.rs instead of Claude's `--fork-session`
 ///
@@ -102,26 +108,35 @@ pub fn test_prepare_cli_resume_session_id(
 /// to root via parentUuid, write only those records into a new JSONL with a
 /// rewritten sessionId. This is the correct approach for resuming from an
 /// arbitrary branch tip that is not the latest leaf.
-pub fn resume(
+fn resume_inner(
     session_id: &str,
     file_path: &str,
     source: SessionSource,
     message_uuid: Option<&str>,
+    mode: ResumeMode,
 ) -> Result<(), String> {
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
-            session_id, file_path, source, message_uuid
-        );
-    }
+    let label = match mode {
+        ResumeMode::Exec => "resume",
+        ResumeMode::Child => "resume_child",
+    };
+    ccs_debug!(
+        "[ccs:{}] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
+        label,
+        session_id,
+        file_path,
+        source,
+        message_uuid
+    );
+
     let (session_id, resolved_file_path) = resolve_parent_session(session_id, file_path);
     let file_changed = resolved_file_path != file_path;
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume] resolved: session_id={}, file_path={}, file_changed={}",
-            session_id, resolved_file_path, file_changed
-        );
-    }
+    ccs_debug!(
+        "[ccs:{}] resolved: session_id={}, file_path={}, file_changed={}",
+        label,
+        session_id,
+        resolved_file_path,
+        file_changed
+    );
 
     // Only attempt fork if the file wasn't redirected.
     // When resolve_parent_session changes the file, the message UUID belongs to the
@@ -132,24 +147,51 @@ pub fn resume(
             && !fork::is_on_latest_chain(&resolved_file_path, uuid)
         {
             let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
-            if std::env::var("CCS_DEBUG").is_ok() {
-                eprintln!(
-                    "[ccs:resume] forking: fork_session_id={}, fork_file_path={}",
-                    fork_session_id, fork_file_path
-                );
-            }
-            return launcher::resume_cli(&fork_session_id, &fork_file_path);
+            ccs_debug!(
+                "[ccs:{}] forking: fork_session_id={}, fork_file_path={}",
+                label,
+                fork_session_id,
+                fork_file_path
+            );
+            return match mode {
+                ResumeMode::Exec => launcher::resume_cli(&fork_session_id, &fork_file_path),
+                ResumeMode::Child => launcher::resume_cli_child(&fork_session_id, &fork_file_path),
+            };
         }
     }
 
-    match source {
-        SessionSource::ClaudeCodeCLI => launcher::resume_cli(&session_id, &resolved_file_path),
-        SessionSource::ClaudeDesktop => launcher::resume_desktop(),
+    match (source, mode) {
+        (SessionSource::ClaudeCodeCLI, ResumeMode::Exec) => {
+            launcher::resume_cli(&session_id, &resolved_file_path)
+        }
+        (SessionSource::ClaudeCodeCLI, ResumeMode::Child) => {
+            launcher::resume_cli_child(&session_id, &resolved_file_path)
+        }
+        (SessionSource::ClaudeDesktop, ResumeMode::Exec) => launcher::resume_desktop(),
+        (SessionSource::ClaudeDesktop, ResumeMode::Child) => launcher::resume_desktop_child(),
     }
 }
 
+/// Resume a Claude session based on its source.
+/// If `message_uuid` is provided and the message is not on the latest chain,
+/// creates a forked JSONL file and resumes from that instead.
+/// For subagent sessions, automatically resumes the parent session.
+pub fn resume(
+    session_id: &str,
+    file_path: &str,
+    source: SessionSource,
+    message_uuid: Option<&str>,
+) -> Result<(), String> {
+    resume_inner(
+        session_id,
+        file_path,
+        source,
+        message_uuid,
+        ResumeMode::Exec,
+    )
+}
+
 /// Resume a Claude session as a child process (returns when claude exits).
-/// Same resolution logic as `resume()`, but uses `resume_cli_child()` instead of exec.
 /// Used in overlay mode where TUI needs to regain control after claude exits.
 pub fn resume_child(
     session_id: &str,
@@ -157,43 +199,13 @@ pub fn resume_child(
     source: SessionSource,
     message_uuid: Option<&str>,
 ) -> Result<(), String> {
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume_child] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
-            session_id, file_path, source, message_uuid
-        );
-    }
-    let (session_id, resolved_file_path) = resolve_parent_session(session_id, file_path);
-    let file_changed = resolved_file_path != file_path;
-    if std::env::var("CCS_DEBUG").is_ok() {
-        eprintln!(
-            "[ccs:resume_child] resolved: session_id={}, file_path={}, file_changed={}",
-            session_id, resolved_file_path, file_changed
-        );
-    }
-
-    if let Some(uuid) = message_uuid {
-        if !file_changed
-            && source == SessionSource::ClaudeCodeCLI
-            && !fork::is_on_latest_chain(&resolved_file_path, uuid)
-        {
-            let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
-            if std::env::var("CCS_DEBUG").is_ok() {
-                eprintln!(
-                    "[ccs:resume_child] forking: fork_session_id={}, fork_file_path={}",
-                    fork_session_id, fork_file_path
-                );
-            }
-            return launcher::resume_cli_child(&fork_session_id, &fork_file_path);
-        }
-    }
-
-    match source {
-        SessionSource::ClaudeCodeCLI => {
-            launcher::resume_cli_child(&session_id, &resolved_file_path)
-        }
-        SessionSource::ClaudeDesktop => launcher::resume_desktop_child(),
-    }
+    resume_inner(
+        session_id,
+        file_path,
+        source,
+        message_uuid,
+        ResumeMode::Child,
+    )
 }
 
 #[cfg(test)]

@@ -1,3 +1,14 @@
+/// Debug logging macro — prints to stderr when `CCS_DEBUG` env var is set.
+/// Usage: `ccs_debug!("message: {}", value);`
+#[macro_export]
+macro_rules! ccs_debug {
+    ($($arg:tt)*) => {
+        if std::env::var("CCS_DEBUG").is_ok() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 pub mod cli;
 pub mod recent;
 pub mod resume;
