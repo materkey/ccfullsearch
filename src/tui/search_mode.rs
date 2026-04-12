@@ -13,8 +13,8 @@ impl App {
     pub fn on_up(&mut self) {
         // Recent sessions navigation
         if self.in_recent_sessions_mode() {
-            if !self.recent_sessions.is_empty() && self.recent_cursor > 0 {
-                self.recent_cursor -= 1;
+            if !self.recent.filtered.is_empty() && self.recent.cursor > 0 {
+                self.recent.cursor -= 1;
                 self.adjust_recent_scroll(self.last_tree_visible_height);
             }
             return;
@@ -43,10 +43,10 @@ impl App {
     pub fn on_down(&mut self) {
         // Recent sessions navigation
         if self.in_recent_sessions_mode() {
-            if !self.recent_sessions.is_empty()
-                && self.recent_cursor < self.recent_sessions.len().saturating_sub(1)
+            if !self.recent.filtered.is_empty()
+                && self.recent.cursor < self.recent.filtered.len().saturating_sub(1)
             {
-                self.recent_cursor += 1;
+                self.recent.cursor += 1;
                 self.adjust_recent_scroll(self.last_tree_visible_height);
             }
             return;
@@ -142,8 +142,8 @@ impl App {
         };
         self.apply_recent_sessions_filter();
         self.apply_groups_filter();
-        self.recent_cursor = 0;
-        self.recent_scroll_offset = 0;
+        self.recent.cursor = 0;
+        self.recent.scroll_offset = 0;
         self.search.group_cursor = 0;
         self.search.sub_cursor = 0;
         self.search.expanded = false;
@@ -159,7 +159,10 @@ impl App {
         } else {
             self.all_search_paths.clone()
         };
-        // Refilter recent sessions list
+        if self.project_filter {
+            self.recent
+                .start_project_load(self.current_project_paths.clone());
+        }
         self.apply_recent_sessions_filter();
         if !self.input.is_empty() {
             self.last_keystroke = Some(Instant::now());
@@ -175,7 +178,7 @@ impl App {
 
         // Recent sessions: resume/pick selected session
         if self.in_recent_sessions_mode() {
-            if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
+            if let Some(session) = self.recent.filtered.get(self.recent.cursor) {
                 if self.picker_mode {
                     self.outcome = Some(AppOutcome::Pick(PickedSession {
                         session_id: session.session_id.clone(),
@@ -237,7 +240,7 @@ impl App {
 
     /// Enter tree mode for the currently selected recent session.
     pub fn enter_tree_mode_recent(&mut self) {
-        if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
+        if let Some(session) = self.recent.filtered.get(self.recent.cursor) {
             let file_path = session.file_path.clone();
             self.enter_tree_mode_for_file(&file_path);
         }
@@ -456,66 +459,66 @@ mod tests {
     #[test]
     fn test_recent_sessions_up_down_navigation() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![
+        app.recent.loading = false;
+        app.recent.filtered = vec![
             make_recent_session("s1", "proj-a", "first message"),
             make_recent_session("s2", "proj-b", "second message"),
             make_recent_session("s3", "proj-c", "third message"),
         ];
 
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
 
         app.on_down();
-        assert_eq!(app.recent_cursor, 1);
+        assert_eq!(app.recent.cursor, 1);
 
         app.on_down();
-        assert_eq!(app.recent_cursor, 2);
+        assert_eq!(app.recent.cursor, 2);
 
         // At bottom, should not go further
         app.on_down();
-        assert_eq!(app.recent_cursor, 2);
+        assert_eq!(app.recent.cursor, 2);
 
         app.on_up();
-        assert_eq!(app.recent_cursor, 1);
+        assert_eq!(app.recent.cursor, 1);
 
         app.on_up();
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
 
         // At top, should not go further
         app.on_up();
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
     }
 
     #[test]
     fn test_recent_sessions_navigation_empty_list() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![];
+        app.recent.loading = false;
+        app.recent.filtered = vec![];
 
         // Should not panic or change cursor
         app.on_up();
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
         app.on_down();
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
     }
 
     #[test]
     fn test_recent_sessions_navigation_while_loading() {
         let mut app = App::new(vec!["/test".to_string()]);
         // recent_loading is true by default, recent_sessions is empty
-        assert!(app.recent_loading);
+        assert!(app.recent.loading);
 
         // Navigation should not panic
         app.on_up();
         app.on_down();
-        assert_eq!(app.recent_cursor, 0);
+        assert_eq!(app.recent.cursor, 0);
     }
 
     #[test]
     fn test_recent_sessions_enter_resumes_session() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![
+        app.recent.loading = false;
+        app.recent.filtered = vec![
             make_recent_session("s1", "proj-a", "first"),
             make_recent_session("s2", "proj-b", "second"),
         ];
@@ -538,8 +541,8 @@ mod tests {
     #[test]
     fn test_recent_sessions_enter_on_empty_list_does_nothing() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![];
+        app.recent.loading = false;
+        app.recent.filtered = vec![];
 
         app.on_enter();
 
@@ -550,9 +553,9 @@ mod tests {
     #[test]
     fn test_typing_exits_recent_sessions_mode() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![make_recent_session("s1", "proj-a", "first")];
-        app.recent_cursor = 0;
+        app.recent.loading = false;
+        app.recent.filtered = vec![make_recent_session("s1", "proj-a", "first")];
+        app.recent.cursor = 0;
 
         // Type a character — should switch to search mode
         app.on_key('h');
@@ -563,22 +566,22 @@ mod tests {
     #[test]
     fn test_recent_cursor_preserved_on_clear_input() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_sessions = vec![
+        app.recent.loading = false;
+        app.recent.filtered = vec![
             make_recent_session("s1", "proj-a", "first"),
             make_recent_session("s2", "proj-b", "second"),
         ];
 
         // Navigate down, type something, then clear
         app.on_down();
-        assert_eq!(app.recent_cursor, 1);
+        assert_eq!(app.recent.cursor, 1);
 
         app.on_key('x');
         app.clear_input();
 
         // Back in recent sessions mode — cursor preserved (not reset by clear_input)
         assert!(app.in_recent_sessions_mode());
-        assert_eq!(app.recent_cursor, 1);
+        assert_eq!(app.recent.cursor, 1);
     }
 
     // =========================================================================
@@ -633,8 +636,8 @@ mod tests {
     fn test_on_enter_picker_mode_from_recent_sessions() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
-        app.recent_loading = false;
-        app.recent_sessions = vec![
+        app.recent.loading = false;
+        app.recent.filtered = vec![
             make_recent_session("s1", "proj-a", "first"),
             make_recent_session("s2", "proj-b", "second"),
         ];
@@ -657,8 +660,8 @@ mod tests {
     fn test_esc_in_picker_mode_leaves_outcome_none() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
-        app.recent_loading = false;
-        app.recent_sessions = vec![make_recent_session("s1", "proj-a", "first")];
+        app.recent.loading = false;
+        app.recent.filtered = vec![make_recent_session("s1", "proj-a", "first")];
 
         // Esc clears input (if any) or quits — outcome stays None
         app.clear_input();

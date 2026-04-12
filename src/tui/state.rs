@@ -219,6 +219,152 @@ fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// Recent sessions sub-state: global list, project-specific list, filtered view,
+/// background loaders, and cursor/scroll state.
+pub struct RecentState {
+    /// All recently accessed sessions (unfiltered, loaded once at startup)
+    pub(crate) all: Vec<RecentSession>,
+    /// Project-specific recent sessions (loaded when project filter is activated)
+    pub(crate) project: Option<Vec<RecentSession>>,
+    /// Filtered view shown to the user
+    pub filtered: Vec<RecentSession>,
+    /// Cursor position in the visible list
+    pub cursor: usize,
+    /// Vertical scroll offset
+    pub scroll_offset: usize,
+    /// Whether global sessions are still loading
+    pub loading: bool,
+    /// Channel for global recent session background load
+    pub(crate) load_rx: Option<Receiver<Vec<RecentSession>>>,
+    /// Whether project-specific sessions are still loading
+    pub project_loading: bool,
+    /// Channel for project-specific recent session background load
+    pub(crate) project_load_rx: Option<Receiver<Vec<RecentSession>>>,
+}
+
+impl RecentState {
+    pub(crate) fn new(search_paths: Vec<String>) -> Self {
+        let load_rx = Self::spawn_load(search_paths);
+        Self {
+            all: Vec::new(),
+            project: None,
+            filtered: Vec::new(),
+            cursor: 0,
+            scroll_offset: 0,
+            loading: true,
+            load_rx: Some(load_rx),
+            project_loading: false,
+            project_load_rx: None,
+        }
+    }
+
+    fn spawn_load(paths: Vec<String>) -> Receiver<Vec<RecentSession>> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let sessions = collect_recent_sessions(&paths, RECENT_SESSIONS_LIMIT);
+            let _ = tx.send(sessions);
+        });
+        rx
+    }
+
+    /// Trigger a fresh background load of project-specific sessions.
+    pub(crate) fn start_project_load(&mut self, project_paths: Vec<String>) {
+        self.project = None;
+        self.project_loading = true;
+        self.project_load_rx = Some(Self::spawn_load(project_paths));
+    }
+
+    /// Poll background channels. Returns `(global_loaded, project_loaded)`.
+    pub(crate) fn poll(&mut self) -> (bool, bool) {
+        let mut global_loaded = false;
+        let mut project_loaded = false;
+
+        if let Some(ref rx) = self.load_rx {
+            if let Ok(sessions) = rx.try_recv() {
+                self.all = sessions;
+                self.loading = false;
+                self.load_rx = None;
+                global_loaded = true;
+            }
+        }
+
+        if let Some(ref rx) = self.project_load_rx {
+            if let Ok(sessions) = rx.try_recv() {
+                self.project = Some(sessions);
+                self.project_loading = false;
+                self.project_load_rx = None;
+                project_loaded = true;
+            }
+        }
+
+        (global_loaded, project_loaded)
+    }
+
+    /// Rebuild `filtered` from source sessions based on current filters.
+    pub(crate) fn apply_filter(
+        &mut self,
+        project_filter: bool,
+        project_paths: &[String],
+        automation_filter: &AutomationFilter,
+    ) {
+        let project_filtered: Vec<_> = if project_filter && !project_paths.is_empty() {
+            let source = self.project.as_ref().unwrap_or(&self.all);
+            source
+                .iter()
+                .filter(|s| {
+                    project_paths
+                        .iter()
+                        .any(|p| path_is_within_project(&s.file_path, p))
+                })
+                .cloned()
+                .collect()
+        } else {
+            self.all.clone()
+        };
+
+        self.filtered = match automation_filter {
+            AutomationFilter::All => project_filtered,
+            AutomationFilter::Manual => project_filtered
+                .into_iter()
+                .filter(|s| s.automation.is_none())
+                .collect(),
+            AutomationFilter::Auto => project_filtered
+                .into_iter()
+                .filter(|s| s.automation.is_some())
+                .collect(),
+        };
+
+        if self.filtered.is_empty() {
+            self.cursor = 0;
+        } else {
+            self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
+        }
+    }
+
+    /// Adjust scroll offset to keep cursor visible.
+    pub(crate) fn adjust_scroll(&mut self, visible_height: usize) {
+        if self.cursor >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.cursor.saturating_sub(visible_height.saturating_sub(1));
+        } else if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
+    }
+
+    /// Total count of sessions in the active source (for status text).
+    pub fn total_count(&self, project_filter: bool) -> usize {
+        if project_filter {
+            self.project.as_ref().map_or(self.all.len(), |ps| ps.len())
+        } else {
+            self.all.len()
+        }
+    }
+
+    /// Whether any background load is in progress.
+    pub fn is_loading(&self, project_filter: bool) -> bool {
+        self.loading || (project_filter && self.project_loading)
+    }
+}
+
 fn apply_recent_automation_to_groups(
     groups: &mut [SessionGroup],
     recent_sessions: &[RecentSession],
@@ -438,18 +584,8 @@ pub struct App {
     pub(crate) all_search_paths: Vec<String>,
     /// Search path(s) for current project only
     pub current_project_paths: Vec<String>,
-    /// All recently accessed sessions (unfiltered, loaded once at startup)
-    pub(crate) all_recent_sessions: Vec<RecentSession>,
-    /// Recently accessed sessions shown on startup (filtered by project_filter)
-    pub recent_sessions: Vec<RecentSession>,
-    /// Cursor position in recent sessions list
-    pub recent_cursor: usize,
-    /// Scroll offset for recent sessions list
-    pub recent_scroll_offset: usize,
-    /// Whether recent sessions are still loading
-    pub recent_loading: bool,
-    /// Channel to receive recent sessions from background loader
-    pub(crate) recent_load_rx: Option<Receiver<Vec<RecentSession>>>,
+    /// Recent sessions sub-state
+    pub recent: RecentState,
     /// Picker mode: on_enter sets outcome to Pick instead of Resume
     pub picker_mode: bool,
     /// Last known tree area visible height (set from frame after draw, used for scroll calculations)
@@ -497,13 +633,7 @@ impl App {
 
         let all_search_paths = search_paths.clone();
 
-        // Spawn background thread to load recent sessions
-        let (recent_tx, recent_rx) = mpsc::channel::<Vec<RecentSession>>();
-        let recent_paths = search_paths.clone();
-        thread::spawn(move || {
-            let sessions = collect_recent_sessions(&recent_paths, RECENT_SESSIONS_LIMIT);
-            let _ = recent_tx.send(sessions);
-        });
+        let recent = RecentState::new(search_paths.clone());
 
         Self {
             input: InputState::new(),
@@ -548,12 +678,7 @@ impl App {
             automation_cache: HashMap::new(),
             all_search_paths,
             current_project_paths,
-            all_recent_sessions: Vec::new(),
-            recent_sessions: Vec::new(),
-            recent_cursor: 0,
-            recent_scroll_offset: 0,
-            recent_loading: true,
-            recent_load_rx: Some(recent_rx),
+            recent,
             picker_mode: false,
             last_tree_visible_height: 20,
         }
@@ -679,7 +804,7 @@ impl App {
             input_empty: self.input.is_empty(),
             preview_mode: self.preview_mode,
             in_recent_sessions_mode: self.in_recent_sessions_mode(),
-            has_recent_sessions: !self.recent_sessions.is_empty(),
+            has_recent_sessions: !self.recent.filtered.is_empty(),
             has_groups: !self.search.groups.is_empty(),
         }
     }
@@ -738,28 +863,18 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        // Check for recent sessions load results
-        if let Some(ref rx) = self.recent_load_rx {
-            if let Ok(sessions) = rx.try_recv() {
-                self.all_recent_sessions = sessions;
-                apply_recent_automation_to_groups(
-                    &mut self.search.all_groups,
-                    &self.all_recent_sessions,
-                    &mut self.automation_cache,
-                );
-                self.apply_groups_filter();
-                self.apply_recent_sessions_filter();
-                self.recent_loading = false;
-                self.recent_load_rx = None;
-                // Clamp cursor in case list shrank
-                if !self.recent_sessions.is_empty() {
-                    self.recent_cursor = self
-                        .recent_cursor
-                        .min(self.recent_sessions.len().saturating_sub(1));
-                } else {
-                    self.recent_cursor = 0;
-                }
-            }
+        let (global_loaded, project_loaded) = self.recent.poll();
+        if global_loaded {
+            apply_recent_automation_to_groups(
+                &mut self.search.all_groups,
+                &self.recent.all,
+                &mut self.automation_cache,
+            );
+            self.apply_groups_filter();
+            self.apply_recent_sessions_filter();
+        }
+        if project_loaded {
+            self.apply_recent_sessions_filter();
         }
 
         // Check for tree load results
@@ -835,7 +950,7 @@ impl App {
                 let mut groups = group_by_session(search_result.matches);
                 apply_recent_automation_to_groups(
                     &mut groups,
-                    &self.all_recent_sessions,
+                    &self.recent.all,
                     &mut self.automation_cache,
                 );
                 self.search.all_groups = groups;
@@ -856,54 +971,16 @@ impl App {
         }
     }
 
-    /// Rebuild `recent_sessions` from `all_recent_sessions` based on current filters.
     pub(crate) fn apply_recent_sessions_filter(&mut self) {
-        let project_filtered: Vec<_> =
-            if self.project_filter && !self.current_project_paths.is_empty() {
-                self.all_recent_sessions
-                    .iter()
-                    .filter(|s| {
-                        self.current_project_paths
-                            .iter()
-                            .any(|p| path_is_within_project(&s.file_path, p))
-                    })
-                    .cloned()
-                    .collect()
-            } else {
-                self.all_recent_sessions.clone()
-            };
-
-        self.recent_sessions = match self.automation_filter {
-            AutomationFilter::All => project_filtered,
-            AutomationFilter::Manual => project_filtered
-                .into_iter()
-                .filter(|s| s.automation.is_none())
-                .collect(),
-            AutomationFilter::Auto => project_filtered
-                .into_iter()
-                .filter(|s| s.automation.is_some())
-                .collect(),
-        };
-        // Clamp cursor
-        if self.recent_sessions.is_empty() {
-            self.recent_cursor = 0;
-        } else {
-            self.recent_cursor = self
-                .recent_cursor
-                .min(self.recent_sessions.len().saturating_sub(1));
-        }
+        self.recent.apply_filter(
+            self.project_filter,
+            &self.current_project_paths,
+            &self.automation_filter,
+        );
     }
 
-    /// Adjust recent sessions scroll offset to keep the cursor visible.
-    /// Uses a default visible height when the actual frame size is unknown.
     pub(crate) fn adjust_recent_scroll(&mut self, visible_height: usize) {
-        if self.recent_cursor >= self.recent_scroll_offset + visible_height {
-            self.recent_scroll_offset = self
-                .recent_cursor
-                .saturating_sub(visible_height.saturating_sub(1));
-        } else if self.recent_cursor < self.recent_scroll_offset {
-            self.recent_scroll_offset = self.recent_cursor;
-        }
+        self.recent.adjust_scroll(visible_height);
     }
 
     /// Rebuild `groups` from `all_groups` based on automation filter.
@@ -977,10 +1054,10 @@ mod tests {
     #[test]
     fn test_app_initializes_with_empty_recent_sessions() {
         let app = App::new(vec!["/nonexistent/path".to_string()]);
-        assert!(app.recent_sessions.is_empty());
-        assert_eq!(app.recent_cursor, 0);
-        assert!(app.recent_loading);
-        assert!(app.recent_load_rx.is_some());
+        assert!(app.recent.filtered.is_empty());
+        assert_eq!(app.recent.cursor, 0);
+        assert!(app.recent.loading);
+        assert!(app.recent.load_rx.is_some());
     }
 
     #[test]
@@ -1000,16 +1077,16 @@ mod tests {
 
         // Poll tick() until recent sessions arrive (with timeout)
         let start = Instant::now();
-        while app.recent_loading && start.elapsed() < Duration::from_secs(5) {
+        while app.recent.loading && start.elapsed() < Duration::from_secs(5) {
             app.tick();
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(!app.recent_loading);
-        assert!(app.recent_load_rx.is_none());
-        assert_eq!(app.recent_sessions.len(), 1);
-        assert_eq!(app.recent_sessions[0].session_id, "sess-1");
-        assert_eq!(app.recent_sessions[0].summary, "hello world");
+        assert!(!app.recent.loading);
+        assert!(app.recent.load_rx.is_none());
+        assert_eq!(app.recent.filtered.len(), 1);
+        assert_eq!(app.recent.filtered[0].session_id, "sess-1");
+        assert_eq!(app.recent.filtered[0].summary, "hello world");
     }
 
     #[test]
@@ -1017,16 +1094,16 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.project_filter = true;
         app.current_project_paths = vec![r"C:/Users/test/project".to_string()];
-        app.all_recent_sessions = vec![
+        app.recent.all = vec![
             make_recent_session(r"C:\Users\test\project\session.jsonl"),
             make_recent_session(r"C:\Users\test\project-other\session.jsonl"),
         ];
 
         app.apply_recent_sessions_filter();
 
-        assert_eq!(app.recent_sessions.len(), 1);
+        assert_eq!(app.recent.filtered.len(), 1);
         assert_eq!(
-            app.recent_sessions[0].file_path,
+            app.recent.filtered[0].file_path,
             r"C:\Users\test\project\session.jsonl"
         );
     }
@@ -1036,7 +1113,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.input.set_text("later");
         app.search.search_seq = 1;
-        app.all_recent_sessions = vec![RecentSession {
+        app.recent.all = vec![RecentSession {
             session_id: "auto-session".to_string(),
             file_path: "/sessions/auto-session.jsonl".to_string(),
             project: "proj".to_string(),

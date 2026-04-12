@@ -69,12 +69,12 @@ fn recent_sessions_status_text(app: &AppView) -> Option<String> {
         return None;
     }
 
-    if app.recent_loading {
+    if app.recent.is_loading(app.project_filter) {
         return Some("Loading recent sessions...".to_string());
     }
 
-    let total = app.all_recent_sessions.len();
-    let shown = app.recent_sessions.len();
+    let total = app.recent.total_count(app.project_filter);
+    let shown = app.recent.filtered.len();
     if shown > 0 {
         if shown < total {
             return Some(format!(
@@ -184,7 +184,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     } else if let Some(text) = search_results_status_text(app) {
         Span::styled(text, Style::default().fg(Color::DarkGray))
     } else if let Some(text) = recent_sessions_status_text(app) {
-        let style = if app.recent_loading {
+        let style = if app.recent.loading {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC)
@@ -206,7 +206,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
 
     // Help — show current filter mode inline with color
     use crate::tui::state::AutomationFilter as AF;
-    let in_recent_mode = app.in_recent_sessions_mode() && !app.recent_sessions.is_empty();
+    let in_recent_mode = app.in_recent_sessions_mode() && !app.recent.filtered.is_empty();
     let filter_label = match app.automation_filter {
         AF::All => "All",
         AF::Manual => "Manual",
@@ -310,7 +310,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
 
 fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Loading and empty states are shown in the status bar only
-    if app.recent_loading || app.recent_sessions.is_empty() {
+    if app.recent.loading || app.recent.filtered.is_empty() {
         return;
     }
 
@@ -319,13 +319,13 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
     let mut items: Vec<ListItem> = vec![];
 
     // Use pre-computed scroll offset (adjusted in event handlers, not here)
-    let scroll_offset = app.recent_scroll_offset;
+    let scroll_offset = app.recent.scroll_offset;
 
-    let end = (scroll_offset + visible_height).min(app.recent_sessions.len());
+    let end = (scroll_offset + visible_height).min(app.recent.filtered.len());
 
     for i in scroll_offset..end {
-        let session = &app.recent_sessions[i];
-        let is_selected = i == app.recent_cursor;
+        let session = &app.recent.filtered[i];
+        let is_selected = i == app.recent.cursor;
 
         let date_str = session.timestamp.format("%Y-%m-%d %H:%M").to_string();
         // Reserve space: "  " prefix + date (16) + "  " + project + "  " + summary
@@ -1551,7 +1551,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = true;
+        app.recent.loading = true;
 
         terminal
             .draw(|frame| render(frame, &app.view()))
@@ -1578,8 +1578,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_load_rx = None;
+        app.recent.loading = false;
+        app.recent.load_rx = None;
 
         terminal
             .draw(|frame| render(frame, &app.view()))
@@ -1609,9 +1609,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_load_rx = None;
-        app.recent_sessions = vec![
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![
             RecentSession {
                 session_id: "sess-1".to_string(),
                 file_path: "/test/session1.jsonl".to_string(),
@@ -1669,9 +1669,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_load_rx = None;
-        app.recent_sessions = vec![RecentSession {
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
@@ -1836,10 +1836,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.recent_loading = false;
-        app.recent_load_rx = None;
+        app.recent.loading = false;
+        app.recent.load_rx = None;
         app.automation_filter = crate::tui::state::AutomationFilter::Manual;
-        app.all_recent_sessions = vec![RecentSession {
+        app.recent.all = vec![RecentSession {
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
@@ -1848,7 +1848,7 @@ mod tests {
             summary: "Automated session".to_string(),
             automation: Some("ralphex".to_string()),
         }];
-        app.recent_sessions = vec![];
+        app.recent.filtered = vec![];
 
         terminal
             .draw(|frame| render(frame, &app.view()))
