@@ -25,7 +25,7 @@ pub struct RecentSession {
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
-fn truncate_summary(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_summary(s: &str, max_len: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max_len {
         trimmed.to_string()
@@ -35,7 +35,7 @@ fn truncate_summary(s: &str, max_len: usize) -> String {
     }
 }
 
-fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
+pub(crate) fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
     if session::extract_record_type(json) != Some("user") {
         return None;
     }
@@ -53,7 +53,7 @@ fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
     render_text_content(content)
 }
 
-fn is_real_user_prompt(text: &str) -> bool {
+pub(crate) fn is_real_user_prompt(text: &str) -> bool {
     !text.starts_with("<system-reminder>")
 }
 
@@ -80,6 +80,7 @@ struct ScanResult {
     automation: Option<String>,
     lines_scanned: usize,
     saw_off_chain_summary: bool,
+    last_timestamp: Option<DateTime<Utc>>,
 }
 
 struct ScanNeeds {
@@ -126,6 +127,10 @@ fn scan_head(
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        if let Some(ts) = session::extract_timestamp(&json) {
+            scan.last_timestamp = Some(scan.last_timestamp.map_or(ts, |prev| prev.max(ts)));
+        }
 
         if scan.session_id.is_none() {
             scan.session_id = session::extract_session_id(&json);
@@ -179,6 +184,7 @@ struct TailSummaryScan {
     ai_title: Option<String>,
     agent_name: Option<String>,
     last_prompt: Option<String>,
+    last_timestamp: Option<DateTime<Utc>>,
 }
 
 /// Read the last `max_bytes` of a file and search for the last `type=summary` record.
@@ -236,11 +242,15 @@ fn find_summary_from_tail_with_chain(
     let mut ai_title: Option<String> = None;
     let mut agent_name: Option<String> = None;
     let mut last_prompt: Option<String> = None;
+    let mut max_ts: Option<DateTime<Utc>> = None;
     for line in tail.lines() {
         let json: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(ts) = session::extract_timestamp(&json) {
+            max_ts = Some(max_ts.map_or(ts, |prev: DateTime<Utc>| prev.max(ts)));
+        }
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
         }
@@ -299,6 +309,7 @@ fn find_summary_from_tail_with_chain(
         ai_title,
         agent_name,
         last_prompt,
+        last_timestamp: max_ts,
     })
 }
 
@@ -327,6 +338,7 @@ fn scan_tail(
         metadata_title,
         last_prompt: tail.last_prompt,
         saw_off_chain_summary: tail.saw_off_chain_summary,
+        last_timestamp: tail.last_timestamp,
         ..Default::default()
     })
 }
@@ -373,8 +385,17 @@ fn scan_middle(
         let have_user_msg = !needs.user_message || result.first_user_message.is_some();
         let have_sid = !needs.session_id || result.session_id.is_some();
         let have_auto = !needs.automation || result.automation.is_some();
-        if have_summary && have_user_msg && have_sid && have_auto {
-            break;
+        let all_needs_met = have_summary && have_user_msg && have_sid && have_auto;
+
+        // Timestamp extraction needs to happen for ALL parseable lines, not just
+        // those matching the could_be_* predicates below. Try a cheap string check
+        // first to avoid parsing lines that have neither timestamps nor needed fields.
+        let could_have_timestamp =
+            line.contains("\"timestamp\"") || line.contains("\"_audit_timestamp\"");
+
+        // When all business fields are found, only continue scanning for timestamps
+        if all_needs_met && !could_have_timestamp {
+            continue;
         }
 
         let could_be_summary = needs.summary && !in_tail_region && line.contains("\"summary\"");
@@ -384,7 +405,12 @@ fn scan_middle(
         let could_have_sid =
             still_need_sid && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
 
-        if !could_be_summary && !could_be_user && !could_have_sid && !could_be_msg {
+        if !could_have_timestamp
+            && !could_be_summary
+            && !could_be_user
+            && !could_have_sid
+            && !could_be_msg
+        {
             continue;
         }
 
@@ -392,6 +418,10 @@ fn scan_middle(
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        if let Some(ts) = session::extract_timestamp(&json) {
+            result.last_timestamp = Some(result.last_timestamp.map_or(ts, |prev| prev.max(ts)));
+        }
 
         if result.session_id.is_none() {
             result.session_id = session::extract_session_id(&json);
@@ -533,7 +563,7 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
 /// 2. `scan_tail`: last 256KB for summary, metadata titles, last-prompt
 /// 3. `scan_middle`: remaining lines for anything head/tail missed
 ///
-/// Uses file mtime as timestamp for accurate recency sorting.
+/// Uses last message timestamp (falls back to file mtime) for accurate recency sorting.
 pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let path_str = path.to_str().unwrap_or("");
     let source = SessionSource::from_path(path_str);
@@ -578,6 +608,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let should_scan_middle =
         (need_summary && tail_start > 0) || need_user_msg || need_sid || need_automation;
 
+    let mut middle_timestamp = None;
     if should_scan_middle && head.lines_scanned >= HEAD_SCAN_LINES {
         let needs = ScanNeeds {
             summary: need_summary,
@@ -609,7 +640,13 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             automation = middle.automation;
         }
         saw_off_chain_summary = saw_off_chain_summary || middle.saw_off_chain_summary;
+        middle_timestamp = middle.last_timestamp;
     }
+
+    let content_timestamp = [head.last_timestamp, tail.last_timestamp, middle_timestamp]
+        .into_iter()
+        .flatten()
+        .max();
 
     // Apply title priority: metadata_title > summary > lastPrompt > firstUserMessage
     if let Some(title) = tail.metadata_title {
@@ -621,7 +658,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             file_path: path_str.to_string(),
             project,
             source,
-            timestamp: mtime_timestamp,
+            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: title,
             automation,
         });
@@ -634,7 +671,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             file_path: path_str.to_string(),
             project,
             source,
-            timestamp: mtime_timestamp,
+            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: summary_text,
             automation,
         });
@@ -647,7 +684,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             file_path: path_str.to_string(),
             project,
             source,
-            timestamp: mtime_timestamp,
+            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: prompt,
             automation,
         });
@@ -673,7 +710,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         file_path: path_str.to_string(),
         project,
         source,
-        timestamp: mtime_timestamp,
+        timestamp: content_timestamp.unwrap_or(mtime_timestamp),
         summary,
         automation,
     })
@@ -728,12 +765,12 @@ fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 /// Collect recent sessions from search paths.
 ///
 /// Walks directories, finds `*.jsonl` files (skipping `agent-*`),
-/// sorts by filesystem mtime descending, extracts summaries in parallel
+/// pre-sorts by filesystem mtime descending, extracts summaries in parallel
 /// with rayon (filtering out non-session files), and returns the top
-/// `limit` results sorted by session timestamp descending.
+/// `limit` results sorted by content timestamp descending.
 ///
 /// When timestamps tie, file path is used as a deterministic fallback so
-/// equal-mtime files do not produce unstable ordering across platforms.
+/// equal-timestamp sessions do not produce unstable ordering across platforms.
 pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<RecentSession> {
     let files = find_jsonl_files(search_paths);
 
@@ -749,8 +786,6 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         .collect();
     files_with_mtime.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
-    let files: Vec<PathBuf> = files_with_mtime.into_iter().map(|(p, _)| p).collect();
-
     // Process files in batches to avoid reading the entire corpus when only `limit`
     // sessions are needed. Non-session JSONL files (metadata, auxiliary) return None
     // from extract_summary(), so we process extra files per batch to compensate.
@@ -764,22 +799,20 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
             (limit * batch_multiplier).max(limit)
         } else {
             // Subsequent batches: process remaining files
-            files.len().saturating_sub(offset)
+            files_with_mtime.len().saturating_sub(offset)
         };
-        let end = (offset + batch_size).min(files.len());
+        let end = (offset + batch_size).min(files_with_mtime.len());
         if offset >= end {
             break;
         }
 
-        let batch = &files[offset..end];
-        let batch_sessions: Vec<RecentSession> = batch
+        let batch_sessions: Vec<RecentSession> = files_with_mtime[offset..end]
             .par_iter()
-            .filter_map(|path| extract_summary(path))
+            .filter_map(|(path, _)| extract_summary(path))
             .collect();
         sessions.extend(batch_sessions);
         offset = end;
 
-        // If we have enough *unique* sessions, stop processing more files.
         // Count unique session_ids to account for worktree duplicates that will
         // be collapsed during deduplication.
         let unique_count = {
@@ -790,7 +823,34 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
                 .count()
         };
         if unique_count >= limit {
-            break;
+            if offset >= files_with_mtime.len() {
+                break;
+            }
+            // Verify no remaining file can displace our current top `limit`.
+            // Since content_timestamp <= mtime (post-session metadata writes
+            // inflate mtime), the next unscanned file's mtime is an upper bound
+            // on its content timestamp.  Use strict inequality: when
+            // cutoff == next_mtime, an unscanned file could still tie on
+            // timestamp and outrank on file_path (the deterministic tiebreaker).
+            let mut best_ts: HashMap<&str, DateTime<Utc>> = HashMap::new();
+            for s in &sessions {
+                best_ts
+                    .entry(&s.session_id)
+                    .and_modify(|t| {
+                        if s.timestamp > *t {
+                            *t = s.timestamp;
+                        }
+                    })
+                    .or_insert(s.timestamp);
+            }
+            let mut sorted_ts: Vec<DateTime<Utc>> = best_ts.into_values().collect();
+            sorted_ts.sort_unstable_by(|a, b| b.cmp(a));
+            if let Some(&cutoff) = sorted_ts.get(limit.saturating_sub(1)) {
+                let next_mtime: DateTime<Utc> = files_with_mtime[offset].1.into();
+                if cutoff > next_mtime {
+                    break;
+                }
+            }
         }
     }
 
@@ -923,6 +983,30 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_summary_prefers_content_timestamp_over_mtime() {
+        let content_ts = Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap();
+        let file_mtime = Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap();
+
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello world"}}]}},"sessionId":"sess-ts-001","timestamp":"2025-01-01T10:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Hi there"}}]}},"sessionId":"sess-ts-001","timestamp":"2025-01-01T10:00:00Z"}}"#).unwrap();
+
+        // Set file mtime to a much later date (simulates Claude appending metadata records)
+        set_file_mtime(
+            f.path(),
+            FileTime::from_unix_time(file_mtime.timestamp(), 0),
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(
+            result.timestamp, content_ts,
+            "expected content timestamp {}, got {} (file mtime is {})",
+            content_ts, result.timestamp, file_mtime
+        );
+    }
+
+    #[test]
     fn test_extract_summary_skips_meta_messages() {
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, r#"{{"type":"user","isMeta":true,"message":{{"role":"user","content":[{{"type":"text","text":"init message"}}]}},"sessionId":"sess-001","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
@@ -1025,7 +1109,7 @@ mod tests {
 
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         // With limit=3, if we only took top 3 by mtime (all aux files), we'd get 0 sessions.
-        // The over-fetch (limit*2=6) ensures we reach real sessions.
+        // The over-fetch (limit*4=12) ensures we reach real sessions.
         let result = collect_recent_sessions(&paths, 3);
         assert_eq!(result.len(), 3);
     }
@@ -1114,36 +1198,138 @@ mod tests {
         let proj = dir.path().join("projects").join("-Users-user-proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        // Create files with different JSONL timestamps, then set filesystem
-        // mtimes explicitly because recent-session ordering is based on mtime.
-        let older_path = proj.join("older.jsonl");
-        let mut f = std::fs::File::create(&older_path).unwrap();
+        // Create files with INVERTED mtime vs content timestamps to prove
+        // that ordering is based on content timestamp, not filesystem mtime.
+        let older_content_path = proj.join("older.jsonl");
+        let mut f = std::fs::File::create(&older_content_path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Old question"}}]}},"sessionId":"sess-old","timestamp":"2025-01-01T10:00:00Z"}}"#).unwrap();
 
-        let newer_path = proj.join("newer.jsonl");
-        let mut f = std::fs::File::create(&newer_path).unwrap();
+        let newer_content_path = proj.join("newer.jsonl");
+        let mut f = std::fs::File::create(&newer_content_path).unwrap();
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"New question"}}]}},"sessionId":"sess-new","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
 
-        let older_mtime = Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap();
-        let newer_mtime = Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap();
+        // Set mtimes INVERTED: older content gets newer mtime, newer content
+        // gets older mtime. If sorting used mtime, sess-old would come first.
         set_file_mtime(
-            &older_path,
-            FileTime::from_unix_time(older_mtime.timestamp(), 0),
+            &older_content_path,
+            FileTime::from_unix_time(1750000000, 0), // ~2025-06-15
         )
         .unwrap();
         set_file_mtime(
-            &newer_path,
-            FileTime::from_unix_time(newer_mtime.timestamp(), 0),
+            &newer_content_path,
+            FileTime::from_unix_time(1700000000, 0), // ~2023-11-14
         )
         .unwrap();
 
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         let result = collect_recent_sessions(&paths, 50);
         assert_eq!(result.len(), 2);
-        // Final sort is by extracted recency descending, with a deterministic
-        // file-path fallback when timestamps tie.
+        // Sort must follow content timestamp (sess-new=2025-06 first),
+        // NOT mtime (which would put sess-old first).
         assert_eq!(result[0].session_id, "sess-new");
         assert_eq!(result[1].session_id, "sess-old");
+    }
+
+    #[test]
+    fn test_collect_recent_sessions_mtime_invariant_prevents_missing_sessions() {
+        // Regression: when files with high mtime have low content timestamps
+        // (large metadata drift), the early-stop condition must not skip files
+        // beyond the first batch that have higher content timestamps.
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj = dir.path().join("projects").join("-Users-user-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // 4 drift files: high mtime but very old content timestamps.
+        for i in 1..=4u32 {
+            let path = proj.join(format!("drift{}.jsonl", i));
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"drift {}"}}]}},"sessionId":"sess-drift-{}","timestamp":"2025-01-0{}T10:00:00Z"}}"#, i, i, i).unwrap();
+            // mtime ~2025-06-15 minus i days (all higher than the "recent" file)
+            set_file_mtime(
+                &path,
+                FileTime::from_unix_time(1750000000 - (i as i64 - 1) * 86400, 0),
+            )
+            .unwrap();
+        }
+
+        // 1 recent file: lower mtime but much newer content timestamp.
+        let recent_path = proj.join("recent.jsonl");
+        let mut f = std::fs::File::create(&recent_path).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"recent"}}]}},"sessionId":"sess-recent","timestamp":"2025-06-06T10:00:00Z"}}"#).unwrap();
+        set_file_mtime(
+            &recent_path,
+            FileTime::from_unix_time(1749168000, 0), // ~2025-06-06
+        )
+        .unwrap();
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        // limit=1 with batch_multiplier=4: first batch processes the 4 drift files.
+        // Without the mtime invariant check, sess-drift-4 (Jan 4) would win.
+        // With the fix, the invariant detects that the next file's mtime exceeds
+        // the cutoff, continues scanning, and sess-recent (Jun 6) correctly wins.
+        let result = collect_recent_sessions(&paths, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].session_id, "sess-recent");
+    }
+
+    #[test]
+    fn test_collect_recent_sessions_equal_mtime_tiebreak_on_path() {
+        // Regression: when the cutoff content_timestamp equals the next file's
+        // mtime, the early-stop must use strict `>` (not `>=`), otherwise the
+        // unscanned file is skipped even though it may have a better
+        // content_timestamp.
+        //
+        // Setup: path_a has mtime == sess-b's content_timestamp (the cutoff).
+        // sess-a has a strictly better content_timestamp than sess-b.
+        // With `>=` the early-stop fires and sess-a is never scanned (BUG).
+        // With `>` scanning continues, sess-a is found and wins (CORRECT).
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj = dir.path().join("projects").join("-Users-user-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // 2025-06-15T10:00:00Z == unix 1749981600.
+        // path_a's mtime is set to this value so cutoff == next_mtime exactly.
+        let cutoff_mtime = 1749981600i64;
+
+        // File "aaa.jsonl" — content timestamp 1 second BETTER than sess-b.
+        // mtime equals the cutoff so the `>=` vs `>` distinction matters.
+        let path_a = proj.join("aaa.jsonl");
+        let mut f = std::fs::File::create(&path_a).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"session A"}}]}},"sessionId":"sess-a","timestamp":"2025-06-15T10:00:01Z"}}"#).unwrap();
+        set_file_mtime(&path_a, FileTime::from_unix_time(cutoff_mtime, 0)).unwrap();
+
+        // File "bbb.jsonl" — content timestamp == cutoff.  Slightly higher mtime
+        // so it lands in the first batch (sorted by mtime DESC).
+        let path_b = proj.join("bbb.jsonl");
+        let mut f = std::fs::File::create(&path_b).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"session B"}}]}},"sessionId":"sess-b","timestamp":"2025-06-15T10:00:00Z"}}"#).unwrap();
+        set_file_mtime(&path_b, FileTime::from_unix_time(cutoff_mtime + 1, 0)).unwrap();
+
+        // 3 filler files to fill the first batch (batch_multiplier=4, limit=1 → batch=4).
+        for i in 1..=3u32 {
+            let path = proj.join(format!("filler{}.jsonl", i));
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"filler {}"}}]}},"sessionId":"sess-filler-{}","timestamp":"2025-01-0{}T10:00:00Z"}}"#, i, i, i).unwrap();
+            set_file_mtime(
+                &path,
+                FileTime::from_unix_time(cutoff_mtime + 2 + i as i64, 0),
+            )
+            .unwrap();
+        }
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        // limit=1: first batch = bbb + 3 fillers (4 files).
+        // cutoff = sess-b content_timestamp = 2025-06-15T10:00:00Z
+        // next_mtime = path_a mtime = 2025-06-15T10:00:00Z (== cutoff)
+        // With `>=`: early-stop fires, sess-a never scanned → returns sess-b (BUG)
+        // With `>`:  continues scanning, sess-a (10:00:01) beats sess-b → sess-a (CORRECT)
+        let result = collect_recent_sessions(&paths, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].session_id, "sess-a",
+            "sess-a (better content_timestamp) must win; \
+             if sess-b won, the `>=` early-stop bug has regressed"
+        );
     }
 
     #[test]
@@ -1637,7 +1823,7 @@ mod tests {
         std::fs::create_dir_all(&proj1).unwrap();
         std::fs::create_dir_all(&proj2).unwrap();
 
-        // Same session_id in two project dirs, different timestamps
+        // Same session_id in two project dirs, different content timestamps
         write_test_session_with_ts(
             &proj1,
             "dup.jsonl",
@@ -1652,12 +1838,6 @@ mod tests {
             "New question",
             "2025-06-02T10:00:00Z",
         );
-
-        // Set file mtime so proj2's file is newer (matching its timestamp)
-        let old_mtime = FileTime::from_unix_time(1717200000, 0); // ~2024-06-01
-        let new_mtime = FileTime::from_unix_time(1717300000, 0);
-        set_file_mtime(proj1.join("dup.jsonl"), old_mtime).unwrap();
-        set_file_mtime(proj2.join("dup.jsonl"), new_mtime).unwrap();
 
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         let result = collect_recent_sessions(&paths, 50);

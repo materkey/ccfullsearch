@@ -37,6 +37,7 @@ src/
 ├── lib.rs            # Module re-exports + get_search_paths()
 ├── cli.rs            # Non-interactive subcommands (search, list)
 ├── recent.rs         # RecentSession struct, parallel scanning (rayon), summary extraction via SessionDag/SessionRecord
+├── ai.rs             # AI session re-ranking: SessionContext, AiRankResult, collect_session_context(), build_prompt(), parse_ai_response(), spawn_ai_rank() — invokes `claude -p` in background thread via std::thread + mpsc
 ├── update.rs         # Self-update: GitHub release download, Homebrew detection, version comparison
 ├── session/
 │   ├── mod.rs        # SessionSource enum (ClaudeCodeCLI | ClaudeDesktop), shared field extractors, resolve_parent_session, extract_message_content
@@ -56,8 +57,8 @@ src/
 │   ├── fork.rs       # Creates forked JSONL files for branch-aware resume, uses SessionDag for chain logic
 │   └── launcher.rs   # Process exec (Unix) / spawn (Windows), resume_cli_child() for overlay, safe path fallback (decode→parent→$HOME→/tmp), atomic session index
 └── tui/
-    ├── state.rs      # App struct (with InputState, SearchState, TreeState sub-structs), ResumeTarget, AppOutcome, BackgroundSearchResult, debounced async search
-    ├── dispatch.rs   # KeyAction enum, KeyContext struct, classify_key() — maps key events to semantic actions
+    ├── state.rs      # App struct (with InputState, SearchState, TreeState, AiState sub-structs), ResumeTarget, AppOutcome, BackgroundSearchResult, debounced async search, AI re-ranking lifecycle
+    ├── dispatch.rs   # KeyAction enum (incl. EnterAiMode/ExitAiMode), KeyContext struct (incl. ai_mode), classify_key() — maps key events to semantic actions
     ├── view.rs       # AppView<'a> — read-only projection of App for pure rendering
     ├── search_mode.rs# Search navigation, filtering, input handling, recent sessions navigation
     ├── tree_mode.rs  # Tree mode enter/exit, DAG navigation
@@ -77,7 +78,8 @@ src/
 2. **Tree mode**: Load full JSONL file → `SessionDag::from_file(path, Standard)` builds DAG in single pass (parses via `SessionRecord::from_jsonl`, filters sidechains, bridges `compact_boundary` via `logicalParentUuid`) → `dag.tip(MaxTimestamp)` picks latest terminal → `dag.chain_from(tip)` walks backward → mark branch points (nodes with >1 child) → flatten to `TreeRow` list. Content rendered via `SessionRecord::render_content(blocks, Preview { max_chars: 120 })`
 3. **Resume**: On Enter, find `claude` binary via `which` → resolve project working directory from session path (only use decoded path if it exists on disk; fall back to session file parent → `$HOME` → `/tmp`) → if selected message is NOT on latest chain, create a forked JSONL file: `SessionDag::from_file` + `dag.tip(LastAppended)` + `dag.chain_from(tip)` determine the chain, then write filtered records → exec/spawn `claude --resume <file-path>` (absolute `.jsonl` path for cross-project support). Session index uses per-process temp files for atomic writes.
 4. **TUI lifecycle**: `main()` calls `run_tui()` → key events go through `classify_key()` → `KeyAction` enum → `App::handle_action()`. Returns `TuiOutcome` (Quit, Resume, Pick). In overlay mode (`--overlay`), `Resume` spawns Claude as child via `resume_cli_child()` and loops back. In normal mode, `Resume` calls `resume()` (exec, replaces process). `Pick` writes `PickedSession` key-value output and exits 0/1. Rendering uses `AppView` (read-only projection) — no mutation during draw.
-5. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*` and `subagents/`) → sort by mtime → take top 100 → rayon parallel: `SessionDag::from_file` + `dag.tip(LastAppended)` + `dag.chain_from(tip)` for latest chain, then scan JSONL using `SessionRecord` match arms for title extraction (priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage) → deduplicate by session_id (keep newest) → sort by timestamp desc → send via mpsc to TUI → render in empty-state view
+5. **Recent sessions**: App starts → background thread walks search dirs for `*.jsonl` (skip `agent-*` and `subagents/`) → sort by mtime → take top 100 → rayon parallel: `SessionDag::from_file` + `dag.tip(LastAppended)` + `dag.chain_from(tip)` for latest chain, then scan JSONL using `SessionRecord` match arms for title extraction (priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage) → deduplicate by session_id (keep newest) → sort by **content timestamp** desc (max `timestamp`/`_audit_timestamp` from JSONL lines; falls back to file mtime) → send via mpsc to TUI → render in empty-state view
+6. **AI re-ranking (Ctrl+G)**: Press Ctrl+G → `EnterAiMode` → `AiState.active = true`, input switches to AI query (magenta). User types query, Enter → `submit_ai_query()` collects `SessionContext` from visible sessions, calls `build_prompt()`, then `spawn_ai_rank()` invokes `claude -p` in background thread. `AiRankResult` arrives via mpsc, polled in `tick()` → `handle_ai_result()` saves original order and re-sorts by rank. Ctrl+G or Esc → `exit_ai_mode()` restores original order.
 
 ### Dual format support
 
