@@ -456,7 +456,7 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
     };
 
     format!(
-        "{} [{}] {} | {} | {} | {} ({} messages){}",
+        "{} [{}] {} | {} | {} | {} ({} matches){}",
         expand_indicator,
         source,
         date_str,
