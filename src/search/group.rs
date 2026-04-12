@@ -81,7 +81,8 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{Message, SessionSource};
+    use crate::search::Message;
+    use crate::session::SessionSource;
     use chrono::TimeZone;
     use std::fs;
     use std::io::Write;

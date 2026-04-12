@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyEventKind},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
@@ -61,11 +61,6 @@ enum Commands {
     #[cfg(not(windows))]
     /// Update ccs to the latest version
     Update,
-}
-
-fn is_ctrl_h(key: crossterm::event::KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char('h') | KeyCode::Backspace)
 }
 
 /// Read session_id from the first JSON record in a JSONL file.
@@ -146,7 +141,13 @@ fn run_tui_inner(
             app.needs_full_redraw = false;
         }
 
-        terminal.draw(|frame| ccs::tui::render(frame, &mut app))?;
+        let completed = terminal.draw(|frame| ccs::tui::render(frame, &app.view()))?;
+        let fh = completed.area.height as usize;
+        app.last_tree_visible_height = if app.tree_mode {
+            fh.saturating_sub(3) // header(2) + help(1)
+        } else {
+            fh.saturating_sub(7) // header(2) + input(3) + status(1) + help(1)
+        };
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -154,144 +155,9 @@ fn run_tui_inner(
                     continue;
                 }
 
-                if app.tree_mode {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.exit_tree_mode();
-                        continue;
-                    }
-
-                    match key.code {
-                        KeyCode::Esc => app.exit_tree_mode(),
-                        KeyCode::Up => app.on_up_tree(),
-                        KeyCode::Down => app.on_down_tree(),
-                        KeyCode::Left => app.on_left_tree(),
-                        KeyCode::Right => app.on_right_tree(),
-                        KeyCode::Tab => app.on_tab_tree(),
-                        KeyCode::Enter => app.on_enter_tree(),
-                        KeyCode::Char('b') => app.exit_tree_mode(),
-                        KeyCode::Char('q') => {
-                            app.should_quit = true;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        if app.input.is_empty() {
-                            app.should_quit = true;
-                        } else {
-                            app.clear_input();
-                        }
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Char('r')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.on_toggle_regex();
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Char('b')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        if app.in_recent_sessions_mode() {
-                            if !app.recent_sessions.is_empty() {
-                                app.enter_tree_mode_recent();
-                            }
-                        } else if !app.groups.is_empty() {
-                            app.enter_tree_mode();
-                        }
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Left
-                        && key
-                            .modifiers
-                            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
-                        || key.code == KeyCode::Char('b')
-                            && key.modifiers.contains(KeyModifiers::ALT)
-                    {
-                        app.move_cursor_word_left();
-                        continue;
-                    }
-                    if key.code == KeyCode::Right
-                        && key
-                            .modifiers
-                            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
-                        || key.code == KeyCode::Char('f')
-                            && key.modifiers.contains(KeyModifiers::ALT)
-                    {
-                        app.move_cursor_word_right();
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::ALT) {
-                        app.delete_word_left();
-                        continue;
-                    }
-                    if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::ALT) {
-                        app.delete_word_right();
-                        continue;
-                    }
-                    if key.code == KeyCode::Char('w')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.delete_word_left();
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Char('a')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.toggle_project_filter();
-                        continue;
-                    }
-
-                    if is_ctrl_h(key) {
-                        app.toggle_automation_filter();
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Char('v')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.on_tab();
-                        continue;
-                    }
-
-                    if key.code == KeyCode::Char('e')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        app.move_cursor_end();
-                        continue;
-                    }
-
-                    match key.code {
-                        KeyCode::Esc => {
-                            if app.preview_mode {
-                                app.preview_mode = false;
-                            } else {
-                                app.should_quit = true;
-                            }
-                        }
-                        KeyCode::Home => app.move_cursor_home(),
-                        KeyCode::End => app.move_cursor_end(),
-                        KeyCode::Up => app.on_up(),
-                        KeyCode::Down => app.on_down(),
-                        KeyCode::Left => app.on_left(),
-                        KeyCode::Right => app.on_right(),
-                        KeyCode::Tab => app.on_tab(),
-                        KeyCode::Enter => app.on_enter(),
-                        KeyCode::Backspace => app.on_backspace(),
-                        KeyCode::Delete => app.on_delete(),
-                        KeyCode::Char(c) => app.on_key(c),
-                        _ => {}
-                    }
-                }
+                let ctx = app.key_context();
+                let action = ccs::tui::dispatch::classify_key(key, &ctx);
+                app.handle_action(action);
             }
         }
 
@@ -478,31 +344,6 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyEvent;
-
-    #[test]
-    fn test_is_ctrl_h_accepts_char_form() {
-        assert!(is_ctrl_h(KeyEvent::new(
-            KeyCode::Char('h'),
-            KeyModifiers::CONTROL,
-        )));
-    }
-
-    #[test]
-    fn test_is_ctrl_h_accepts_backspace_form() {
-        assert!(is_ctrl_h(KeyEvent::new(
-            KeyCode::Backspace,
-            KeyModifiers::CONTROL,
-        )));
-    }
-
-    #[test]
-    fn test_is_ctrl_h_rejects_plain_backspace() {
-        assert!(!is_ctrl_h(KeyEvent::new(
-            KeyCode::Backspace,
-            KeyModifiers::NONE,
-        )));
-    }
 
     #[test]
     fn test_cli_parses_overlay_flag() {
@@ -559,7 +400,7 @@ mod tests {
         let outcome = ccs::tui::TuiOutcome::Resume {
             session_id: "test-id".to_string(),
             file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::search::SessionSource::ClaudeCodeCLI,
+            source: ccs::session::SessionSource::ClaudeCodeCLI,
             uuid: None,
             query: String::new(),
         };
@@ -571,7 +412,7 @@ mod tests {
         let outcome = ccs::tui::TuiOutcome::Resume {
             session_id: "test-id".to_string(),
             file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::search::SessionSource::ClaudeCodeCLI,
+            source: ccs::session::SessionSource::ClaudeCodeCLI,
             uuid: None,
             query: String::new(),
         };

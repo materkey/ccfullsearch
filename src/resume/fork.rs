@@ -1,92 +1,10 @@
+use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::session;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::session::is_sidechain;
-
-/// Parsed DAG structure from a JSONL session file.
-/// Single-pass extraction of all UUID relationships needed for chain operations.
-struct DagInfo {
-    uuid_to_parent: HashMap<String, Option<String>>,
-    parent_uuids: HashSet<String>,
-    displayable_uuids: Vec<String>,
-    last_uuid: Option<String>,
-}
-
-/// Parse a JSONL session file once, extracting the full DAG structure.
-/// Session logs are append-only, so partially written tail lines are safely skipped.
-fn parse_dag(file_path: &str) -> Option<DagInfo> {
-    let file = fs::File::open(file_path).ok()?;
-    let reader = BufReader::new(file);
-
-    let mut dag = DagInfo {
-        uuid_to_parent: HashMap::new(),
-        parent_uuids: HashSet::new(),
-        displayable_uuids: Vec::new(),
-        last_uuid: None,
-    };
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let json: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-
-        if is_sidechain(&json) {
-            continue;
-        }
-        if let Some(uuid) = session::extract_uuid(&json) {
-            let parent = session::extract_parent_uuid_or_logical(&json);
-            if let Some(ref p) = parent {
-                dag.parent_uuids.insert(p.clone());
-            }
-            dag.uuid_to_parent.insert(uuid.clone(), parent);
-
-            if matches!(
-                session::extract_record_type(&json),
-                Some("user" | "assistant" | "compaction")
-            ) {
-                dag.displayable_uuids.push(uuid.clone());
-            }
-            dag.last_uuid = Some(uuid);
-        }
-    }
-
-    Some(dag)
-}
-
-/// Find the terminal (tip) UUID: last displayable uuid not referenced as any parentUuid.
-fn find_tip(dag: &DagInfo) -> Option<String> {
-    dag.displayable_uuids
-        .iter()
-        .rev()
-        .find(|uuid| !dag.parent_uuids.contains(*uuid))
-        .cloned()
-        .or_else(|| dag.last_uuid.clone())
-}
-
-/// Walk parentUuid chain backwards from `tip`, collecting all uuids on the chain.
-fn build_chain(dag: &DagInfo, tip: &str) -> HashSet<String> {
-    let mut chain = HashSet::new();
-    let mut current = Some(tip.to_string());
-    while let Some(uuid) = current {
-        if !chain.insert(uuid.clone()) {
-            break; // cycle detected
-        }
-        current = dag.uuid_to_parent.get(&uuid).and_then(|p| p.clone());
-    }
-    chain
-}
 
 /// Check if a message uuid is on the latest parentUuid chain in a JSONL file.
 ///
@@ -97,89 +15,67 @@ fn build_chain(dag: &DagInfo, tip: &str) -> HashSet<String> {
 ///   has no meaning in this file's DAG)
 /// - The chain can't be determined
 pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
-    let dag = match parse_dag(file_path) {
-        Some(d) => d,
-        None => return true,
+    let dag = match SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard) {
+        Ok(d) => d,
+        Err(_) => return true,
     };
     // If the uuid doesn't exist in this file at all, don't treat it as "off-chain"
-    if !dag.uuid_to_parent.contains_key(target_uuid) {
+    if dag.get(target_uuid).is_none() {
         return true;
     }
-    let tip = match find_tip(&dag) {
+    let tip = match dag.tip(TipStrategy::LastAppended) {
         Some(t) => t,
         None => return true,
     };
-    build_chain(&dag, &tip).contains(target_uuid)
+    dag.chain_from(tip).contains(target_uuid)
 }
 
 /// Build the set of uuids on the latest chain (from the terminal message backwards).
 pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
-    let dag = parse_dag(file_path)?;
-    let tip = find_tip(&dag)?;
-    Some(build_chain(&dag, &tip))
+    let dag = SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard).ok()?;
+    let tip = dag.tip(TipStrategy::LastAppended)?;
+    Some(dag.chain_from(tip))
 }
 
 /// Return the UUID of the terminal displayable record in the file.
 pub fn latest_tip_uuid(file_path: &str) -> Option<String> {
-    let dag = parse_dag(file_path)?;
-    find_tip(&dag)
+    let dag = SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard).ok()?;
+    dag.tip(TipStrategy::LastAppended).map(|s| s.to_string())
 }
 
 /// Create a forked JSONL file containing only messages from the branch
 /// that includes the target uuid. Returns (new_session_id, new_file_path).
 pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String), String> {
+    // Build DAG and get the branch chain
+    let dag = SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard)
+        .map_err(|e| format!("Failed to build DAG: {}", e))?;
+    let branch_uuids = dag.chain_from(target_uuid);
+
+    // Read file and filter lines for the fork
     let content = fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
 
-    // Single pass: parse each line once, build uuid→parent map and store parsed JSON
-    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
-    let mut parsed_lines: Vec<(serde_json::Value, Option<String>)> = Vec::new();
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+    let mut forked_lines = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+        let mut json: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(_) => continue,
         };
         if is_sidechain(&json) {
             continue;
         }
-        let uuid = session::extract_uuid(&json);
-        if let Some(ref u) = uuid {
-            let parent = session::extract_parent_uuid_or_logical(&json);
-            uuid_to_parent.insert(u.clone(), parent);
-        }
-        parsed_lines.push((json, uuid));
-    }
-
-    // Reuse build_chain() via a lightweight DagInfo
-    let fork_dag = DagInfo {
-        uuid_to_parent,
-        parent_uuids: HashSet::new(),
-        displayable_uuids: Vec::new(),
-        last_uuid: None,
-    };
-    let branch_uuids = build_chain(&fork_dag, target_uuid);
-
-    // Generate new session ID
-    let new_session_id = uuid::Uuid::new_v4().to_string();
-
-    // Chain walking already handles compact_boundary bridging via logicalParentUuid,
-    // so pre-boundary records that are part of the branch are correctly included.
-    let mut forked_lines = Vec::new();
-    for (mut json, uuid) in parsed_lines {
-        match uuid {
-            Some(ref u) if branch_uuids.contains(u.as_str()) => {
+        if let Some(uuid) = session::extract_uuid(&json) {
+            if branch_uuids.contains(uuid.as_str()) {
                 replace_session_id_in_value(&mut json, &new_session_id);
                 if let Ok(s) = serde_json::to_string(&json) {
                     forked_lines.push(s);
                 }
-            }
-            _ => {
-                // UUID not in branch or no UUID (metadata) — skip
             }
         }
     }

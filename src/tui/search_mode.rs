@@ -1,5 +1,5 @@
 use crate::search::{extract_project_from_path, RipgrepMatch, SessionGroup};
-use crate::tui::state::PickedSession;
+use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use crate::tui::App;
 use std::time::Instant;
 
@@ -7,7 +7,7 @@ impl App {
     /// Whether the app is currently showing the recent sessions list
     /// (input is empty, no search results, not loading search).
     pub fn in_recent_sessions_mode(&self) -> bool {
-        self.input.is_empty() && self.groups.is_empty()
+        self.input.is_empty() && self.search.groups.is_empty()
     }
 
     pub fn on_up(&mut self) {
@@ -15,26 +15,27 @@ impl App {
         if self.in_recent_sessions_mode() {
             if !self.recent_sessions.is_empty() && self.recent_cursor > 0 {
                 self.recent_cursor -= 1;
+                self.adjust_recent_scroll(self.last_tree_visible_height);
             }
             return;
         }
 
-        if self.groups.is_empty() {
+        if self.search.groups.is_empty() {
             return;
         }
 
-        let old_cursor = (self.group_cursor, self.sub_cursor);
+        let old_cursor = (self.search.group_cursor, self.search.sub_cursor);
 
-        if self.expanded && self.sub_cursor > 0 {
-            self.sub_cursor -= 1;
-        } else if self.group_cursor > 0 {
-            self.group_cursor -= 1;
-            self.sub_cursor = 0;
-            self.expanded = false;
+        if self.search.expanded && self.search.sub_cursor > 0 {
+            self.search.sub_cursor -= 1;
+        } else if self.search.group_cursor > 0 {
+            self.search.group_cursor -= 1;
+            self.search.sub_cursor = 0;
+            self.search.expanded = false;
         }
 
         // Force full redraw in preview mode when selection changed
-        if self.preview_mode && (self.group_cursor, self.sub_cursor) != old_cursor {
+        if self.preview_mode && (self.search.group_cursor, self.search.sub_cursor) != old_cursor {
             self.needs_full_redraw = true;
         }
     }
@@ -46,20 +47,21 @@ impl App {
                 && self.recent_cursor < self.recent_sessions.len().saturating_sub(1)
             {
                 self.recent_cursor += 1;
+                self.adjust_recent_scroll(self.last_tree_visible_height);
             }
             return;
         }
 
-        if self.groups.is_empty() {
+        if self.search.groups.is_empty() {
             return;
         }
 
-        let old_cursor = (self.group_cursor, self.sub_cursor);
+        let old_cursor = (self.search.group_cursor, self.search.sub_cursor);
 
-        if self.expanded {
+        if self.search.expanded {
             if let Some(group) = self.selected_group() {
-                if self.sub_cursor < group.matches.len().saturating_sub(1) {
-                    self.sub_cursor += 1;
+                if self.search.sub_cursor < group.matches.len().saturating_sub(1) {
+                    self.search.sub_cursor += 1;
                     // Force full redraw in preview mode
                     if self.preview_mode {
                         self.needs_full_redraw = true;
@@ -69,28 +71,30 @@ impl App {
             }
         }
 
-        if self.group_cursor < self.groups.len().saturating_sub(1) {
-            self.group_cursor += 1;
-            self.sub_cursor = 0;
-            self.expanded = false;
+        if self.search.group_cursor < self.search.groups.len().saturating_sub(1) {
+            self.search.group_cursor += 1;
+            self.search.sub_cursor = 0;
+            self.search.expanded = false;
         }
 
         // Force full redraw in preview mode when selection changed
-        if self.preview_mode && (self.group_cursor, self.sub_cursor) != old_cursor {
+        if self.preview_mode && (self.search.group_cursor, self.search.sub_cursor) != old_cursor {
             self.needs_full_redraw = true;
         }
     }
 
     pub fn on_right(&mut self) {
-        if self.cursor_pos < self.input.len() {
+        if self.input.cursor_pos() < self.input.len() {
             self.move_cursor_right();
-        } else if !self.groups.is_empty() && self.group_cursor < self.groups.len() {
-            self.expanded = true;
+        } else if !self.search.groups.is_empty()
+            && self.search.group_cursor < self.search.groups.len()
+        {
+            self.search.expanded = true;
             // Precompute latest chain for the expanded group (for fork indicator)
-            if let Some(group) = self.groups.get(self.group_cursor) {
+            if let Some(group) = self.search.groups.get(self.search.group_cursor) {
                 let fp = group.file_path.clone();
                 if let std::collections::hash_map::Entry::Vacant(e) =
-                    self.latest_chains.entry(fp.clone())
+                    self.search.latest_chains.entry(fp.clone())
                 {
                     if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
                         e.insert(chain);
@@ -101,19 +105,19 @@ impl App {
     }
 
     pub fn on_left(&mut self) {
-        if self.expanded {
-            self.expanded = false;
-            self.sub_cursor = 0;
-        } else if self.cursor_pos > 0 {
+        if self.search.expanded {
+            self.search.expanded = false;
+            self.search.sub_cursor = 0;
+        } else if self.input.cursor_pos() > 0 {
             self.move_cursor_left();
         } else {
-            self.expanded = false;
-            self.sub_cursor = 0;
+            self.search.expanded = false;
+            self.search.sub_cursor = 0;
         }
     }
 
     pub fn on_tab(&mut self) {
-        if !self.groups.is_empty() && self.selected_match().is_some() {
+        if !self.search.groups.is_empty() && self.selected_match().is_some() {
             self.preview_mode = !self.preview_mode;
             // Force full redraw when toggling preview mode
             self.needs_full_redraw = true;
@@ -140,9 +144,9 @@ impl App {
         self.apply_groups_filter();
         self.recent_cursor = 0;
         self.recent_scroll_offset = 0;
-        self.group_cursor = 0;
-        self.sub_cursor = 0;
-        self.expanded = false;
+        self.search.group_cursor = 0;
+        self.search.sub_cursor = 0;
+        self.search.expanded = false;
     }
 
     pub fn toggle_project_filter(&mut self) {
@@ -173,18 +177,20 @@ impl App {
         if self.in_recent_sessions_mode() {
             if let Some(session) = self.recent_sessions.get(self.recent_cursor) {
                 if self.picker_mode {
-                    self.picked_session = Some(PickedSession {
+                    self.outcome = Some(AppOutcome::Pick(PickedSession {
                         session_id: session.session_id.clone(),
                         file_path: session.file_path.clone(),
                         source: session.source,
                         project: session.project.clone(),
                         message_uuid: None,
-                    });
+                    }));
                 } else {
-                    self.resume_id = Some(session.session_id.clone());
-                    self.resume_file_path = Some(session.file_path.clone());
-                    self.resume_source = Some(session.source);
-                    self.resume_uuid = None;
+                    self.outcome = Some(AppOutcome::Resume(ResumeTarget {
+                        session_id: session.session_id.clone(),
+                        file_path: session.file_path.clone(),
+                        source: session.source,
+                        uuid: None,
+                    }));
                 }
                 self.should_quit = true;
             }
@@ -206,22 +212,24 @@ impl App {
         if let Some((session_id, file_path, source, uuid)) = resume_info {
             if self.picker_mode {
                 let project = extract_project_from_path(&file_path);
-                self.picked_session = Some(PickedSession {
+                self.outcome = Some(AppOutcome::Pick(PickedSession {
                     session_id,
                     file_path,
                     source,
                     project,
                     message_uuid: uuid,
-                });
+                }));
             } else {
-                self.resume_id = Some(session_id);
-                self.resume_file_path = Some(file_path);
-                self.resume_source = Some(source);
                 // Don't pass message uuid from search results — it triggers
                 // fork logic when the message is not on the latest chain.
                 // UUID-based resume is only meaningful from tree view where
                 // the user explicitly selects a specific branch point.
-                self.resume_uuid = None;
+                self.outcome = Some(AppOutcome::Resume(ResumeTarget {
+                    session_id,
+                    file_path,
+                    source,
+                    uuid: None,
+                }));
             }
             self.should_quit = true;
         }
@@ -236,20 +244,21 @@ impl App {
     }
 
     pub fn selected_group(&self) -> Option<&SessionGroup> {
-        self.groups.get(self.group_cursor)
+        self.search.groups.get(self.search.group_cursor)
     }
 
     pub fn selected_match(&self) -> Option<&RipgrepMatch> {
         self.selected_group()
-            .and_then(|g| g.matches.get(self.sub_cursor))
+            .and_then(|g| g.matches.get(self.search.sub_cursor))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::recent::RecentSession;
-    use crate::search::{RipgrepMatch, SessionGroup, SessionSource};
-    use crate::tui::state::DEBOUNCE_MS;
+    use crate::search::{RipgrepMatch, SessionGroup};
+    use crate::session::SessionSource;
+    use crate::tui::state::{AppOutcome, DEBOUNCE_MS};
     use crate::tui::App;
     use chrono::Utc;
     use std::time::{Duration, Instant};
@@ -276,7 +285,7 @@ mod tests {
         app.on_left();
         app.on_right();
 
-        assert_eq!(app.group_cursor, 0);
+        assert_eq!(app.search.group_cursor, 0);
     }
 
     #[test]
@@ -284,7 +293,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
 
         // Setup some groups
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
@@ -292,31 +301,30 @@ mod tests {
         }];
 
         app.on_right();
-        assert!(app.expanded);
+        assert!(app.search.expanded);
 
         app.on_left();
-        assert!(!app.expanded);
+        assert!(!app.search.expanded);
     }
 
     #[test]
     fn test_left_collapses_expanded_group_even_with_input_cursor() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
             automation: None,
         }];
-        app.input = "query".to_string();
-        app.cursor_pos = app.input.len();
-        app.expanded = true;
-        app.sub_cursor = 1;
+        app.input.set_text("query"); // cursor at end (5)
+        app.search.expanded = true;
+        app.search.sub_cursor = 1;
 
         app.on_left();
 
-        assert!(!app.expanded);
-        assert_eq!(app.sub_cursor, 0);
-        assert_eq!(app.cursor_pos, 5);
+        assert!(!app.search.expanded);
+        assert_eq!(app.search.sub_cursor, 0);
+        assert_eq!(app.input.cursor_pos(), 5);
     }
 
     #[test]
@@ -360,16 +368,15 @@ mod tests {
     fn test_toggle_project_filter_triggers_research() {
         let mut app = App::new(vec!["/all".to_string()]);
         app.current_project_paths = vec!["/all/-Users-test".to_string()];
-        app.input = "query".to_string();
+        app.input.set_text_and_cursor("query", 5);
         app.last_query = "query".to_string();
-        app.cursor_pos = 5;
 
         app.toggle_project_filter();
         app.last_keystroke = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS + 1));
         app.tick();
 
-        assert!(app.searching);
-        assert_eq!(app.search_seq, 1);
+        assert!(app.search.searching);
+        assert_eq!(app.search.search_seq, 1);
         assert_eq!(app.last_search_paths, vec!["/all/-Users-test".to_string()]);
     }
 
@@ -387,17 +394,17 @@ mod tests {
     #[test]
     fn test_stale_search_result_ignored_when_scope_changes() {
         let mut app = App::new(vec!["/all".to_string()]);
-        app.input = "query".to_string();
+        app.input.set_text("query");
         app.search_paths = vec!["/project".to_string()];
-        app.search_seq = 1;
-        app.searching = true;
+        app.search.search_seq = 1;
+        app.search.searching = true;
 
-        let stale_result = (
-            1,
-            "query".to_string(),
-            vec!["/all".to_string()],
-            false,
-            Ok(crate::search::SearchResult {
+        let stale_result = crate::tui::state::BackgroundSearchResult {
+            seq: 1,
+            query: "query".to_string(),
+            paths: vec!["/all".to_string()],
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![RipgrepMatch {
                     file_path: "/all/session.jsonl".to_string(),
                     message: None,
@@ -405,13 +412,13 @@ mod tests {
                 }],
                 truncated: false,
             }),
-        );
+        };
 
         app.handle_search_result(stale_result);
 
-        assert_eq!(app.results_count, 0);
-        assert!(app.groups.is_empty());
-        assert!(app.searching);
+        assert_eq!(app.search.results_count, 0);
+        assert!(app.search.groups.is_empty());
+        assert!(app.search.searching);
     }
 
     // =========================================================================
@@ -436,7 +443,7 @@ mod tests {
     #[test]
     fn test_in_recent_sessions_mode_false_when_groups_present() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
@@ -518,10 +525,14 @@ mod tests {
         app.on_enter();
 
         assert!(app.should_quit);
-        assert_eq!(app.resume_id.as_deref(), Some("s2"));
-        assert_eq!(app.resume_file_path.as_deref(), Some("/tmp/s2.jsonl"));
-        assert_eq!(app.resume_source, Some(SessionSource::ClaudeCodeCLI));
-        assert!(app.resume_uuid.is_none());
+        let target = match &app.outcome {
+            Some(AppOutcome::Resume(t)) => t,
+            other => panic!("Expected Resume, got {:?}", other),
+        };
+        assert_eq!(target.session_id, "s2");
+        assert_eq!(target.file_path, "/tmp/s2.jsonl");
+        assert_eq!(target.source, SessionSource::ClaudeCodeCLI);
+        assert!(target.uuid.is_none());
     }
 
     #[test]
@@ -533,7 +544,7 @@ mod tests {
         app.on_enter();
 
         assert!(!app.should_quit);
-        assert!(app.resume_id.is_none());
+        assert!(app.outcome.is_none());
     }
 
     #[test]
@@ -546,7 +557,7 @@ mod tests {
         // Type a character — should switch to search mode
         app.on_key('h');
         assert!(!app.in_recent_sessions_mode());
-        assert_eq!(app.input, "h");
+        assert_eq!(app.input.text(), "h");
     }
 
     #[test]
@@ -583,7 +594,7 @@ mod tests {
         app.picker_mode = true;
 
         // Set up a search result with a message
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "sess-123".to_string(),
             file_path: "/home/user/.claude/projects/-Users-user-projects-myapp/session.jsonl"
                 .to_string(),
@@ -604,18 +615,18 @@ mod tests {
             }],
             automation: None,
         }];
-        app.input = "hello".to_string();
+        app.input.set_text("hello");
 
         app.on_enter();
 
         assert!(app.should_quit);
-        assert!(app.picked_session.is_some());
-        let picked = app.picked_session.unwrap();
+        let picked = match &app.outcome {
+            Some(AppOutcome::Pick(p)) => p,
+            other => panic!("Expected Pick, got {:?}", other),
+        };
         assert_eq!(picked.session_id, "sess-123");
         assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
         assert_eq!(picked.project, "myapp");
-        // resume_* should NOT be set in picker mode
-        assert!(app.resume_id.is_none());
     }
 
     #[test]
@@ -632,26 +643,26 @@ mod tests {
         app.on_enter();
 
         assert!(app.should_quit);
-        assert!(app.picked_session.is_some());
-        let picked = app.picked_session.unwrap();
+        let picked = match &app.outcome {
+            Some(AppOutcome::Pick(p)) => p,
+            other => panic!("Expected Pick, got {:?}", other),
+        };
         assert_eq!(picked.session_id, "s2");
         assert_eq!(picked.project, "proj-b");
         assert_eq!(picked.file_path, "/tmp/s2.jsonl");
         assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
-        // resume_* should NOT be set
-        assert!(app.resume_id.is_none());
     }
 
     #[test]
-    fn test_esc_in_picker_mode_leaves_picked_session_none() {
+    fn test_esc_in_picker_mode_leaves_outcome_none() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
         app.recent_loading = false;
         app.recent_sessions = vec![make_recent_session("s1", "proj-a", "first")];
 
-        // Esc clears input (if any) or quits — picked_session stays None
+        // Esc clears input (if any) or quits — outcome stays None
         app.clear_input();
 
-        assert!(app.picked_session.is_none());
+        assert!(app.outcome.is_none());
     }
 }

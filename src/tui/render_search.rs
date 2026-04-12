@@ -2,7 +2,7 @@ use crate::search::{
     extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup,
 };
 use crate::tui::render_tree::render_tree_mode;
-use crate::tui::App;
+use crate::tui::view::AppView;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -12,14 +12,14 @@ use ratatui::{
 };
 use std::collections::HashSet;
 
-fn search_results_status_text(app: &App) -> Option<String> {
-    if app.results_query.is_empty() {
+fn search_results_status_text(app: &AppView) -> Option<String> {
+    if app.search.results_query.is_empty() {
         return None;
     }
 
-    let total_groups = app.all_groups.len().max(app.groups.len());
+    let total_groups = app.search.all_groups.len().max(app.search.groups.len());
     if total_groups == 0 {
-        if app.search_truncated {
+        if app.search.search_truncated {
             return Some(
                 "No matches found (results may be incomplete — try a more specific query)"
                     .to_string(),
@@ -28,29 +28,29 @@ fn search_results_status_text(app: &App) -> Option<String> {
         return Some("No matches found".to_string());
     }
 
-    let truncation_warning = if app.search_truncated {
+    let truncation_warning = if app.search.search_truncated {
         " (results may be incomplete)"
     } else {
         ""
     };
 
-    let hidden = total_groups.saturating_sub(app.groups.len());
+    let hidden = total_groups.saturating_sub(app.search.groups.len());
     if hidden == 0 {
         return Some(format!(
             "Found {} matches in {} sessions{}",
-            app.results_count,
-            app.groups.len(),
+            app.search.results_count,
+            app.search.groups.len(),
             truncation_warning
         ));
     }
 
-    let hidden_text = if app.groups.is_empty() {
+    let hidden_text = if app.search.groups.is_empty() {
         "all hidden by filter".to_string()
     } else {
         format!("{} hidden by filter", hidden)
     };
 
-    let suffix = if app.search_truncated {
+    let suffix = if app.search.search_truncated {
         format!("({}; results may be incomplete)", hidden_text)
     } else {
         format!("({})", hidden_text)
@@ -58,13 +58,13 @@ fn search_results_status_text(app: &App) -> Option<String> {
 
     Some(format!(
         "Found {} matches in {} sessions {}",
-        app.results_count,
-        app.groups.len(),
+        app.search.results_count,
+        app.search.groups.len(),
         suffix
     ))
 }
 
-fn recent_sessions_status_text(app: &App) -> Option<String> {
+fn recent_sessions_status_text(app: &AppView) -> Option<String> {
     if !app.input.is_empty() {
         return None;
     }
@@ -93,11 +93,13 @@ fn recent_sessions_status_text(app: &App) -> Option<String> {
     Some("No recent sessions found".to_string())
 }
 
-pub fn render(frame: &mut Frame, app: &mut App) {
-    if app.tree_mode {
-        render_tree_mode(frame, app);
+pub fn render(frame: &mut Frame, view: &AppView) {
+    if view.tree_mode {
+        render_tree_mode(frame, view);
         return;
     }
+
+    let app = view;
 
     let [header_area, input_area, status_area, list_area, help_area] = Layout::vertical([
         Constraint::Length(2),
@@ -151,7 +153,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         Style::default()
     };
-    let input = Paragraph::new(app.input.as_str()).style(input_style).block(
+    let input = Paragraph::new(app.input.text()).style(input_style).block(
         Block::default()
             .borders(Borders::ALL)
             .title(search_title.as_str())
@@ -159,7 +161,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(input, input_area);
     // Place native terminal cursor at cursor_pos (inside the border: +1 for border offset)
-    let cursor_x = app.input[..app.cursor_pos].chars().count() as u16;
+    let cursor_x = app.input.text()[..app.input.cursor_pos()].chars().count() as u16;
     frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
 
     // Status
@@ -170,14 +172,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
         )
-    } else if app.searching {
+    } else if app.search.searching {
         Span::styled(
             "Searching...",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
         )
-    } else if let Some(ref err) = app.error {
+    } else if let Some(ref err) = app.search.error {
         Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))
     } else if let Some(text) = search_results_status_text(app) {
         Span::styled(text, Style::default().fg(Color::DarkGray))
@@ -237,7 +239,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ));
         help_spans.push(Span::styled(filter_label, filter_style));
         help_spans.push(Span::styled("  [Ctrl+B] Tree  [Esc] Quit", dim));
-    } else if !app.groups.is_empty() {
+    } else if !app.search.groups.is_empty() {
         help_spans.push(Span::styled("[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ", dim));
         help_spans.push(Span::styled(filter_label, filter_style));
         help_spans.push(Span::styled(
@@ -257,7 +259,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(help, help_area);
 }
 
-fn render_groups(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Clear the area by filling with spaces - more reliable than Clear widget
     // This handles wide Unicode characters better
     let buf = frame.buffer_mut();
@@ -271,16 +273,16 @@ fn render_groups(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) 
     }
 
     // Show recent sessions when input is empty and no search results
-    if app.input.is_empty() && app.groups.is_empty() {
+    if app.input.is_empty() && app.search.groups.is_empty() {
         render_recent_sessions(frame, app, area);
         return;
     }
 
     let mut items: Vec<ListItem> = vec![];
 
-    for (i, group) in app.groups.iter().enumerate() {
-        let is_selected = i == app.group_cursor;
-        let is_expanded = is_selected && app.expanded;
+    for (i, group) in app.search.groups.iter().enumerate() {
+        let is_selected = i == app.search.group_cursor;
+        let is_expanded = is_selected && app.search.expanded;
 
         // Group header
         let header = render_group_header(group, is_selected, is_expanded);
@@ -288,11 +290,15 @@ fn render_groups(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) 
 
         // If expanded, show individual messages
         if is_expanded {
-            let latest_chain = app.latest_chains.get(&group.file_path);
+            let latest_chain = app.search.latest_chains.get(&group.file_path);
             for (j, m) in group.matches.iter().enumerate() {
-                let is_match_selected = j == app.sub_cursor;
-                let sub_item =
-                    render_sub_match(m, is_match_selected, &app.results_query, latest_chain);
+                let is_match_selected = j == app.search.sub_cursor;
+                let sub_item = render_sub_match(
+                    m,
+                    is_match_selected,
+                    &app.search.results_query,
+                    latest_chain,
+                );
                 items.push(sub_item);
             }
         }
@@ -302,7 +308,7 @@ fn render_groups(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) 
     frame.render_widget(list, area);
 }
 
-fn render_recent_sessions(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Loading and empty states are shown in the status bar only
     if app.recent_loading || app.recent_sessions.is_empty() {
         return;
@@ -312,16 +318,8 @@ fn render_recent_sessions(frame: &mut Frame, app: &mut App, area: ratatui::layou
     let available_width = area.width as usize;
     let mut items: Vec<ListItem> = vec![];
 
-    // Compute visible window based on cursor position and persist back to state
-    let scroll_offset = if app.recent_cursor >= app.recent_scroll_offset + visible_height {
-        app.recent_cursor
-            .saturating_sub(visible_height.saturating_sub(1))
-    } else if app.recent_cursor < app.recent_scroll_offset {
-        app.recent_cursor
-    } else {
-        app.recent_scroll_offset
-    };
-    app.recent_scroll_offset = scroll_offset;
+    // Use pre-computed scroll offset (adjusted in event handlers, not here)
+    let scroll_offset = app.recent_scroll_offset;
 
     let end = (scroll_offset + visible_height).min(app.recent_sessions.len());
 
@@ -688,7 +686,7 @@ fn find_case_insensitive_match(
     None
 }
 
-fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Clear the area by filling with spaces - more reliable than Clear widget
     // This handles wide Unicode characters better
     let buf = frame.buffer_mut();
@@ -731,7 +729,7 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let project = extract_project_from_path(&m.file_path);
     let date_str = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
     let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
-    let query = &app.results_query;
+    let query = &app.search.results_query;
 
     let mut lines = vec![
         Line::from(format!("Session: {}", msg.session_id)),
@@ -767,7 +765,9 @@ fn render_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{Message, SessionSource};
+    use crate::search::Message;
+    use crate::session::SessionSource;
+    use crate::tui::App;
     use chrono::{TimeZone, Utc};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -807,13 +807,13 @@ mod tests {
             source: SessionSource::ClaudeCodeCLI,
         };
 
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
             automation: None,
         }];
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
 
         app
     }
@@ -904,10 +904,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = App::new(vec!["/test".to_string()]);
+        let app = App::new(vec!["/test".to_string()]);
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render should not panic");
     }
 
@@ -916,10 +916,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut app = make_test_app_with_groups();
+        let app = make_test_app_with_groups();
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with groups should not panic");
     }
 
@@ -932,7 +932,7 @@ mod tests {
         app.preview_mode = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Preview mode render should not panic");
     }
 
@@ -945,19 +945,19 @@ mod tests {
 
         // First render normal mode
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Normal render should not panic");
 
         // Toggle to preview
         app.preview_mode = true;
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Preview render should not panic");
 
         // Toggle back to normal
         app.preview_mode = false;
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Toggle back render should not panic");
 
         // The buffer should have valid content without artifacts
@@ -985,10 +985,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = make_test_app_with_groups();
-        app.expanded = true;
+        app.search.expanded = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Expanded group render should not panic");
     }
 
@@ -1016,7 +1016,7 @@ mod tests {
             source: SessionSource::ClaudeCodeCLI,
         };
 
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -1025,7 +1025,7 @@ mod tests {
         app.preview_mode = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Cyrillic content render should not panic");
     }
 
@@ -1058,7 +1058,7 @@ mod tests {
                 source: SessionSource::ClaudeCodeCLI,
             };
 
-            app.groups.push(SessionGroup {
+            app.search.groups.push(SessionGroup {
                 session_id: format!("session-{}", i),
                 file_path: m.file_path.clone(),
                 matches: vec![m],
@@ -1067,13 +1067,13 @@ mod tests {
         }
 
         // Navigate through groups
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
         app.on_down();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
         app.on_down();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
         app.on_up();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // All renders should succeed without artifacts
     }
@@ -1129,25 +1129,25 @@ mod tests {
         };
 
         // Single group with both messages
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: large_match.file_path.clone(),
             matches: vec![large_match, small_match],
             automation: None,
         }];
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
 
         // Enter preview mode on large content
         app.preview_mode = true;
-        app.expanded = true;
-        app.sub_cursor = 0; // Start on large message
+        app.search.expanded = true;
+        app.search.sub_cursor = 0; // Start on large message
 
         // Render with large content
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Navigate down to small content
-        app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        app.search.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Check buffer for artifacts
         let buffer = terminal.backend().buffer();
@@ -1229,20 +1229,20 @@ mod tests {
             });
         }
 
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
             matches,
             automation: None,
         }];
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
         app.preview_mode = true;
-        app.expanded = true;
+        app.search.expanded = true;
 
         // Navigate through all messages, checking buffer after each
         for i in 0..4 {
-            app.sub_cursor = i;
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            app.search.sub_cursor = i;
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
             let buffer = terminal.backend().buffer();
 
@@ -1263,8 +1263,8 @@ mod tests {
 
         // Navigate backwards and check again
         for i in (0..4).rev() {
-            app.sub_cursor = i;
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            app.search.sub_cursor = i;
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
             let buffer = terminal.backend().buffer();
 
@@ -1324,7 +1324,7 @@ mod tests {
             parent_uuid: None,
         };
 
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             matches: vec![
@@ -1341,17 +1341,17 @@ mod tests {
             ],
             automation: None,
         }];
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
         app.preview_mode = true;
-        app.expanded = true;
+        app.search.expanded = true;
 
         // Render large tool output
-        app.sub_cursor = 0;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        app.search.sub_cursor = 0;
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Navigate to small content
-        app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        app.search.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         let buffer = terminal.backend().buffer();
 
@@ -1428,7 +1428,7 @@ mod tests {
             parent_uuid: None,
         };
 
-        app.groups = vec![SessionGroup {
+        app.search.groups = vec![SessionGroup {
             session_id: "test-session".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             matches: vec![
@@ -1445,17 +1445,17 @@ mod tests {
             ],
             automation: None,
         }];
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
         app.preview_mode = true;
-        app.expanded = true;
+        app.search.expanded = true;
 
         // Render ANSI content
-        app.sub_cursor = 0;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        app.search.sub_cursor = 0;
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Navigate to small content
-        app.sub_cursor = 1;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        app.search.sub_cursor = 1;
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Check buffer - no ANSI artifacts should remain
         let buffer = terminal.backend().buffer();
@@ -1554,7 +1554,7 @@ mod tests {
         app.recent_loading = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with loading recent sessions should not panic");
 
         let buffer = terminal.backend().buffer();
@@ -1582,7 +1582,7 @@ mod tests {
         app.recent_load_rx = None;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with empty recent sessions should not panic");
 
         let buffer = terminal.backend().buffer();
@@ -1633,7 +1633,7 @@ mod tests {
         ];
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with recent sessions should not panic");
 
         let buffer = terminal.backend().buffer();
@@ -1682,7 +1682,7 @@ mod tests {
         }];
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render should not panic");
 
         // Check that help bar shows recent sessions keybindings
@@ -1706,7 +1706,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.results_query = "later".to_string();
+        app.search.results_query = "later".to_string();
         let test_match = RipgrepMatch {
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
@@ -1721,17 +1721,17 @@ mod tests {
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
-        app.results_count = 1;
-        app.all_groups = vec![SessionGroup {
+        app.search.results_count = 1;
+        app.search.all_groups = vec![SessionGroup {
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: Some("ralphex".to_string()),
         }];
-        app.groups = vec![];
+        app.search.groups = vec![];
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with hidden groups should not panic");
 
         assert!(buffer_contains(
@@ -1748,7 +1748,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
         let test_match = RipgrepMatch {
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
@@ -1763,18 +1763,18 @@ mod tests {
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
-        app.results_count = 1;
-        app.all_groups = vec![SessionGroup {
+        app.search.results_count = 1;
+        app.search.all_groups = vec![SessionGroup {
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: None,
         }];
-        app.groups = app.all_groups.clone();
-        app.search_truncated = true;
+        app.search.groups = app.search.all_groups.clone();
+        app.search.search_truncated = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with truncation should not panic");
 
         assert!(buffer_contains(
@@ -1791,7 +1791,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.results_query = "test".to_string();
+        app.search.results_query = "test".to_string();
         let test_match = RipgrepMatch {
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
@@ -1806,18 +1806,18 @@ mod tests {
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
-        app.results_count = 1;
-        app.all_groups = vec![SessionGroup {
+        app.search.results_count = 1;
+        app.search.all_groups = vec![SessionGroup {
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: None,
         }];
-        app.groups = app.all_groups.clone();
-        app.search_truncated = false;
+        app.search.groups = app.search.all_groups.clone();
+        app.search.search_truncated = false;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render without truncation should not panic");
 
         assert!(!buffer_contains(
@@ -1851,7 +1851,7 @@ mod tests {
         app.recent_sessions = vec![];
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render with hidden recent sessions should not panic");
 
         assert!(buffer_contains(
@@ -1871,7 +1871,7 @@ mod tests {
         app.picker_mode = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render in picker mode should not panic");
 
         assert!(
@@ -1889,7 +1889,7 @@ mod tests {
         app.picker_mode = false;
 
         terminal
-            .draw(|frame| render(frame, &mut app))
+            .draw(|frame| render(frame, &app.view()))
             .expect("Render in normal mode should not panic");
 
         assert!(

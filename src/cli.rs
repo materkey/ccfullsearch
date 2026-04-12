@@ -1,6 +1,5 @@
-use crate::search::{
-    extract_project_from_path, group_by_session, search_multiple_paths, Message, SessionSource,
-};
+use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths, Message};
+use crate::session::SessionSource;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fs;

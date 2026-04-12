@@ -10,6 +10,7 @@ macro_rules! ccs_debug {
 }
 
 pub mod cli;
+pub mod dag;
 pub mod recent;
 pub mod resume;
 pub mod search;
@@ -17,6 +18,8 @@ pub mod session;
 pub mod tree;
 pub mod tui;
 pub mod update;
+
+pub use session::SessionSource;
 
 pub fn get_search_paths() -> Vec<String> {
     let mut search_paths = Vec::new();

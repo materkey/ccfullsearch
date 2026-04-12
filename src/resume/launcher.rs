@@ -1,5 +1,5 @@
 use super::path_codec::decode_project_path;
-use crate::search::Message;
+use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
 use std::fs;
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
@@ -67,7 +67,8 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
 
         if msg_type == "user" && first_prompt.is_empty() {
             if let Some(content) = json.get("message").and_then(|m| m.get("content")) {
-                let full = Message::extract_content(content);
+                let blocks = parse_content_blocks(content);
+                let full = SessionRecord::render_content(&blocks, &ContentMode::Full);
                 first_prompt = full.chars().take(200).collect();
             }
         }

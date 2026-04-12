@@ -1,6 +1,6 @@
 use crate::search::{extract_project_from_path, sanitize_content};
 use crate::tui::render_search::truncate_to_width;
-use crate::tui::App;
+use crate::tui::view::AppView;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-pub(crate) fn render_tree_mode(frame: &mut Frame, app: &mut App) {
+pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
     let [header_area, tree_area, help_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
@@ -18,7 +18,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &mut App) {
     .areas(frame.area());
 
     // Header
-    let title = if let Some(ref tree) = app.session_tree {
+    let title = if let Some(ref tree) = app.tree.session_tree {
         let sid = if tree.session_id.len() > 8 {
             &tree.session_id[..8]
         } else {
@@ -32,7 +32,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &mut App) {
             tree.rows.len(),
             tree.branch_count()
         )
-    } else if app.tree_loading {
+    } else if app.tree.tree_loading {
         "Branch Tree: Loading...".to_string()
     } else {
         "Branch Tree".to_string()
@@ -62,7 +62,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &mut App) {
     frame.render_widget(help, help_area);
 }
 
-fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Clear area
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
@@ -74,8 +74,8 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         }
     }
 
-    let Some(ref tree) = app.session_tree else {
-        if app.tree_loading {
+    let Some(ref tree) = app.tree.session_tree else {
+        if app.tree.tree_loading {
             let loading = Paragraph::new("  Loading session tree...")
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(loading, area);
@@ -91,8 +91,8 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     }
 
     let visible_height = area.height as usize;
-    app.tree_visible_height = visible_height;
     let start = app
+        .tree
         .tree_scroll_offset
         .min(tree.rows.len().saturating_sub(1));
     let end = (start + visible_height).min(tree.rows.len());
@@ -101,7 +101,7 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 
     for i in start..end {
         let row = &tree.rows[i];
-        let is_selected = i == app.tree_cursor;
+        let is_selected = i == app.tree.tree_cursor;
 
         let mut spans = Vec::new();
 
@@ -208,7 +208,7 @@ fn render_tree(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     frame.render_widget(list, area);
 }
 
-fn render_tree_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_tree_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Clear area
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
@@ -220,11 +220,11 @@ fn render_tree_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         }
     }
 
-    let Some(ref tree) = app.session_tree else {
+    let Some(ref tree) = app.tree.session_tree else {
         return;
     };
 
-    let Some(row) = tree.rows.get(app.tree_cursor) else {
+    let Some(row) = tree.rows.get(app.tree.tree_cursor) else {
         return;
     };
 
@@ -314,44 +314,44 @@ mod tests {
         let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
         let num_rows = tree.rows.len();
         app.tree_mode = true;
-        app.session_tree = Some(tree);
+        app.tree.session_tree = Some(tree);
 
         // Scroll down through all rows
         for _ in 0..num_rows {
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
             app.on_down_tree();
         }
 
         // Scroll back up through all rows
         for _ in 0..num_rows {
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
             app.on_up_tree();
         }
 
         // Jump branch points
         for _ in 0..5 {
             app.on_right_tree();
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
         }
         for _ in 0..5 {
             app.on_left_tree();
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            terminal.draw(|frame| render(frame, &app.view())).unwrap();
         }
 
         // Toggle preview mode at various positions
-        app.tree_cursor = 0;
+        app.tree.tree_cursor = 0;
         app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        app.on_tab_tree();
-
-        app.tree_cursor = num_rows / 2;
-        app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
         app.on_tab_tree();
 
-        app.tree_cursor = num_rows.saturating_sub(1);
+        app.tree.tree_cursor = num_rows / 2;
         app.on_tab_tree();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
+        app.on_tab_tree();
+
+        app.tree.tree_cursor = num_rows.saturating_sub(1);
+        app.on_tab_tree();
+        terminal.draw(|frame| render(frame, &app.view())).unwrap();
 
         // Check buffer for artifacts
         let buffer = terminal.backend().buffer();

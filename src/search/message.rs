@@ -1,9 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-// Re-export SessionSource from the shared session module
-pub use crate::session::SessionSource;
-
 /// Represents a message from Claude Code JSONL session
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
@@ -23,19 +20,28 @@ impl Message {
     /// Claude Desktop format (session_id, _audit_timestamp)
     pub fn from_jsonl(line: &str, line_number: usize) -> Option<Self> {
         use crate::session;
+        use crate::session::record::{ContentMode, MessageRole, SessionRecord};
 
         let json: serde_json::Value = serde_json::from_str(line).ok()?;
 
-        // Skip non-message types (summary, etc.)
-        let msg_type = session::extract_record_type(&json)?;
-        if msg_type != "user" && msg_type != "assistant" {
-            return None;
-        }
+        // Use SessionRecord for type classification and content parsing
+        let record = SessionRecord::from_value(&json)?;
+        let (role, content_blocks) = match record {
+            SessionRecord::Message {
+                role,
+                content_blocks,
+                ..
+            } => {
+                let role_str = match role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                };
+                (role_str.to_string(), content_blocks)
+            }
+            _ => return None,
+        };
 
-        let message = json.get("message")?;
-        let role = message.get("role")?.as_str()?.to_string();
-        let content_raw = message.get("content")?;
-        let content = Self::extract_content(content_raw);
+        let content = SessionRecord::render_content(&content_blocks, &ContentMode::Full);
 
         // Skip empty content
         if content.trim().is_empty() {
@@ -71,51 +77,9 @@ impl Message {
     /// Extract text content from message content blocks
     /// Handles both array format [{"type":"text","text":"..."}] and plain string format
     pub fn extract_content(raw: &serde_json::Value) -> String {
-        // Handle plain string content (e.g., user messages with "content": "text")
-        if let Some(s) = raw.as_str() {
-            return s.to_string();
-        }
-
-        let mut parts: Vec<String> = Vec::new();
-
-        if let Some(arr) = raw.as_array() {
-            for item in arr {
-                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                match item_type {
-                    "text" => {
-                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                            parts.push(text.to_string());
-                        }
-                    }
-                    "tool_use" => {
-                        // Include tool input for searchability
-                        if let Some(input) = item.get("input") {
-                            if let Ok(json_str) = serde_json::to_string(input) {
-                                parts.push(json_str);
-                            }
-                        }
-                    }
-                    "tool_result" => {
-                        if let Some(content) = item.get("content") {
-                            if let Some(s) = content.as_str() {
-                                parts.push(s.to_string());
-                            } else if let Ok(json_str) = serde_json::to_string(content) {
-                                parts.push(json_str);
-                            }
-                        }
-                    }
-                    "thinking" => {
-                        if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
-                            parts.push(t.to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        parts.join("\n")
+        use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
+        let blocks = parse_content_blocks(raw);
+        SessionRecord::render_content(&blocks, &ContentMode::Full)
     }
 }
 

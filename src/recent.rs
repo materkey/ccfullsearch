@@ -5,7 +5,9 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::search::extract_project_from_path;
+use crate::session::record::{render_text_content, SessionRecord};
 use crate::session::{self, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
@@ -33,38 +35,6 @@ fn truncate_summary(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Extract text content from a message's content field.
-/// Handles both array format [{"type":"text","text":"..."}] and plain string.
-fn extract_text_content(content: &serde_json::Value) -> Option<String> {
-    if let Some(s) = content.as_str() {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-        return None;
-    }
-
-    if let Some(arr) = content.as_array() {
-        let mut parts: Vec<String> = Vec::new();
-        for item in arr {
-            let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if item_type == "text" {
-                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        parts.push(trimmed.to_string());
-                    }
-                }
-            }
-        }
-        if !parts.is_empty() {
-            return Some(parts.join(" "));
-        }
-    }
-
-    None
-}
-
 fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
     if session::extract_record_type(json) != Some("user") {
         return None;
@@ -80,7 +50,7 @@ fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
 
     let message = json.get("message")?;
     let content = message.get("content")?;
-    extract_text_content(content)
+    render_text_content(content)
 }
 
 fn is_real_user_prompt(text: &str) -> bool {
@@ -96,88 +66,27 @@ fn extract_text_for_automation(json: &serde_json::Value) -> Option<String> {
     }
     let message = json.get("message")?;
     let content = message.get("content")?;
-    extract_text_content(content)
+    render_text_content(content)
 }
 
 #[derive(Default)]
-struct HeadScan {
-    lines_scanned: usize,
+struct ScanResult {
     session_id: Option<String>,
     first_user_message: Option<String>,
     last_summary: Option<String>,
     last_summary_sid: Option<String>,
+    metadata_title: Option<String>,
+    last_prompt: Option<String>,
     automation: Option<String>,
+    lines_scanned: usize,
     saw_off_chain_summary: bool,
 }
 
-fn build_latest_chain(path: &Path) -> Option<HashSet<String>> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut uuid_to_parent: HashMap<String, Option<String>> = HashMap::new();
-    let mut parent_uuids: HashSet<String> = HashSet::new();
-    // Track which UUIDs are user/assistant/compaction (displayable)
-    let mut displayable_uuids: Vec<String> = Vec::new();
-    let mut last_uuid: Option<String> = None;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-
-        if !line.contains("\"uuid\"") {
-            continue;
-        }
-
-        let json: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if session::is_sidechain(&json) {
-            continue;
-        }
-
-        let Some(uuid) = session::extract_uuid(&json) else {
-            continue;
-        };
-        let parent = session::extract_parent_uuid_or_logical(&json);
-        if let Some(ref p) = parent {
-            parent_uuids.insert(p.clone());
-        }
-        uuid_to_parent.insert(uuid.clone(), parent);
-
-        if matches!(
-            session::extract_record_type(&json),
-            Some("user" | "assistant" | "compaction")
-        ) {
-            displayable_uuids.push(uuid.clone());
-        }
-        last_uuid = Some(uuid);
-    }
-
-    // Find terminal nodes: uuid not referenced as any parentUuid, and displayable
-    let tip = displayable_uuids
-        .iter()
-        .rev()
-        .find(|uuid| !parent_uuids.contains(*uuid))
-        .cloned()
-        // Fallback to last uuid if no displayable terminal found
-        .or(last_uuid);
-
-    let mut chain = HashSet::new();
-    let mut current = tip?;
-    loop {
-        if !chain.insert(current.clone()) {
-            break;
-        }
-        let Some(parent_uuid) = uuid_to_parent.get(&current).cloned().flatten() else {
-            break;
-        };
-        current = parent_uuid;
-    }
-
-    Some(chain)
+struct ScanNeeds {
+    summary: bool,
+    user_message: bool,
+    session_id: bool,
+    automation: bool,
 }
 
 fn summary_is_on_latest_chain(
@@ -193,14 +102,14 @@ fn summary_is_on_latest_chain(
     latest_chain.contains(&leaf_uuid)
 }
 
-fn scan_head_with_chain(
+fn scan_head(
     path: &Path,
     max_lines: usize,
     latest_chain: Option<&HashSet<String>>,
-) -> Option<HeadScan> {
+) -> Option<ScanResult> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    let mut scan = HeadScan::default();
+    let mut scan = ScanResult::default();
 
     for (i, line) in reader.lines().enumerate() {
         if i >= max_lines {
@@ -258,11 +167,6 @@ fn scan_head_with_chain(
     }
 
     Some(scan)
-}
-
-#[cfg(test)]
-fn scan_head(path: &Path, max_lines: usize) -> Option<HeadScan> {
-    scan_head_with_chain(path, max_lines, None)
 }
 
 #[derive(Default)]
@@ -340,12 +244,18 @@ fn find_summary_from_tail_with_chain(
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
         }
-        match session::extract_record_type(&json) {
-            Some("summary") => {
-                if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
-                    let trimmed = summary_text.trim();
+        if let Some(record) = SessionRecord::from_value(&json) {
+            match record {
+                SessionRecord::Summary {
+                    text, leaf_uuid, ..
+                } => {
+                    let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        if summary_is_on_latest_chain(&json, latest_chain) {
+                        let on_chain = match (latest_chain, leaf_uuid.as_deref()) {
+                            (Some(chain), Some(leaf)) => chain.contains(leaf),
+                            _ => true,
+                        };
+                        if on_chain {
                             let sid = session::extract_session_id(&json);
                             last_summary = Some((sid, truncate_summary(trimmed, 100)));
                         } else {
@@ -353,40 +263,32 @@ fn find_summary_from_tail_with_chain(
                         }
                     }
                 }
-            }
-            Some("custom-title") => {
-                if let Some(t) = json.get("customTitle").and_then(|v| v.as_str()) {
+                SessionRecord::CustomTitle(t) => {
                     let trimmed = t.trim();
                     if !trimmed.is_empty() {
                         custom_title = Some(truncate_summary(trimmed, 100));
                     }
                 }
-            }
-            Some("ai-title") => {
-                if let Some(t) = json.get("aiTitle").and_then(|v| v.as_str()) {
+                SessionRecord::AiTitle(t) => {
                     let trimmed = t.trim();
                     if !trimmed.is_empty() {
                         ai_title = Some(truncate_summary(trimmed, 100));
                     }
                 }
-            }
-            Some("agent-name") => {
-                if let Some(t) = json.get("agentName").and_then(|v| v.as_str()) {
-                    let trimmed = t.trim();
+                SessionRecord::AgentName(name) => {
+                    let trimmed = name.trim();
                     if !trimmed.is_empty() {
                         agent_name = Some(truncate_summary(trimmed, 100));
                     }
                 }
-            }
-            Some("last-prompt") => {
-                if let Some(t) = json.get("lastPrompt").and_then(|v| v.as_str()) {
-                    let trimmed = t.trim();
+                SessionRecord::LastPrompt(prompt) => {
+                    let trimmed = prompt.trim();
                     if !trimmed.is_empty() {
                         last_prompt = Some(truncate_summary(trimmed, 100));
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -403,6 +305,130 @@ fn find_summary_from_tail_with_chain(
 #[cfg(test)]
 fn find_summary_from_tail(path: &Path, max_bytes: u64) -> Option<(Option<String>, String)> {
     find_summary_from_tail_with_chain(path, max_bytes, None)?.summary
+}
+
+fn scan_tail(
+    path: &Path,
+    max_bytes: u64,
+    latest_chain: Option<&HashSet<String>>,
+) -> Option<ScanResult> {
+    let tail = find_summary_from_tail_with_chain(path, max_bytes, latest_chain)?;
+
+    let (last_summary, last_summary_sid) = match tail.summary {
+        Some((sid, text)) => (Some(text), sid),
+        None => (None, None),
+    };
+
+    let metadata_title = tail.agent_name.or(tail.custom_title).or(tail.ai_title);
+
+    Some(ScanResult {
+        last_summary,
+        last_summary_sid,
+        metadata_title,
+        last_prompt: tail.last_prompt,
+        saw_off_chain_summary: tail.saw_off_chain_summary,
+        ..Default::default()
+    })
+}
+
+fn scan_middle(
+    path: &Path,
+    start_line: usize,
+    end_byte: u64,
+    needs: &ScanNeeds,
+    latest_chain: Option<&HashSet<String>>,
+) -> ScanResult {
+    let mut result = ScanResult::default();
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return result,
+    };
+    let reader = BufReader::new(file);
+    let mut bytes_read: u64 = 0;
+
+    for (i, line) in reader.lines().enumerate() {
+        if i < start_line {
+            if let Ok(ref l) = line {
+                bytes_read += l.len() as u64 + 1;
+            }
+            continue;
+        }
+
+        let in_tail_region = end_byte > 0 && bytes_read >= end_byte;
+        let still_need_user_msg = needs.user_message && result.first_user_message.is_none();
+        let still_need_sid = needs.session_id && result.session_id.is_none();
+        let still_need_auto = needs.automation && result.automation.is_none();
+        if in_tail_region && !(still_need_user_msg || still_need_sid || still_need_auto) {
+            break;
+        }
+
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        bytes_read += line.len() as u64 + 1;
+
+        let have_summary = !needs.summary || result.last_summary.is_some();
+        let have_user_msg = !needs.user_message || result.first_user_message.is_some();
+        let have_sid = !needs.session_id || result.session_id.is_some();
+        let have_auto = !needs.automation || result.automation.is_some();
+        if have_summary && have_user_msg && have_sid && have_auto {
+            break;
+        }
+
+        let could_be_summary = needs.summary && !in_tail_region && line.contains("\"summary\"");
+        let could_be_user = still_need_user_msg && line.contains("\"user\"");
+        let could_be_msg =
+            still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
+        let could_have_sid =
+            still_need_sid && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
+
+        if !could_be_summary && !could_be_user && !could_have_sid && !could_be_msg {
+            continue;
+        }
+
+        let json: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if result.session_id.is_none() {
+            result.session_id = session::extract_session_id(&json);
+        }
+
+        if could_be_summary && session::extract_record_type(&json) == Some("summary") {
+            if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
+                let trimmed = summary_text.trim();
+                if !trimmed.is_empty() {
+                    if summary_is_on_latest_chain(&json, latest_chain) {
+                        result.last_summary = Some(truncate_summary(trimmed, 100));
+                        result.last_summary_sid = session::extract_session_id(&json);
+                    } else {
+                        result.saw_off_chain_summary = true;
+                    }
+                }
+            }
+        }
+
+        if could_be_user {
+            if let Some(text) = extract_non_meta_user_text(&json) {
+                if result.first_user_message.is_none() && is_real_user_prompt(&text) {
+                    result.first_user_message = Some(truncate_summary(&text, 100));
+                }
+            }
+        }
+
+        if still_need_auto {
+            if let Some(text) = extract_text_for_automation(&json) {
+                if let Some(tool) = session::detect_automation(&text) {
+                    result.automation = Some(tool.to_string());
+                }
+            }
+        }
+    }
+
+    result
 }
 
 fn extract_latest_user_message_on_chain(
@@ -449,7 +475,7 @@ fn extract_latest_user_message_on_chain(
         let Some(content) = message.get("content") else {
             continue;
         };
-        let Some(text) = extract_text_content(content) else {
+        let Some(text) = render_text_content(content) else {
             continue;
         };
         if text.starts_with("<system-reminder>") {
@@ -502,10 +528,10 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
 /// 5. `lastPrompt` from `type=last-prompt` metadata record
 /// 6. First `type=user` where `isMeta` is not true -> extract text content
 ///
-/// Uses a three-pass approach:
-/// 1. Check the last 256KB for summary records (compaction summaries at file end)
-/// 2. Scan first 30 lines for session_id, first user message, and summary records
-/// 3. Scan the remaining lines for any missing summary/session-id/first-user metadata
+/// Uses a three-pass approach via `scan_head`, `scan_tail`, and `scan_middle`:
+/// 1. `scan_head`: first 30 lines for session_id, first user message, summary, automation
+/// 2. `scan_tail`: last 256KB for summary, metadata titles, last-prompt
+/// 3. `scan_middle`: remaining lines for anything head/tail missed
 ///
 /// Uses file mtime as timestamp for accurate recency sorting.
 pub fn extract_summary(path: &Path) -> Option<RecentSession> {
@@ -513,155 +539,83 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let source = SessionSource::from_path(path_str);
     let project = extract_project_from_path(path_str);
     const TAIL_BYTES: u64 = 256 * 1024;
-    let latest_chain = build_latest_chain(path);
+    let latest_chain = SessionDag::from_file(path, DisplayFilter::Standard)
+        .ok()
+        .and_then(|dag| {
+            let tip = dag.tip(TipStrategy::LastAppended)?;
+            Some(dag.chain_from(tip))
+        });
 
-    // Use file mtime as timestamp — more accurate for recency than first JSONL record
     let mtime = fs::metadata(path).and_then(|m| m.modified()).ok()?;
     let mtime_timestamp: DateTime<Utc> = mtime.into();
-    let head_scan = scan_head_with_chain(path, HEAD_SCAN_LINES, latest_chain.as_ref())?;
 
-    // Calculate where the tail scan started (in bytes) so pass 3 knows when to stop
+    let head = scan_head(path, HEAD_SCAN_LINES, latest_chain.as_ref())?;
+
     let file_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let tail_start = file_len.saturating_sub(TAIL_BYTES);
-    let tail_scan = find_summary_from_tail_with_chain(path, TAIL_BYTES, latest_chain.as_ref())
-        .unwrap_or_default();
-    let tail_summary = tail_scan.summary;
+    let tail = scan_tail(path, TAIL_BYTES, latest_chain.as_ref()).unwrap_or_default();
 
-    // Pass 2: reuse the head scan, then let the tail summary override it when present.
-    let mut session_id = head_scan.session_id.clone();
-    let mut first_user_message = head_scan.first_user_message.clone();
-    let mut last_summary = head_scan.last_summary.clone();
-    let mut last_summary_sid = head_scan.last_summary_sid.clone();
-    let mut automation = head_scan.automation.clone();
-    let mut saw_off_chain_summary =
-        head_scan.saw_off_chain_summary || tail_scan.saw_off_chain_summary;
-    let lines_scanned = head_scan.lines_scanned;
+    // Merge head + tail
+    let mut session_id = head.session_id.clone();
+    let mut first_user_message = head.first_user_message.clone();
+    let mut last_summary = head.last_summary.clone();
+    let mut last_summary_sid = head.last_summary_sid.clone();
+    let mut automation = head.automation.clone();
+    let mut saw_off_chain_summary = head.saw_off_chain_summary || tail.saw_off_chain_summary;
 
-    if let Some((tail_sid, summary_text)) = tail_summary {
+    if tail.last_summary.is_some() {
+        let tail_sid = tail.last_summary_sid.clone();
         session_id = tail_sid.clone().or(session_id);
-        last_summary = Some(summary_text);
+        last_summary = tail.last_summary.clone();
         last_summary_sid = tail_sid;
     }
 
-    // Pass 3: scan the middle region for any metadata the head/tail passes still
-    // could not find. This handles three cases:
-    // - Compaction wrote a summary early, then many messages pushed it out of both windows
-    // - The file starts with >30 non-message records (e.g., file-history-snapshot) so the
-    //   first user message was beyond the head scan
-    // - Automation markers or session IDs only appear in the unscanned middle of a large file
-    //
+    // Conditionally scan the middle region for anything head/tail missed
     let need_summary = last_summary.is_none();
     let need_user_msg = first_user_message.is_none();
     let need_sid = last_summary_sid.is_none() && session_id.is_none();
     let need_automation = automation.is_none();
-    // For summaries, only scan the middle if tail_start > 0 (otherwise tail covered the whole
-    // file). For the first user prompt, session_id, and automation, always scan beyond the head
-    // since the tail pass never looks for them.
     let should_scan_middle =
         (need_summary && tail_start > 0) || need_user_msg || need_sid || need_automation;
-    if should_scan_middle && lines_scanned >= HEAD_SCAN_LINES {
-        let file = File::open(path).ok()?;
-        let reader = BufReader::new(file);
-        let mut bytes_read: u64 = 0;
 
-        for (i, line) in reader.lines().enumerate() {
-            // Skip lines already covered by pass 2
-            if i < lines_scanned {
-                if let Ok(ref l) = line {
-                    bytes_read += l.len() as u64 + 1; // +1 for newline
-                }
-                continue;
-            }
+    if should_scan_middle && head.lines_scanned >= HEAD_SCAN_LINES {
+        let needs = ScanNeeds {
+            summary: need_summary,
+            user_message: need_user_msg,
+            session_id: need_sid,
+            automation: need_automation,
+        };
+        let middle = scan_middle(
+            path,
+            head.lines_scanned,
+            tail_start,
+            &needs,
+            latest_chain.as_ref(),
+        );
 
-            // For summary scanning, stop before the tail region (already covered by pass 1).
-            // For the first real user prompt, continue through the tail since pass 1 never
-            // looks for it.
-            let in_tail_region = tail_start > 0 && bytes_read >= tail_start;
-            let still_need_user_msg = need_user_msg && first_user_message.is_none();
-            let still_need_sid = need_sid && session_id.is_none();
-            let still_need_auto = need_automation && automation.is_none();
-            if in_tail_region && !(still_need_user_msg || still_need_sid || still_need_auto) {
-                break;
-            }
-
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            bytes_read += line.len() as u64 + 1;
-
-            // Stop once we have everything we need from the middle scan
-            let have_summary = !need_summary || last_summary.is_some();
-            let have_user_msg = !need_user_msg || first_user_message.is_some();
-            let have_sid = !need_sid || session_id.is_some();
-            let have_auto = !need_automation || automation.is_some();
-            if have_summary && have_user_msg && have_sid && have_auto {
-                break;
-            }
-            let could_be_summary = need_summary && !in_tail_region && line.contains("\"summary\"");
-            let could_be_user = still_need_user_msg && line.contains("\"user\"");
-            let could_be_msg =
-                still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
-
-            let could_have_sid = still_need_sid
-                && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
-
-            if !could_be_summary && !could_be_user && !could_have_sid && !could_be_msg {
-                continue;
-            }
-
-            let json: serde_json::Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            // Extract session_id from any parsed record if still missing
-            if session_id.is_none() {
-                session_id = session::extract_session_id(&json);
-            }
-
-            if could_be_summary && session::extract_record_type(&json) == Some("summary") {
-                if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
-                    let trimmed = summary_text.trim();
-                    if !trimmed.is_empty() {
-                        if summary_is_on_latest_chain(&json, latest_chain.as_ref()) {
-                            last_summary = Some(truncate_summary(trimmed, 100));
-                            last_summary_sid = session::extract_session_id(&json);
-                        } else {
-                            saw_off_chain_summary = true;
-                        }
-                    }
-                }
-            }
-
-            if could_be_user {
-                if let Some(text) = extract_non_meta_user_text(&json) {
-                    if first_user_message.is_none() && is_real_user_prompt(&text) {
-                        first_user_message = Some(truncate_summary(&text, 100));
-                    }
-                }
-            }
-
-            // Check both user and assistant for automation markers
-            if still_need_auto {
-                if let Some(text) = extract_text_for_automation(&json) {
-                    if let Some(tool) = session::detect_automation(&text) {
-                        automation = Some(tool.to_string());
-                    }
-                }
+        if session_id.is_none() {
+            session_id = middle.session_id;
+        }
+        if last_summary.is_none() {
+            last_summary = middle.last_summary;
+            if last_summary.is_some() {
+                last_summary_sid = middle.last_summary_sid;
             }
         }
+        if first_user_message.is_none() {
+            first_user_message = middle.first_user_message;
+        }
+        if automation.is_none() {
+            automation = middle.automation;
+        }
+        saw_off_chain_summary = saw_off_chain_summary || middle.saw_off_chain_summary;
     }
 
-    // Apply title priority: agentName > customTitle > aiTitle > summary > lastPrompt > firstUserMessage
-    let metadata_title = tail_scan
-        .agent_name
-        .or(tail_scan.custom_title)
-        .or(tail_scan.ai_title);
-
-    if let Some(title) = metadata_title {
+    // Apply title priority: metadata_title > summary > lastPrompt > firstUserMessage
+    if let Some(title) = tail.metadata_title {
         let sid = last_summary_sid
             .or(session_id)
-            .or_else(|| head_scan.session_id.clone())?;
+            .or_else(|| head.session_id.clone())?;
         return Some(RecentSession {
             session_id: sid,
             file_path: path_str.to_string(),
@@ -673,7 +627,6 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         });
     }
 
-    // After pass 3, check if we found a summary in the middle region
     if let Some(summary_text) = last_summary {
         let sid = last_summary_sid.or(session_id)?;
         return Some(RecentSession {
@@ -687,8 +640,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         });
     }
 
-    // lastPrompt takes priority over firstUserMessage when no summary exists
-    if let Some(prompt) = tail_scan.last_prompt {
+    if let Some(prompt) = tail.last_prompt {
         let session_id = session_id?;
         return Some(RecentSession {
             session_id,
@@ -732,7 +684,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
 /// (e.g., file-history-snapshot, summary) before the first record with a session_id.
 #[cfg(test)]
 fn extract_session_id_from_head(path: &Path) -> Option<String> {
-    scan_head(path, HEAD_SCAN_LINES).and_then(|scan| scan.session_id)
+    scan_head(path, HEAD_SCAN_LINES, None).and_then(|scan| scan.session_id)
 }
 
 /// Walk directories and find `*.jsonl` files, skipping `agent-*` files.
@@ -956,7 +908,7 @@ mod tests {
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"sess-001","timestamp":"2025-06-01T10:00:00Z"}}"#, long_msg).unwrap();
 
         let result = extract_summary(f.path()).unwrap();
-        assert_eq!(result.summary.len(), 100); // 97 chars + "..."
+        assert_eq!(result.summary.chars().count(), 100); // 97 chars + "..."
         assert!(result.summary.ends_with("..."));
     }
 
@@ -1748,5 +1700,226 @@ mod tests {
         let ids: HashSet<String> = result.iter().map(|s| s.session_id.clone()).collect();
         assert!(ids.contains("sess-unique-1"));
         assert!(ids.contains("sess-unique-2"));
+    }
+
+    // --- scan_head tests ---
+
+    #[test]
+    fn test_scan_head_extracts_user_message() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello from scan_head"}}]}},"sessionId":"sess-sh-1","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+
+        let result = scan_head(f.path(), 30, None).unwrap();
+        assert_eq!(result.session_id, Some("sess-sh-1".to_string()));
+        assert_eq!(
+            result.first_user_message,
+            Some("Hello from scan_head".to_string())
+        );
+        assert!(result.last_summary.is_none());
+        assert!(result.metadata_title.is_none());
+        assert!(result.last_prompt.is_none());
+        assert_eq!(result.lines_scanned, 1);
+    }
+
+    #[test]
+    fn test_scan_head_extracts_summary_and_session_id() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"Head summary text","sessionId":"sess-sh-2","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"User prompt"}}]}},"sessionId":"sess-sh-2","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
+
+        let result = scan_head(f.path(), 30, None).unwrap();
+        assert_eq!(result.session_id, Some("sess-sh-2".to_string()));
+        assert_eq!(result.last_summary, Some("Head summary text".to_string()));
+        assert_eq!(result.first_user_message, Some("User prompt".to_string()));
+    }
+
+    #[test]
+    fn test_scan_head_empty_file() {
+        let f = NamedTempFile::new().unwrap();
+        let result = scan_head(f.path(), 30, None).unwrap();
+        assert!(result.session_id.is_none());
+        assert!(result.first_user_message.is_none());
+        assert!(result.last_summary.is_none());
+        assert_eq!(result.lines_scanned, 0);
+    }
+
+    #[test]
+    fn test_scan_head_metadata_only_no_user_message() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..5 {
+            writeln!(
+                f,
+                r#"{{"type":"file-history-snapshot","files":["file{}.rs"],"sessionId":"sess-sh-3"}}"#,
+                i
+            )
+            .unwrap();
+        }
+
+        let result = scan_head(f.path(), 30, None).unwrap();
+        assert_eq!(result.session_id, Some("sess-sh-3".to_string()));
+        assert!(result.first_user_message.is_none());
+        assert!(result.last_summary.is_none());
+        assert_eq!(result.lines_scanned, 5);
+    }
+
+    #[test]
+    fn test_scan_head_detects_automation() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Emit <<<RALPHEX:ALL_TASKS_DONE>>> when done"}}]}},"sessionId":"sess-sh-auto","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+
+        let result = scan_head(f.path(), 30, None).unwrap();
+        assert_eq!(result.automation, Some("ralphex".to_string()));
+    }
+
+    // --- scan_tail tests ---
+
+    #[test]
+    fn test_scan_tail_extracts_summary() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-1","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"Tail summary found","sessionId":"sess-st-1","timestamp":"2025-06-01T11:00:00Z"}}"#).unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(result.last_summary, Some("Tail summary found".to_string()));
+        assert!(result.metadata_title.is_none());
+        assert!(result.last_prompt.is_none());
+    }
+
+    #[test]
+    fn test_scan_tail_extracts_custom_title() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-2","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"My Custom Title","sessionId":"sess-st-2"}}"#
+        )
+        .unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(result.metadata_title, Some("My Custom Title".to_string()));
+    }
+
+    #[test]
+    fn test_scan_tail_extracts_ai_title() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-3","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"ai-title","aiTitle":"AI Generated Title","sessionId":"sess-st-3"}}"#
+        )
+        .unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(
+            result.metadata_title,
+            Some("AI Generated Title".to_string())
+        );
+    }
+
+    #[test]
+    fn test_scan_tail_extracts_agent_name() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-4","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"agent-name","agentName":"researcher","sessionId":"sess-st-4"}}"#
+        )
+        .unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(result.metadata_title, Some("researcher".to_string()));
+    }
+
+    #[test]
+    fn test_scan_tail_agent_name_beats_custom_title() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-5","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"ai-title","aiTitle":"AI title","sessionId":"sess-st-5"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"Custom title","sessionId":"sess-st-5"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"agent-name","agentName":"builder","sessionId":"sess-st-5"}}"#
+        )
+        .unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(result.metadata_title, Some("builder".to_string()));
+    }
+
+    #[test]
+    fn test_scan_tail_extracts_last_prompt() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-st-6","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"last-prompt","lastPrompt":"Fix the build","sessionId":"sess-st-6"}}"#
+        )
+        .unwrap();
+
+        let result = scan_tail(f.path(), 4096, None).unwrap();
+        assert_eq!(result.last_prompt, Some("Fix the build".to_string()));
+    }
+
+    // --- merge logic tests ---
+
+    #[test]
+    fn test_merge_metadata_title_beats_summary() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-merge-1","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"A summary","sessionId":"sess-merge-1","timestamp":"2025-06-01T11:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"custom-title","customTitle":"Preferred title","sessionId":"sess-merge-1"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "Preferred title");
+    }
+
+    #[test]
+    fn test_merge_summary_beats_last_prompt() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-merge-2","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"Summary wins","sessionId":"sess-merge-2","timestamp":"2025-06-01T11:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"last-prompt","lastPrompt":"Last prompt","sessionId":"sess-merge-2"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "Summary wins");
+    }
+
+    #[test]
+    fn test_merge_last_prompt_beats_first_user_message() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"First user message"}}]}},"sessionId":"sess-merge-3","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"last-prompt","lastPrompt":"Last prompt wins","sessionId":"sess-merge-3"}}"#
+        )
+        .unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "Last prompt wins");
+    }
+
+    #[test]
+    fn test_merge_falls_back_to_first_user_message() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Only user message"}}]}},"sessionId":"sess-merge-4","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert_eq!(result.summary, "Only user message");
     }
 }

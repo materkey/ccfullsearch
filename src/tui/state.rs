@@ -1,7 +1,9 @@
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
 use crate::resume::encode_path_for_claude;
-use crate::search::{group_by_session, search_multiple_paths, SessionGroup, SessionSource};
+use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
+use crate::session::SessionSource;
 use crate::tree::SessionTree;
+use crate::tui::dispatch::{KeyAction, KeyContext};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -10,6 +12,197 @@ use std::time::{Duration, Instant};
 
 pub(crate) const DEBOUNCE_MS: u64 = 300;
 const RECENT_SESSIONS_LIMIT: usize = 100;
+
+/// Encapsulates text input and cursor position, enforcing the invariant
+/// that `cursor_pos` is always a valid byte offset within `text` (on a char boundary).
+#[derive(Debug, Clone)]
+pub struct InputState {
+    text: String,
+    cursor_pos: usize,
+}
+
+impl InputState {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            cursor_pos: 0,
+        }
+    }
+
+    // -- Getters --
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor_pos
+    }
+
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Set text content and place cursor at end.
+    pub fn set_text(&mut self, s: &str) {
+        self.text = s.to_string();
+        self.cursor_pos = self.text.len();
+    }
+
+    /// Set text and cursor position (cursor clamped to text length).
+    pub fn set_text_and_cursor(&mut self, s: &str, cursor: usize) {
+        self.text = s.to_string();
+        self.cursor_pos = cursor.min(self.text.len());
+    }
+
+    /// Consume and return the inner text.
+    pub fn into_text(self) -> String {
+        self.text
+    }
+
+    // -- Mutation methods --
+
+    /// Insert a character at the current cursor position.
+    pub fn push_char(&mut self, c: char) {
+        self.text.insert(self.cursor_pos, c);
+        self.cursor_pos += c.len_utf8();
+    }
+
+    /// Delete the character before the cursor. Returns true if something was deleted.
+    pub fn backspace(&mut self) -> bool {
+        if self.cursor_pos > 0 {
+            let prev = self.text[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.text.remove(prev);
+            self.cursor_pos = prev;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delete the character at the cursor. Returns true if something was deleted.
+    pub fn delete_forward(&mut self) -> bool {
+        if self.cursor_pos < self.text.len() {
+            self.text.remove(self.cursor_pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos = self.text[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.cursor_pos < self.text.len() {
+            self.cursor_pos += self.text[self.cursor_pos..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn move_word_left(&mut self) {
+        let before = &self.text[..self.cursor_pos];
+        let mut chars = before.char_indices().rev();
+        // Skip non-alphanumeric
+        while let Some((i, c)) = chars.next() {
+            if c.is_alphanumeric() {
+                // Found alphanumeric — now skip the rest of the word
+                self.cursor_pos = i;
+                for (j, c2) in chars {
+                    if !c2.is_alphanumeric() {
+                        self.cursor_pos = j + c2.len_utf8();
+                        return;
+                    }
+                    self.cursor_pos = j;
+                }
+                self.cursor_pos = 0;
+                return;
+            }
+        }
+        self.cursor_pos = 0;
+    }
+
+    pub fn move_word_right(&mut self) {
+        let after = &self.text[self.cursor_pos..];
+        let mut chars = after.char_indices();
+        // Skip alphanumeric
+        while let Some((_i, c)) = chars.next() {
+            if !c.is_alphanumeric() {
+                // Found non-alphanumeric — now skip to next word
+                for (j, c2) in chars {
+                    if c2.is_alphanumeric() {
+                        self.cursor_pos += j;
+                        return;
+                    }
+                }
+                self.cursor_pos = self.text.len();
+                return;
+            }
+        }
+        self.cursor_pos = self.text.len();
+    }
+
+    /// Delete from cursor to previous word boundary. Returns true if something was deleted.
+    pub fn delete_word_left(&mut self) -> bool {
+        if self.cursor_pos == 0 {
+            return false;
+        }
+        let old_pos = self.cursor_pos;
+        self.move_word_left();
+        self.text.drain(self.cursor_pos..old_pos);
+        true
+    }
+
+    /// Delete from cursor to next word boundary. Returns true if something was deleted.
+    pub fn delete_word_right(&mut self) -> bool {
+        if self.cursor_pos >= self.text.len() {
+            return false;
+        }
+        let old_pos = self.cursor_pos;
+        self.move_word_right();
+        let new_pos = self.cursor_pos;
+        self.cursor_pos = old_pos;
+        self.text.drain(old_pos..new_pos);
+        true
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor_pos = self.text.len();
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor_pos = 0;
+    }
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 fn normalize_path_for_prefix_check(path: &str) -> String {
     let normalized = path.replace('\\', "/");
@@ -143,41 +336,88 @@ pub enum AutomationFilter {
     Auto,
 }
 
-/// Result from background search thread:
-/// (request seq, query, search paths, regex mode, search result with truncation flag)
-pub(crate) type BackgroundSearchResult = (
-    u64,
-    String,
-    Vec<String>,
-    bool,
-    Result<crate::search::SearchResult, String>,
-);
+/// Result from background search thread.
+pub(crate) struct BackgroundSearchResult {
+    pub seq: u64,
+    pub query: String,
+    pub paths: Vec<String>,
+    pub use_regex: bool,
+    pub result: Result<crate::search::SearchResult, String>,
+}
 
-pub struct App {
-    pub input: String,
-    pub results_count: usize,
+/// Search-related state: results, cursors, background channel.
+pub struct SearchState {
     /// All search result groups (unfiltered)
     pub(crate) all_groups: Vec<SessionGroup>,
     /// Search result groups filtered by automation filter
     pub groups: Vec<SessionGroup>,
+    pub results_count: usize,
+    pub results_query: String,
     pub group_cursor: usize,
     pub sub_cursor: usize,
     pub expanded: bool,
     pub searching: bool,
-    pub typing: bool,
     pub error: Option<String>,
+    /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
+    pub latest_chains: HashMap<String, HashSet<String>>,
+    /// Channel to receive search results from background thread
+    pub(crate) search_rx: Receiver<BackgroundSearchResult>,
+    /// Channel to send search requests to background thread
+    pub(crate) search_tx: Sender<(u64, String, Vec<String>, bool)>,
+    /// Monotonic request sequence to ignore stale async results
+    pub(crate) search_seq: u64,
+    /// Whether the last search hit the per-file match limit (results may be incomplete)
+    pub search_truncated: bool,
+}
+
+/// Tree-view state: loaded tree, cursor, scroll, background loader.
+pub struct TreeState {
+    /// The loaded session tree
+    pub session_tree: Option<SessionTree>,
+    /// Cursor position in tree rows
+    pub tree_cursor: usize,
+    /// Vertical scroll offset for tree view
+    pub tree_scroll_offset: usize,
+    /// Whether tree is currently loading
+    pub tree_loading: bool,
+    /// Channel to receive loaded tree from background thread
+    pub(crate) tree_load_rx: Option<Receiver<Result<SessionTree, String>>>,
+    /// Whether tree mode was the initial mode (launched with --tree)
+    pub tree_mode_standalone: bool,
+}
+
+/// All fields needed to resume a session, bundled as one value.
+/// Replaces the former 4 separate `Option<String>` fields on `App`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeTarget {
+    pub session_id: String,
+    pub file_path: String,
+    pub source: SessionSource,
+    /// UUID of the selected message (for branch-aware resume from tree view)
+    pub uuid: Option<String>,
+}
+
+/// Internal outcome set by `on_enter` / `on_enter_tree`.
+/// Consumed by `into_outcome()` to produce the public `TuiOutcome`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppOutcome {
+    Resume(ResumeTarget),
+    Pick(PickedSession),
+}
+
+pub struct App {
+    pub input: InputState,
+    pub search: SearchState,
+    pub tree: TreeState,
+    pub typing: bool,
     pub search_paths: Vec<String>,
     pub last_query: String,
-    pub results_query: String,
     pub last_keystroke: Option<Instant>,
     pub preview_mode: bool,
     pub should_quit: bool,
-    pub resume_id: Option<String>,
-    pub resume_file_path: Option<String>,
-    /// Session source for resume (CLI or Desktop)
-    pub resume_source: Option<SessionSource>,
-    /// UUID of the selected message (for branch-aware resume)
-    pub resume_uuid: Option<String>,
+    /// Outcome set by `on_enter` / `on_enter_tree` — consumed by `into_outcome()`.
+    /// Replaces the former 4 separate resume `Option` fields + `picked_session`.
+    pub outcome: Option<AppOutcome>,
     /// Flag to force a full terminal redraw (clears diff optimization artifacts)
     pub needs_full_redraw: bool,
     /// Regex search mode (Ctrl+R to toggle)
@@ -186,32 +426,8 @@ pub struct App {
     pub(crate) last_regex_mode: bool,
     /// Track last search path scope used for search
     pub(crate) last_search_paths: Vec<String>,
-    /// Channel to receive search results from background thread
-    pub(crate) search_rx: Receiver<BackgroundSearchResult>,
-    /// Channel to send search requests to background thread
-    pub(crate) search_tx: Sender<(u64, String, Vec<String>, bool)>,
-    /// Monotonic request sequence to ignore stale async results
-    pub(crate) search_seq: u64,
-    /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
-    pub latest_chains: HashMap<String, HashSet<String>>,
     /// Tree explorer mode
     pub tree_mode: bool,
-    /// The loaded session tree
-    pub session_tree: Option<SessionTree>,
-    /// Cursor position in tree rows
-    pub tree_cursor: usize,
-    /// Vertical scroll offset for tree view
-    pub tree_scroll_offset: usize,
-    /// Last rendered visible height for tree (updated by render)
-    pub tree_visible_height: usize,
-    /// Whether tree is currently loading
-    pub tree_loading: bool,
-    /// Channel to receive loaded tree from background thread
-    pub(crate) tree_load_rx: Option<Receiver<Result<SessionTree, String>>>,
-    /// Whether tree mode was the initial mode (launched with --tree)
-    pub tree_mode_standalone: bool,
-    /// Cursor position in input (byte offset)
-    pub cursor_pos: usize,
     /// Whether search is scoped to current project only (Ctrl+A toggle)
     pub project_filter: bool,
     /// Filter for automated vs manual sessions (Ctrl+H toggle)
@@ -234,12 +450,10 @@ pub struct App {
     pub recent_loading: bool,
     /// Channel to receive recent sessions from background loader
     pub(crate) recent_load_rx: Option<Receiver<Vec<RecentSession>>>,
-    /// Whether the last search hit the per-file match limit (results may be incomplete)
-    pub search_truncated: bool,
-    /// Picker mode: on_enter sets picked_session instead of resume_*
+    /// Picker mode: on_enter sets outcome to Pick instead of Resume
     pub picker_mode: bool,
-    /// Session picked in picker mode (set by on_enter/on_enter_tree)
-    pub picked_session: Option<PickedSession>,
+    /// Last known tree area visible height (set from frame after draw, used for scroll calculations)
+    pub last_tree_visible_height: usize,
 }
 
 impl App {
@@ -252,8 +466,13 @@ impl App {
         thread::spawn(move || {
             while let Ok((seq, query, paths, use_regex)) = query_rx.recv() {
                 let result = search_multiple_paths(&query, &paths, use_regex);
-                let result = (seq, query, paths, use_regex, result);
-                let _ = result_tx.send(result);
+                let _ = result_tx.send(BackgroundSearchResult {
+                    seq,
+                    query,
+                    paths,
+                    use_regex,
+                    result,
+                });
             }
         });
 
@@ -287,43 +506,43 @@ impl App {
         });
 
         Self {
-            input: String::new(),
-            results_count: 0,
-            all_groups: vec![],
-            groups: vec![],
-            group_cursor: 0,
-            sub_cursor: 0,
-            expanded: false,
-            searching: false,
+            input: InputState::new(),
+            search: SearchState {
+                all_groups: vec![],
+                groups: vec![],
+                results_count: 0,
+                results_query: String::new(),
+                group_cursor: 0,
+                sub_cursor: 0,
+                expanded: false,
+                searching: false,
+                error: None,
+                latest_chains: HashMap::new(),
+                search_rx: result_rx,
+                search_tx: query_tx,
+                search_seq: 0,
+                search_truncated: false,
+            },
+            tree: TreeState {
+                session_tree: None,
+                tree_cursor: 0,
+                tree_scroll_offset: 0,
+                tree_loading: false,
+                tree_load_rx: None,
+                tree_mode_standalone: false,
+            },
             typing: false,
-            error: None,
             search_paths,
             last_query: String::new(),
-            results_query: String::new(),
             last_keystroke: None,
             preview_mode: false,
             should_quit: false,
-            resume_id: None,
-            resume_file_path: None,
-            resume_source: None,
-            resume_uuid: None,
+            outcome: None,
             needs_full_redraw: false,
             regex_mode: false,
             last_regex_mode: false,
             last_search_paths: all_search_paths.clone(),
-            search_rx: result_rx,
-            search_tx: query_tx,
-            search_seq: 0,
-            latest_chains: HashMap::new(),
             tree_mode: false,
-            session_tree: None,
-            tree_cursor: 0,
-            tree_scroll_offset: 0,
-            tree_visible_height: 20,
-            tree_loading: false,
-            tree_load_rx: None,
-            tree_mode_standalone: false,
-            cursor_pos: 0,
             project_filter: false,
             automation_filter: AutomationFilter::All,
             automation_cache: HashMap::new(),
@@ -335,37 +554,31 @@ impl App {
             recent_scroll_offset: 0,
             recent_loading: true,
             recent_load_rx: Some(recent_rx),
-            search_truncated: false,
             picker_mode: false,
-            picked_session: None,
+            last_tree_visible_height: 20,
         }
     }
 
+    /// Create a read-only view of the app state for rendering.
+    pub fn view(&self) -> crate::tui::view::AppView<'_> {
+        crate::tui::view::AppView(self)
+    }
+
     pub fn on_key(&mut self, c: char) {
-        self.input.insert(self.cursor_pos, c);
-        self.cursor_pos += c.len_utf8();
+        self.input.push_char(c);
         self.typing = true;
         self.last_keystroke = Some(Instant::now());
     }
 
     pub fn on_backspace(&mut self) {
-        if self.cursor_pos > 0 {
-            // Find the previous char boundary
-            let prev = self.input[..self.cursor_pos]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            self.input.remove(prev);
-            self.cursor_pos = prev;
+        if self.input.backspace() {
             self.typing = true;
             self.last_keystroke = Some(Instant::now());
         }
     }
 
     pub fn on_delete(&mut self) {
-        if self.cursor_pos < self.input.len() {
-            self.input.remove(self.cursor_pos);
+        if self.input.delete_forward() {
             self.typing = true;
             self.last_keystroke = Some(Instant::now());
         }
@@ -373,149 +586,155 @@ impl App {
 
     /// Determine the outcome of the TUI session based on app state after the loop exits.
     pub fn into_outcome(self) -> TuiOutcome {
-        if let Some(picked) = self.picked_session {
-            return TuiOutcome::Pick(picked);
+        match self.outcome {
+            Some(AppOutcome::Pick(picked)) => TuiOutcome::Pick(picked),
+            Some(AppOutcome::Resume(target)) => {
+                ccs_debug!(
+                    "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
+                    target.session_id,
+                    target.file_path,
+                    target.source,
+                    target.uuid
+                );
+                TuiOutcome::Resume {
+                    session_id: target.session_id,
+                    file_path: target.file_path,
+                    source: target.source,
+                    uuid: target.uuid,
+                    query: self.input.into_text(),
+                }
+            }
+            None => TuiOutcome::Quit,
         }
-        if let (Some(session_id), Some(file_path), Some(source)) =
-            (self.resume_id, self.resume_file_path, self.resume_source)
-        {
-            ccs_debug!(
-                "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
-                session_id,
-                file_path,
-                source,
-                self.resume_uuid
-            );
-            return TuiOutcome::Resume {
-                session_id,
-                file_path,
-                source,
-                uuid: self.resume_uuid,
-                query: self.input,
-            };
-        }
-        TuiOutcome::Quit
     }
 
     /// Reset all search result state to idle (no results, no error, no status).
     /// Shared by `clear_input()` (Ctrl-C) and `tick()` (backspace-to-empty).
     fn reset_search_state(&mut self) {
         self.last_query.clear();
-        self.results_count = 0;
-        self.search_truncated = false;
-        self.all_groups.clear();
-        self.groups.clear();
-        self.results_query.clear();
-        self.group_cursor = 0;
-        self.sub_cursor = 0;
-        self.expanded = false;
+        self.search.results_count = 0;
+        self.search.search_truncated = false;
+        self.search.all_groups.clear();
+        self.search.groups.clear();
+        self.search.results_query.clear();
+        self.search.group_cursor = 0;
+        self.search.sub_cursor = 0;
+        self.search.expanded = false;
         self.preview_mode = false;
-        self.latest_chains.clear();
-        self.searching = false;
-        self.error = None;
+        self.search.latest_chains.clear();
+        self.search.searching = false;
+        self.search.error = None;
     }
 
     /// Clear input and reset search state (Ctrl-C behavior)
     pub fn clear_input(&mut self) {
         self.input.clear();
-        self.cursor_pos = 0;
         self.typing = false;
         self.last_keystroke = None;
         self.reset_search_state();
     }
 
     pub fn move_cursor_left(&mut self) {
-        if self.cursor_pos > 0 {
-            self.cursor_pos = self.input[..self.cursor_pos]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-        }
+        self.input.move_left();
     }
 
     pub fn move_cursor_right(&mut self) {
-        if self.cursor_pos < self.input.len() {
-            self.cursor_pos += self.input[self.cursor_pos..]
-                .chars()
-                .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
-        }
+        self.input.move_right();
     }
 
     pub fn move_cursor_word_left(&mut self) {
-        let before = &self.input[..self.cursor_pos];
-        let mut chars = before.char_indices().rev();
-        // Skip non-alphanumeric
-        while let Some((i, c)) = chars.next() {
-            if c.is_alphanumeric() {
-                // Found alphanumeric — now skip the rest of the word
-                self.cursor_pos = i;
-                for (j, c2) in chars {
-                    if !c2.is_alphanumeric() {
-                        self.cursor_pos = j + c2.len_utf8();
-                        return;
-                    }
-                    self.cursor_pos = j;
-                }
-                self.cursor_pos = 0;
-                return;
-            }
-        }
-        self.cursor_pos = 0;
+        self.input.move_word_left();
     }
 
     pub fn move_cursor_word_right(&mut self) {
-        let after = &self.input[self.cursor_pos..];
-        let mut chars = after.char_indices();
-        // Skip alphanumeric
-        while let Some((_i, c)) = chars.next() {
-            if !c.is_alphanumeric() {
-                // Found non-alphanumeric — now skip to next word
-                for (j, c2) in chars {
-                    if c2.is_alphanumeric() {
-                        self.cursor_pos += j;
-                        return;
-                    }
-                }
-                self.cursor_pos = self.input.len();
-                return;
-            }
-        }
-        self.cursor_pos = self.input.len();
+        self.input.move_word_right();
     }
 
     pub fn move_cursor_home(&mut self) {
-        self.cursor_pos = 0;
+        self.input.move_home();
     }
 
     pub fn move_cursor_end(&mut self) {
-        self.cursor_pos = self.input.len();
+        self.input.move_end();
     }
 
     pub fn delete_word_left(&mut self) {
-        if self.cursor_pos == 0 {
-            return;
+        if self.input.delete_word_left() {
+            self.typing = true;
+            self.last_keystroke = Some(Instant::now());
         }
-        let old_pos = self.cursor_pos;
-        self.move_cursor_word_left();
-        self.input.drain(self.cursor_pos..old_pos);
-        self.typing = true;
-        self.last_keystroke = Some(Instant::now());
     }
 
     pub fn delete_word_right(&mut self) {
-        if self.cursor_pos >= self.input.len() {
-            return;
+        if self.input.delete_word_right() {
+            self.typing = true;
+            self.last_keystroke = Some(Instant::now());
         }
-        let old_pos = self.cursor_pos;
-        self.move_cursor_word_right();
-        let new_pos = self.cursor_pos;
-        self.cursor_pos = old_pos;
-        self.input.drain(old_pos..new_pos);
-        self.typing = true;
-        self.last_keystroke = Some(Instant::now());
+    }
+
+    /// Build a `KeyContext` snapshot for `classify_key`.
+    pub fn key_context(&self) -> KeyContext {
+        KeyContext {
+            tree_mode: self.tree_mode,
+            input_empty: self.input.is_empty(),
+            preview_mode: self.preview_mode,
+            in_recent_sessions_mode: self.in_recent_sessions_mode(),
+            has_recent_sessions: !self.recent_sessions.is_empty(),
+            has_groups: !self.search.groups.is_empty(),
+        }
+    }
+
+    /// Dispatch a `KeyAction` to the appropriate handler.
+    pub fn handle_action(&mut self, action: KeyAction) {
+        match action {
+            KeyAction::Quit => self.should_quit = true,
+
+            // Search mode: navigation
+            KeyAction::Up => self.on_up(),
+            KeyAction::Down => self.on_down(),
+            KeyAction::Left => self.on_left(),
+            KeyAction::Right => self.on_right(),
+            KeyAction::Tab => self.on_tab(),
+            KeyAction::Enter => self.on_enter(),
+
+            // Search mode: editing
+            KeyAction::InputChar(c) => self.on_key(c),
+            KeyAction::Backspace => self.on_backspace(),
+            KeyAction::Delete => self.on_delete(),
+            KeyAction::ClearInput => self.clear_input(),
+            KeyAction::DeleteWordLeft => self.delete_word_left(),
+            KeyAction::DeleteWordRight => self.delete_word_right(),
+
+            // Search mode: cursor movement
+            KeyAction::MoveWordLeft => self.move_cursor_word_left(),
+            KeyAction::MoveWordRight => self.move_cursor_word_right(),
+            KeyAction::MoveHome => self.move_cursor_home(),
+            KeyAction::MoveEnd => self.move_cursor_end(),
+
+            // Search mode: toggles
+            KeyAction::ToggleRegex => self.on_toggle_regex(),
+            KeyAction::ToggleProjectFilter => self.toggle_project_filter(),
+            KeyAction::ToggleAutomationFilter => self.toggle_automation_filter(),
+            KeyAction::TogglePreview => self.on_tab(),
+            KeyAction::ExitPreview => {
+                self.preview_mode = false;
+            }
+
+            // Search mode: tree entry
+            KeyAction::EnterTreeMode => self.enter_tree_mode(),
+            KeyAction::EnterTreeModeRecent => self.enter_tree_mode_recent(),
+
+            // Tree mode
+            KeyAction::TreeUp => self.on_up_tree(),
+            KeyAction::TreeDown => self.on_down_tree(),
+            KeyAction::TreeLeft => self.on_left_tree(),
+            KeyAction::TreeRight => self.on_right_tree(),
+            KeyAction::TreeTab => self.on_tab_tree(),
+            KeyAction::TreeEnter => self.on_enter_tree(),
+            KeyAction::ExitTreeMode => self.exit_tree_mode(),
+
+            KeyAction::Noop => {}
+        }
     }
 
     pub fn tick(&mut self) {
@@ -524,7 +743,7 @@ impl App {
             if let Ok(sessions) = rx.try_recv() {
                 self.all_recent_sessions = sessions;
                 apply_recent_automation_to_groups(
-                    &mut self.all_groups,
+                    &mut self.search.all_groups,
                     &self.all_recent_sessions,
                     &mut self.automation_cache,
                 );
@@ -544,27 +763,27 @@ impl App {
         }
 
         // Check for tree load results
-        if let Some(ref rx) = self.tree_load_rx {
+        if let Some(ref rx) = self.tree.tree_load_rx {
             if let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(tree) => {
-                        self.session_tree = Some(tree);
-                        self.tree_loading = false;
+                        self.tree.session_tree = Some(tree);
+                        self.tree.tree_loading = false;
                         self.needs_full_redraw = true;
                     }
                     Err(e) => {
-                        self.error = Some(format!("Tree load error: {}", e));
-                        self.tree_loading = false;
+                        self.search.error = Some(format!("Tree load error: {}", e));
+                        self.tree.tree_loading = false;
                         self.tree_mode = false;
                         self.needs_full_redraw = true;
                     }
                 }
-                self.tree_load_rx = None;
+                self.tree.tree_load_rx = None;
             }
         }
 
         // Check for search results from background thread
-        while let Ok(result) = self.search_rx.try_recv() {
+        while let Ok(result) = self.search.search_rx.try_recv() {
             self.handle_search_result(result);
         }
 
@@ -575,7 +794,7 @@ impl App {
                 self.typing = false;
 
                 // Re-search if query, regex mode, or search scope changed
-                let query_changed = self.input != self.last_query;
+                let query_changed = self.input.text() != self.last_query;
                 let mode_changed = self.regex_mode != self.last_regex_mode;
                 let scope_changed = self.search_paths != self.last_search_paths;
                 if query_changed && self.input.is_empty() {
@@ -591,11 +810,17 @@ impl App {
 
     pub(crate) fn handle_search_result(
         &mut self,
-        (seq, query, paths, use_regex, result): BackgroundSearchResult,
+        BackgroundSearchResult {
+            seq,
+            query,
+            paths,
+            use_regex,
+            result,
+        }: BackgroundSearchResult,
     ) {
         // Ignore stale async results if query text, mode, path scope, or request sequence changed.
-        if seq != self.search_seq
-            || query != self.input
+        if seq != self.search.search_seq
+            || query != self.input.text()
             || use_regex != self.regex_mode
             || paths != self.search_paths
         {
@@ -604,29 +829,29 @@ impl App {
 
         match result {
             Ok(search_result) => {
-                self.results_query = query;
+                self.search.results_query = query;
                 let count = search_result.matches.len();
-                self.search_truncated = search_result.truncated;
+                self.search.search_truncated = search_result.truncated;
                 let mut groups = group_by_session(search_result.matches);
                 apply_recent_automation_to_groups(
                     &mut groups,
                     &self.all_recent_sessions,
                     &mut self.automation_cache,
                 );
-                self.all_groups = groups;
+                self.search.all_groups = groups;
                 self.apply_groups_filter();
-                self.results_count = count;
-                self.group_cursor = 0;
-                self.sub_cursor = 0;
-                self.expanded = false;
-                self.error = None;
-                self.latest_chains.clear();
-                self.searching = false;
+                self.search.results_count = count;
+                self.search.group_cursor = 0;
+                self.search.sub_cursor = 0;
+                self.search.expanded = false;
+                self.search.error = None;
+                self.search.latest_chains.clear();
+                self.search.searching = false;
             }
             Err(e) => {
-                self.error = Some(e);
-                self.searching = false;
-                self.search_truncated = false;
+                self.search.error = Some(e);
+                self.search.searching = false;
+                self.search.search_truncated = false;
             }
         }
     }
@@ -669,17 +894,31 @@ impl App {
         }
     }
 
+    /// Adjust recent sessions scroll offset to keep the cursor visible.
+    /// Uses a default visible height when the actual frame size is unknown.
+    pub(crate) fn adjust_recent_scroll(&mut self, visible_height: usize) {
+        if self.recent_cursor >= self.recent_scroll_offset + visible_height {
+            self.recent_scroll_offset = self
+                .recent_cursor
+                .saturating_sub(visible_height.saturating_sub(1));
+        } else if self.recent_cursor < self.recent_scroll_offset {
+            self.recent_scroll_offset = self.recent_cursor;
+        }
+    }
+
     /// Rebuild `groups` from `all_groups` based on automation filter.
     pub(crate) fn apply_groups_filter(&mut self) {
-        self.groups = match self.automation_filter {
-            AutomationFilter::All => self.all_groups.clone(),
+        self.search.groups = match self.automation_filter {
+            AutomationFilter::All => self.search.all_groups.clone(),
             AutomationFilter::Manual => self
+                .search
                 .all_groups
                 .iter()
                 .filter(|g| g.automation.is_none())
                 .cloned()
                 .collect(),
             AutomationFilter::Auto => self
+                .search
                 .all_groups
                 .iter()
                 .filter(|g| g.automation.is_some())
@@ -690,15 +929,15 @@ impl App {
 
     /// Start an async search in the background thread
     pub(crate) fn start_search(&mut self) {
-        self.search_seq += 1;
-        self.last_query = self.input.clone();
+        self.search.search_seq += 1;
+        self.last_query = self.input.text().to_string();
         self.last_regex_mode = self.regex_mode;
         self.last_search_paths = self.search_paths.clone();
-        self.searching = true;
-        self.search_truncated = false;
-        let _ = self.search_tx.send((
-            self.search_seq,
-            self.input.clone(),
+        self.search.searching = true;
+        self.search.search_truncated = false;
+        let _ = self.search.search_tx.send((
+            self.search.search_seq,
+            self.input.text().to_string(),
             self.search_paths.clone(),
             self.regex_mode,
         ));
@@ -731,7 +970,7 @@ mod tests {
 
         assert_eq!(app.search_paths, vec!["/test/path".to_string()]);
         assert!(app.input.is_empty());
-        assert!(app.groups.is_empty());
+        assert!(app.search.groups.is_empty());
         assert!(!app.should_quit);
     }
 
@@ -795,8 +1034,8 @@ mod tests {
     #[test]
     fn test_handle_search_result_reuses_recent_session_automation() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "later".to_string();
-        app.search_seq = 1;
+        app.input.set_text("later");
+        app.search.search_seq = 1;
         app.all_recent_sessions = vec![RecentSession {
             session_id: "auto-session".to_string(),
             file_path: "/sessions/auto-session.jsonl".to_string(),
@@ -822,19 +1061,22 @@ mod tests {
             source: SessionSource::ClaudeCodeCLI,
         };
 
-        app.handle_search_result((
-            1,
-            "later".to_string(),
-            app.search_paths.clone(),
-            false,
-            Ok(crate::search::SearchResult {
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "later".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
             }),
-        ));
+        });
 
-        assert_eq!(app.all_groups.len(), 1);
-        assert_eq!(app.all_groups[0].automation, Some("ralphex".to_string()));
+        assert_eq!(app.search.all_groups.len(), 1);
+        assert_eq!(
+            app.search.all_groups[0].automation,
+            Some("ralphex".to_string())
+        );
     }
 
     #[test]
@@ -844,8 +1086,8 @@ mod tests {
         writeln!(session_file, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Automation reply"}}]}},"sessionId":"old-auto","timestamp":"2025-06-01T10:01:00Z"}}"#).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "reply".to_string();
-        app.search_seq = 1;
+        app.input.set_text("reply");
+        app.search.search_seq = 1;
         app.automation_filter = AutomationFilter::Auto;
 
         let result = RipgrepMatch {
@@ -863,20 +1105,23 @@ mod tests {
             source: SessionSource::ClaudeCodeCLI,
         };
 
-        app.handle_search_result((
-            1,
-            "reply".to_string(),
-            app.search_paths.clone(),
-            false,
-            Ok(crate::search::SearchResult {
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "reply".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
             }),
-        ));
+        });
 
-        assert_eq!(app.all_groups.len(), 1);
-        assert_eq!(app.all_groups[0].automation, Some("ralphex".to_string()));
-        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.search.all_groups.len(), 1);
+        assert_eq!(
+            app.search.all_groups[0].automation,
+            Some("ralphex".to_string())
+        );
+        assert_eq!(app.search.groups.len(), 1);
     }
 
     #[test]
@@ -887,8 +1132,8 @@ mod tests {
         writeln!(session_file, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"такие тоже надо детектить <scheduled-task name=\"chezmoi-sync\">"}}]}},"sessionId":"manual-session","timestamp":"2025-06-01T10:02:00Z"}}"#).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "detekt".to_string();
-        app.search_seq = 1;
+        app.input.set_text("detekt");
+        app.search.search_seq = 1;
 
         let result = RipgrepMatch {
             file_path: session_file.path().to_string_lossy().to_string(),
@@ -906,54 +1151,54 @@ mod tests {
             source: SessionSource::ClaudeCodeCLI,
         };
 
-        app.handle_search_result((
-            1,
-            "detekt".to_string(),
-            app.search_paths.clone(),
-            false,
-            Ok(crate::search::SearchResult {
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "detekt".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
             }),
-        ));
+        });
 
-        assert_eq!(app.all_groups.len(), 1);
-        assert_eq!(app.all_groups[0].automation, None);
+        assert_eq!(app.search.all_groups.len(), 1);
+        assert_eq!(app.search.all_groups[0].automation, None);
     }
 
     #[test]
     fn test_search_truncated_clears_on_non_truncated_result() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.search_seq = 1;
-        app.input = "query".to_string();
+        app.search.search_seq = 1;
+        app.input.set_text("query");
         app.regex_mode = false;
 
         // First result: truncated
-        app.handle_search_result((
-            1,
-            "query".to_string(),
-            app.search_paths.clone(),
-            false,
-            Ok(crate::search::SearchResult {
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "query".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: true,
             }),
-        ));
-        assert!(app.search_truncated);
+        });
+        assert!(app.search.search_truncated);
 
         // Second result: not truncated — flag must clear
-        app.search_seq = 2;
-        app.handle_search_result((
-            2,
-            "query".to_string(),
-            app.search_paths.clone(),
-            false,
-            Ok(crate::search::SearchResult {
+        app.search.search_seq = 2;
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 2,
+            query: "query".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: false,
             }),
-        ));
-        assert!(!app.search_truncated);
+        });
+        assert!(!app.search.search_truncated);
     }
 
     #[test]
@@ -978,20 +1223,19 @@ mod tests {
         app.on_key('l');
         app.on_key('o');
 
-        assert_eq!(app.input, "hello");
+        assert_eq!(app.input.text(), "hello");
         assert!(app.typing);
     }
 
     #[test]
     fn test_on_backspace() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello".to_string();
-        app.cursor_pos = 5; // cursor at end
+        app.input.set_text_and_cursor("hello", 5); // cursor at end
 
         app.on_backspace();
 
-        assert_eq!(app.input, "hell");
-        assert_eq!(app.cursor_pos, 4);
+        assert_eq!(app.input.text(), "hell");
+        assert_eq!(app.input.cursor_pos(), 4);
     }
 
     #[test]
@@ -999,25 +1243,26 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
 
         // Set up state as if a search has completed
-        app.input = "hello".to_string();
-        app.cursor_pos = 5;
+        app.input.set_text_and_cursor("hello", 5);
         app.last_query = "hello".to_string();
-        app.results_query = "hello".to_string();
-        app.results_count = 1;
-        app.groups = vec![SessionGroup {
+        app.search.results_query = "hello".to_string();
+        app.search.results_count = 1;
+        app.search.groups = vec![SessionGroup {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
             automation: None,
         }];
-        app.group_cursor = 1;
-        app.sub_cursor = 2;
-        app.expanded = true;
-        app.searching = true;
+        app.search.group_cursor = 1;
+        app.search.sub_cursor = 2;
+        app.search.expanded = true;
+        app.search.searching = true;
         app.typing = true;
         app.last_keystroke = Some(Instant::now());
-        app.latest_chains.insert("file".to_string(), HashSet::new());
-        app.error = Some("stale error".to_string());
+        app.search
+            .latest_chains
+            .insert("file".to_string(), HashSet::new());
+        app.search.error = Some("stale error".to_string());
         app.preview_mode = true;
 
         app.clear_input();
@@ -1028,45 +1273,58 @@ mod tests {
             app.last_keystroke.is_none(),
             "last_keystroke should be None"
         );
-        assert!(!app.searching, "searching should be false");
+        assert!(!app.search.searching, "searching should be false");
         assert!(app.last_query.is_empty(), "last_query should be cleared");
-        assert_eq!(app.results_count, 0, "results_count should be cleared");
-        assert!(app.groups.is_empty(), "groups should be cleared");
+        assert_eq!(
+            app.search.results_count, 0,
+            "results_count should be cleared"
+        );
+        assert!(app.search.groups.is_empty(), "groups should be cleared");
         assert!(
-            app.results_query.is_empty(),
+            app.search.results_query.is_empty(),
             "results_query should be cleared"
         );
-        assert_eq!(app.group_cursor, 0, "group_cursor should be reset");
-        assert_eq!(app.sub_cursor, 0, "sub_cursor should be reset");
-        assert!(!app.expanded, "expanded should be reset");
+        assert_eq!(app.search.group_cursor, 0, "group_cursor should be reset");
+        assert_eq!(app.search.sub_cursor, 0, "sub_cursor should be reset");
+        assert!(!app.search.expanded, "expanded should be reset");
         assert!(
-            app.latest_chains.is_empty(),
+            app.search.latest_chains.is_empty(),
             "latest_chains should be cleared"
         );
-        assert!(app.error.is_none(), "error should be cleared");
+        assert!(app.search.error.is_none(), "error should be cleared");
         assert!(!app.preview_mode, "preview_mode should be reset");
     }
 
     #[test]
     fn test_ctrl_c_empty_input_should_quit() {
+        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
         let mut app = App::new(vec!["/test".to_string()]);
 
-        // Empty input — Ctrl-C should signal quit
+        // Empty input — Ctrl-C dispatches to Quit via classify_key
         assert!(app.input.is_empty());
         assert!(!app.should_quit);
 
-        // Simulate the Ctrl-C logic from main.rs
-        if app.input.is_empty() {
-            app.should_quit = true;
-        } else {
-            app.clear_input();
-        }
+        let ctx = app.key_context();
+        let key = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = classify_key(key, &ctx);
+        assert_eq!(action, KeyAction::Quit);
+        app.handle_action(action);
 
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_ctrl_c_with_input_clears_not_quits() {
+        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
         let mut app = App::new(vec!["/test".to_string()]);
 
         app.on_key('t');
@@ -1074,12 +1332,16 @@ mod tests {
         app.on_key('s');
         app.on_key('t');
 
-        // Simulate the Ctrl-C logic from main.rs
-        if app.input.is_empty() {
-            app.should_quit = true;
-        } else {
-            app.clear_input();
-        }
+        let ctx = app.key_context();
+        let key = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = classify_key(key, &ctx);
+        assert_eq!(action, KeyAction::ClearInput);
+        app.handle_action(action);
 
         assert!(app.input.is_empty());
         assert!(!app.should_quit);
@@ -1091,108 +1353,101 @@ mod tests {
         app.on_key('a');
         app.on_key('c');
         // input = "ac", cursor at 2
-        app.cursor_pos = 1; // move cursor between 'a' and 'c'
+        app.input.set_text_and_cursor("ac", 1); // move cursor between 'a' and 'c'
         app.on_key('b');
-        assert_eq!(app.input, "abc");
-        assert_eq!(app.cursor_pos, 2);
+        assert_eq!(app.input.text(), "abc");
+        assert_eq!(app.input.cursor_pos(), 2);
     }
 
     #[test]
     fn test_on_backspace_at_cursor() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "abc".to_string();
-        app.cursor_pos = 2; // cursor after 'b'
+        app.input.set_text_and_cursor("abc", 2); // cursor after 'b'
         app.on_backspace();
-        assert_eq!(app.input, "ac");
-        assert_eq!(app.cursor_pos, 1);
+        assert_eq!(app.input.text(), "ac");
+        assert_eq!(app.input.cursor_pos(), 1);
     }
 
     #[test]
     fn test_on_backspace_at_start_does_nothing() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "abc".to_string();
-        app.cursor_pos = 0;
+        app.input.set_text_and_cursor("abc", 0);
         app.on_backspace();
-        assert_eq!(app.input, "abc");
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.text(), "abc");
+        assert_eq!(app.input.cursor_pos(), 0);
     }
 
     #[test]
     fn test_on_delete_at_cursor() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "abc".to_string();
-        app.cursor_pos = 1; // cursor after 'a'
+        app.input.set_text_and_cursor("abc", 1); // cursor after 'a'
         app.on_delete();
-        assert_eq!(app.input, "ac");
-        assert_eq!(app.cursor_pos, 1);
+        assert_eq!(app.input.text(), "ac");
+        assert_eq!(app.input.cursor_pos(), 1);
     }
 
     #[test]
     fn test_move_cursor_word_left() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello world foo".to_string();
-        app.cursor_pos = app.input.len(); // at end
+        app.input.set_text("hello world foo"); // cursor at end
 
         app.move_cursor_word_left();
-        assert_eq!(app.cursor_pos, 12); // before "foo"
+        assert_eq!(app.input.cursor_pos(), 12); // before "foo"
 
         app.move_cursor_word_left();
-        assert_eq!(app.cursor_pos, 6); // before "world"
+        assert_eq!(app.input.cursor_pos(), 6); // before "world"
 
         app.move_cursor_word_left();
-        assert_eq!(app.cursor_pos, 0); // before "hello"
+        assert_eq!(app.input.cursor_pos(), 0); // before "hello"
 
         // At start, stays at 0
         app.move_cursor_word_left();
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.cursor_pos(), 0);
     }
 
     #[test]
     fn test_move_cursor_word_right() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello world foo".to_string();
-        app.cursor_pos = 0;
+        app.input.set_text_and_cursor("hello world foo", 0);
 
         app.move_cursor_word_right();
-        assert_eq!(app.cursor_pos, 6); // after "hello "
+        assert_eq!(app.input.cursor_pos(), 6); // after "hello "
 
         app.move_cursor_word_right();
-        assert_eq!(app.cursor_pos, 12); // after "world "
+        assert_eq!(app.input.cursor_pos(), 12); // after "world "
 
         app.move_cursor_word_right();
-        assert_eq!(app.cursor_pos, 15); // end
+        assert_eq!(app.input.cursor_pos(), 15); // end
 
         // At end, stays
         app.move_cursor_word_right();
-        assert_eq!(app.cursor_pos, 15);
+        assert_eq!(app.input.cursor_pos(), 15);
     }
 
     #[test]
     fn test_delete_word_left() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello world".to_string();
-        app.cursor_pos = app.input.len();
+        app.input.set_text("hello world"); // cursor at end
 
         app.delete_word_left();
-        assert_eq!(app.input, "hello ");
-        assert_eq!(app.cursor_pos, 6);
+        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(app.input.cursor_pos(), 6);
 
         app.delete_word_left();
-        assert_eq!(app.input, "");
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.text(), "");
+        assert_eq!(app.input.cursor_pos(), 0);
     }
 
     #[test]
     fn test_move_cursor_home_end() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello".to_string();
-        app.cursor_pos = 3;
+        app.input.set_text_and_cursor("hello", 3);
 
         app.move_cursor_home();
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.cursor_pos(), 0);
 
         app.move_cursor_end();
-        assert_eq!(app.cursor_pos, 5);
+        assert_eq!(app.input.cursor_pos(), 5);
     }
 
     #[test]
@@ -1210,66 +1465,62 @@ mod tests {
         app.on_delete();
         app.delete_word_left();
 
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.cursor_pos(), 0);
         assert!(app.input.is_empty());
     }
 
     #[test]
     fn test_move_cursor_left_right() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "abc".to_string();
-        app.cursor_pos = 3;
+        app.input.set_text("abc"); // cursor at end (3)
 
         app.move_cursor_left();
-        assert_eq!(app.cursor_pos, 2);
+        assert_eq!(app.input.cursor_pos(), 2);
 
         app.move_cursor_left();
-        assert_eq!(app.cursor_pos, 1);
+        assert_eq!(app.input.cursor_pos(), 1);
 
         app.move_cursor_right();
-        assert_eq!(app.cursor_pos, 2);
+        assert_eq!(app.input.cursor_pos(), 2);
     }
 
     #[test]
     fn test_clear_input_resets_cursor() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello".to_string();
-        app.cursor_pos = 3;
+        app.input.set_text_and_cursor("hello", 3);
 
         app.clear_input();
 
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.cursor_pos(), 0);
         assert!(app.input.is_empty());
     }
 
     #[test]
     fn test_delete_word_right() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello world foo".to_string();
-        app.cursor_pos = 0;
+        app.input.set_text_and_cursor("hello world foo", 0);
 
         app.delete_word_right();
-        assert_eq!(app.input, "world foo");
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.text(), "world foo");
+        assert_eq!(app.input.cursor_pos(), 0);
 
         app.delete_word_right();
-        assert_eq!(app.input, "foo");
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.text(), "foo");
+        assert_eq!(app.input.cursor_pos(), 0);
 
         app.delete_word_right();
-        assert_eq!(app.input, "");
-        assert_eq!(app.cursor_pos, 0);
+        assert_eq!(app.input.text(), "");
+        assert_eq!(app.input.cursor_pos(), 0);
     }
 
     #[test]
     fn test_delete_word_right_at_end_does_nothing() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello".to_string();
-        app.cursor_pos = 5;
+        app.input.set_text_and_cursor("hello", 5);
 
         app.delete_word_right();
-        assert_eq!(app.input, "hello");
-        assert_eq!(app.cursor_pos, 5);
+        assert_eq!(app.input.text(), "hello");
+        assert_eq!(app.input.cursor_pos(), 5);
     }
 
     #[test]
@@ -1277,22 +1528,24 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
 
         // Simulate: user had typed "hello", search completed, then backspaced to empty
-        app.input = String::new(); // empty — user backspaced everything
+        app.input.clear(); // empty — user backspaced everything
         app.last_query = "hello".to_string(); // previous query that produced results
-        app.results_query = "hello".to_string();
-        app.results_count = 1;
-        app.groups = vec![SessionGroup {
+        app.search.results_query = "hello".to_string();
+        app.search.results_count = 1;
+        app.search.groups = vec![SessionGroup {
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
             automation: None,
         }];
-        app.group_cursor = 1;
-        app.sub_cursor = 2;
-        app.expanded = true;
-        app.searching = true;
-        app.latest_chains.insert("file".to_string(), HashSet::new());
-        app.error = Some("stale error".to_string());
+        app.search.group_cursor = 1;
+        app.search.sub_cursor = 2;
+        app.search.expanded = true;
+        app.search.searching = true;
+        app.search
+            .latest_chains
+            .insert("file".to_string(), HashSet::new());
+        app.search.error = Some("stale error".to_string());
         app.preview_mode = true;
 
         // Set debounce to fire: last keystroke was > DEBOUNCE_MS ago
@@ -1302,49 +1555,48 @@ mod tests {
         app.tick();
 
         assert_eq!(
-            app.results_count, 0,
+            app.search.results_count, 0,
             "results_count should be cleared after tick with empty query"
         );
         assert!(
-            app.groups.is_empty(),
+            app.search.groups.is_empty(),
             "groups should be cleared after tick with empty query"
         );
         assert!(
-            app.results_query.is_empty(),
+            app.search.results_query.is_empty(),
             "results_query should be cleared after tick with empty query"
         );
         assert!(
             app.last_query.is_empty(),
             "last_query should be updated to empty"
         );
-        assert_eq!(app.group_cursor, 0, "group_cursor should be reset");
-        assert_eq!(app.sub_cursor, 0, "sub_cursor should be reset");
-        assert!(!app.expanded, "expanded should be reset");
+        assert_eq!(app.search.group_cursor, 0, "group_cursor should be reset");
+        assert_eq!(app.search.sub_cursor, 0, "sub_cursor should be reset");
+        assert!(!app.search.expanded, "expanded should be reset");
         assert!(!app.typing, "typing should be false after debounce");
-        assert!(!app.searching, "searching should be false");
+        assert!(!app.search.searching, "searching should be false");
         assert!(
-            app.latest_chains.is_empty(),
+            app.search.latest_chains.is_empty(),
             "latest_chains should be cleared"
         );
-        assert!(app.error.is_none(), "error should be cleared");
+        assert!(app.search.error.is_none(), "error should be cleared");
         assert!(!app.preview_mode, "preview_mode should be reset");
     }
 
     #[test]
     fn test_delete_word_right_from_middle() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.input = "hello world".to_string();
-        app.cursor_pos = 5; // after "hello", on the space
+        app.input.set_text_and_cursor("hello world", 5); // after "hello", on the space
 
         // First delete removes " " (skip non-alnum to next word boundary)
         app.delete_word_right();
-        assert_eq!(app.input, "helloworld");
-        assert_eq!(app.cursor_pos, 5);
+        assert_eq!(app.input.text(), "helloworld");
+        assert_eq!(app.input.cursor_pos(), 5);
 
         // Second delete removes "world"
         app.delete_word_right();
-        assert_eq!(app.input, "hello");
-        assert_eq!(app.cursor_pos, 5);
+        assert_eq!(app.input.text(), "hello");
+        assert_eq!(app.input.cursor_pos(), 5);
     }
 
     #[test]
@@ -1422,13 +1674,15 @@ mod tests {
     }
 
     #[test]
-    fn test_into_outcome_resume_when_resume_fields_set() {
+    fn test_into_outcome_resume_when_outcome_set() {
         let mut app = App::new(vec!["/test".to_string()]);
-        app.resume_id = Some("sess-1".to_string());
-        app.resume_file_path = Some("/path/to/session.jsonl".to_string());
-        app.resume_source = Some(SessionSource::ClaudeCodeCLI);
-        app.resume_uuid = Some("uuid-42".to_string());
-        app.input = "my search query".to_string();
+        app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            session_id: "sess-1".to_string(),
+            file_path: "/path/to/session.jsonl".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            uuid: Some("uuid-42".to_string()),
+        }));
+        app.input.set_text("my search query");
 
         let outcome = app.into_outcome();
         assert_eq!(
@@ -1444,16 +1698,16 @@ mod tests {
     }
 
     #[test]
-    fn test_into_outcome_pick_when_picked_session_set() {
+    fn test_into_outcome_pick_when_outcome_set() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
-        app.picked_session = Some(PickedSession {
+        app.outcome = Some(AppOutcome::Pick(PickedSession {
             session_id: "pick-1".to_string(),
             file_path: "/pick/session.jsonl".to_string(),
             source: SessionSource::ClaudeDesktop,
             project: "my-project".to_string(),
             message_uuid: None,
-        });
+        }));
 
         let outcome = app.into_outcome();
         assert_eq!(
@@ -1472,28 +1726,261 @@ mod tests {
     fn test_into_outcome_quit_when_picker_mode_no_selection() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
-        // No picked_session set (user pressed Esc)
+        // No outcome set (user pressed Esc)
         assert_eq!(app.into_outcome(), TuiOutcome::Quit);
     }
 
     #[test]
-    fn test_into_outcome_pick_takes_priority_over_resume() {
+    fn test_into_outcome_pick_variant() {
         let mut app = App::new(vec!["/test".to_string()]);
-        // Both picked_session and resume_* are set — Pick should win
-        app.picked_session = Some(PickedSession {
+        app.outcome = Some(AppOutcome::Pick(PickedSession {
             session_id: "pick-1".to_string(),
             file_path: "/pick/session.jsonl".to_string(),
             source: SessionSource::ClaudeCodeCLI,
             project: "proj".to_string(),
             message_uuid: None,
-        });
-        app.resume_id = Some("resume-1".to_string());
-        app.resume_file_path = Some("/resume/session.jsonl".to_string());
-        app.resume_source = Some(SessionSource::ClaudeCodeCLI);
+        }));
 
         match app.into_outcome() {
             TuiOutcome::Pick(p) => assert_eq!(p.session_id, "pick-1"),
             other => panic!("Expected Pick, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // InputState isolated tests
+    // =========================================================================
+
+    #[test]
+    fn test_input_state_new_is_empty() {
+        let input = InputState::new();
+        assert!(input.is_empty());
+        assert_eq!(input.len(), 0);
+        assert_eq!(input.cursor_pos(), 0);
+        assert_eq!(input.text(), "");
+    }
+
+    #[test]
+    fn test_input_state_push_char() {
+        let mut input = InputState::new();
+        input.push_char('h');
+        input.push_char('i');
+        assert_eq!(input.text(), "hi");
+        assert_eq!(input.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn test_input_state_push_char_utf8() {
+        let mut input = InputState::new();
+        input.push_char('ё');
+        assert_eq!(input.text(), "ё");
+        assert_eq!(input.cursor_pos(), 2); // 'ё' is 2 bytes in UTF-8
+        input.push_char('!');
+        assert_eq!(input.text(), "ё!");
+        assert_eq!(input.cursor_pos(), 3);
+    }
+
+    #[test]
+    fn test_input_state_push_char_at_middle() {
+        let mut input = InputState::new();
+        input.push_char('a');
+        input.push_char('c');
+        input.set_text_and_cursor("ac", 1);
+        input.push_char('b');
+        assert_eq!(input.text(), "abc");
+        assert_eq!(input.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn test_input_state_backspace() {
+        let mut input = InputState::new();
+        input.set_text("hello");
+        assert!(input.backspace());
+        assert_eq!(input.text(), "hell");
+        assert_eq!(input.cursor_pos(), 4);
+    }
+
+    #[test]
+    fn test_input_state_backspace_at_start() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("hello", 0);
+        assert!(!input.backspace());
+        assert_eq!(input.text(), "hello");
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn test_input_state_backspace_empty() {
+        let mut input = InputState::new();
+        assert!(!input.backspace());
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn test_input_state_backspace_utf8_boundary() {
+        let mut input = InputState::new();
+        input.set_text("aё"); // 'a' = 1 byte, 'ё' = 2 bytes, total = 3
+        assert_eq!(input.cursor_pos(), 3);
+        assert!(input.backspace());
+        assert_eq!(input.text(), "a");
+        assert_eq!(input.cursor_pos(), 1);
+    }
+
+    #[test]
+    fn test_input_state_delete_forward() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("abc", 1);
+        assert!(input.delete_forward());
+        assert_eq!(input.text(), "ac");
+        assert_eq!(input.cursor_pos(), 1);
+    }
+
+    #[test]
+    fn test_input_state_delete_forward_at_end() {
+        let mut input = InputState::new();
+        input.set_text("abc");
+        assert!(!input.delete_forward());
+        assert_eq!(input.text(), "abc");
+    }
+
+    #[test]
+    fn test_input_state_move_left_right() {
+        let mut input = InputState::new();
+        input.set_text("abc");
+        input.move_left();
+        assert_eq!(input.cursor_pos(), 2);
+        input.move_left();
+        assert_eq!(input.cursor_pos(), 1);
+        input.move_right();
+        assert_eq!(input.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn test_input_state_move_left_at_start() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("abc", 0);
+        input.move_left();
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn test_input_state_move_right_at_end() {
+        let mut input = InputState::new();
+        input.set_text("abc");
+        input.move_right();
+        assert_eq!(input.cursor_pos(), 3); // stays at end
+    }
+
+    #[test]
+    fn test_input_state_word_navigation() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("hello world foo", 15);
+
+        input.move_word_left();
+        assert_eq!(input.cursor_pos(), 12);
+        input.move_word_left();
+        assert_eq!(input.cursor_pos(), 6);
+        input.move_word_left();
+        assert_eq!(input.cursor_pos(), 0);
+
+        input.move_word_right();
+        assert_eq!(input.cursor_pos(), 6);
+        input.move_word_right();
+        assert_eq!(input.cursor_pos(), 12);
+        input.move_word_right();
+        assert_eq!(input.cursor_pos(), 15);
+    }
+
+    #[test]
+    fn test_input_state_delete_word_left() {
+        let mut input = InputState::new();
+        input.set_text("hello world");
+        assert!(input.delete_word_left());
+        assert_eq!(input.text(), "hello ");
+        assert_eq!(input.cursor_pos(), 6);
+    }
+
+    #[test]
+    fn test_input_state_delete_word_left_at_start() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("hello", 0);
+        assert!(!input.delete_word_left());
+        assert_eq!(input.text(), "hello");
+    }
+
+    #[test]
+    fn test_input_state_delete_word_right() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("hello world", 0);
+        assert!(input.delete_word_right());
+        assert_eq!(input.text(), "world");
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn test_input_state_delete_word_right_at_end() {
+        let mut input = InputState::new();
+        input.set_text("hello");
+        assert!(!input.delete_word_right());
+        assert_eq!(input.text(), "hello");
+    }
+
+    #[test]
+    fn test_input_state_home_end() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("hello", 3);
+        input.move_home();
+        assert_eq!(input.cursor_pos(), 0);
+        input.move_end();
+        assert_eq!(input.cursor_pos(), 5);
+    }
+
+    #[test]
+    fn test_input_state_clear() {
+        let mut input = InputState::new();
+        input.set_text("hello");
+        input.clear();
+        assert!(input.is_empty());
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn test_input_state_set_text_places_cursor_at_end() {
+        let mut input = InputState::new();
+        input.set_text("test");
+        assert_eq!(input.cursor_pos(), 4);
+    }
+
+    #[test]
+    fn test_input_state_set_text_and_cursor_clamps() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("abc", 100);
+        assert_eq!(input.cursor_pos(), 3); // clamped to len
+    }
+
+    #[test]
+    fn test_input_state_into_text() {
+        let mut input = InputState::new();
+        input.set_text("hello");
+        let text = input.into_text();
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_input_state_all_ops_on_empty() {
+        let mut input = InputState::new();
+        // All operations on empty input should not panic
+        input.move_left();
+        input.move_right();
+        input.move_word_left();
+        input.move_word_right();
+        input.move_home();
+        input.move_end();
+        assert!(!input.backspace());
+        assert!(!input.delete_forward());
+        assert!(!input.delete_word_left());
+        assert!(!input.delete_word_right());
+        assert_eq!(input.cursor_pos(), 0);
+        assert!(input.is_empty());
     }
 }

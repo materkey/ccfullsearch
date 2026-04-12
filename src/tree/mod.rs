@@ -1,3 +1,5 @@
+use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
+use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
 use crate::session::{self, SessionSource};
 use chrono::{DateTime, Utc};
 use std::cell::RefCell;
@@ -63,6 +65,7 @@ impl SessionTree {
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut roots: Vec<String> = Vec::new();
         let mut session_id = String::new();
+        let mut dag_records: Vec<(SessionRecord, usize, Option<DateTime<Utc>>)> = Vec::new();
 
         for (line_idx, line_result) in reader.lines().enumerate() {
             let line =
@@ -92,6 +95,11 @@ impl SessionTree {
 
             let is_sidechain = session::is_sidechain(&json);
 
+            // Collect parsed record for DAG building (avoids re-reading the file)
+            if let Some(record) = SessionRecord::from_value(&json) {
+                dag_records.push((record, line_idx, timestamp));
+            }
+
             // Extract role and content preview for displayable types
             let (role, content_preview) = if record_type == "user" || record_type == "assistant" {
                 let message = json.get("message");
@@ -100,9 +108,10 @@ impl SessionTree {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let preview = message
-                    .and_then(|m| m.get("content"))
-                    .map(|c| extract_preview(c, 120));
+                let preview = message.and_then(|m| m.get("content")).map(|c| {
+                    let blocks = parse_content_blocks(c);
+                    SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 120 })
+                });
 
                 (role, preview)
             } else if record_type == "summary" {
@@ -151,8 +160,15 @@ impl SessionTree {
             );
         }
 
-        // Build latest chain using terminal message detection
-        let latest_chain = build_latest_chain(&nodes);
+        // Build latest chain using unified DAG engine (reuses parsed records, no second file read)
+        let latest_chain = {
+            let dag = SessionDag::from_records(dag_records.into_iter(), DisplayFilter::Standard);
+            if let Some(tip) = dag.tip(TipStrategy::MaxTimestamp) {
+                dag.chain_from(tip)
+            } else {
+                HashSet::new()
+            }
+        };
 
         let source = SessionSource::from_path(file_path);
 
@@ -192,7 +208,8 @@ impl SessionTree {
         let line = reader.lines().nth(node.line_index)?.ok()?;
         let json: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
         let content_raw = json.get("message")?.get("content")?;
-        let content = crate::search::Message::extract_content(content_raw);
+        let blocks = parse_content_blocks(content_raw);
+        let content = SessionRecord::render_content(&blocks, &ContentMode::Full);
 
         // Cache the result (keep cache bounded to avoid unbounded memory growth)
         let mut cache = self.content_cache.borrow_mut();
@@ -438,58 +455,6 @@ impl SessionTree {
     }
 }
 
-/// Build the latest chain by finding terminal messages and walking backwards from the tip.
-///
-/// A terminal message is one whose uuid does NOT appear as any other message's parentUuid.
-/// Among terminals, we pick the latest user/assistant that is NOT a sidechain message.
-/// This matches Claude Code's behavior in conversationRecovery.ts.
-fn build_latest_chain(nodes: &HashMap<String, DagNode>) -> HashSet<String> {
-    let mut chain = HashSet::new();
-    if nodes.is_empty() {
-        return chain;
-    }
-
-    // Collect all parentUuids to find terminal nodes
-    let parent_uuids: HashSet<&str> = nodes
-        .values()
-        .filter_map(|n| n.parent_uuid.as_deref())
-        .collect();
-
-    // Terminal = uuid not referenced as anyone's parentUuid
-    // Filter to user/assistant, non-sidechain, with timestamp
-    let tip = nodes
-        .values()
-        .filter(|n| !parent_uuids.contains(n.uuid.as_str()))
-        .filter(|n| !n.is_sidechain)
-        .filter(|n| matches!(n.role.as_deref(), Some("user" | "assistant" | "compaction")))
-        .filter(|n| n.timestamp.is_some())
-        .max_by_key(|n| n.timestamp);
-
-    let Some(tip_node) = tip else {
-        // Fallback: if no displayable terminal found, use the last node by line_index
-        let fallback = nodes.values().max_by_key(|n| n.line_index);
-        if let Some(fb) = fallback {
-            let mut current = Some(fb.uuid.clone());
-            while let Some(uuid) = current {
-                if !chain.insert(uuid.clone()) {
-                    break; // cycle detected
-                }
-                current = nodes.get(&uuid).and_then(|n| n.parent_uuid.clone());
-            }
-        }
-        return chain;
-    };
-
-    let mut current = Some(tip_node.uuid.clone());
-    while let Some(uuid) = current {
-        if !chain.insert(uuid.clone()) {
-            break; // cycle detected
-        }
-        current = nodes.get(&uuid).and_then(|n| n.parent_uuid.clone());
-    }
-    chain
-}
-
 /// Find the first free (false) column, or return the length (meaning append).
 fn find_free_column(active_columns: &[bool]) -> usize {
     // Start from column 1 to keep column 0 for main trunk
@@ -521,89 +486,6 @@ fn build_graph_symbols(
         }
     }
 
-    result
-}
-
-/// Extract a short preview from message content (first N chars).
-fn extract_preview(content: &serde_json::Value, max_chars: usize) -> String {
-    let text = if let Some(s) = content.as_str() {
-        s.to_string()
-    } else if let Some(arr) = content.as_array() {
-        let mut parts = Vec::new();
-        for item in arr {
-            let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match item_type {
-                "text" => {
-                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
-                        parts.push(t.to_string());
-                    }
-                }
-                "tool_use" => {
-                    if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
-                        parts.push(format!("[tool: {}]", name));
-                    }
-                }
-                "tool_result" => {
-                    parts.push("[tool_result]".to_string());
-                }
-                "thinking" => {
-                    if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
-                        parts.push(t.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        parts.join(" ")
-    } else {
-        String::new()
-    };
-
-    // Sanitize: strip XML tags, remove newlines, multiple spaces
-    let stripped = strip_xml_tags(&text);
-    let sanitized = stripped
-        .replace('\n', " ")
-        .replace('\r', "")
-        .replace('\t', " ");
-    // Collapse multiple spaces
-    let mut prev_space = false;
-    let collapsed: String = sanitized
-        .chars()
-        .filter(|c| {
-            if *c == ' ' {
-                if prev_space {
-                    return false;
-                }
-                prev_space = true;
-            } else {
-                prev_space = false;
-            }
-            true
-        })
-        .collect();
-
-    if collapsed.chars().count() > max_chars {
-        collapsed.chars().take(max_chars).collect::<String>() + "..."
-    } else {
-        collapsed
-    }
-}
-
-/// Strip XML/HTML-like tags from text, keeping only inner content.
-fn strip_xml_tags(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut in_tag = false;
-    for ch in text.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                result.push(' '); // replace tag with space
-            }
-            _ if !in_tag => result.push(ch),
-            _ => {}
-        }
-    }
     result
 }
 
@@ -644,6 +526,7 @@ impl SessionTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
     use std::io::Write;
     use tempfile::TempDir;
 
@@ -862,7 +745,9 @@ mod tests {
     #[test]
     fn test_extract_preview_plain_string() {
         let content = serde_json::json!("Hello world this is a test message");
-        let preview = extract_preview(&content, 20);
+        let blocks = parse_content_blocks(&content);
+        let preview =
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 20 });
         assert_eq!(preview, "Hello world this is ...");
     }
 
@@ -872,7 +757,9 @@ mod tests {
             {"type": "text", "text": "Part one"},
             {"type": "tool_use", "name": "Read"},
         ]);
-        let preview = extract_preview(&content, 100);
+        let blocks = parse_content_blocks(&content);
+        let preview =
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 100 });
         assert!(preview.contains("Part one"));
         assert!(preview.contains("[tool: Read]"));
     }
@@ -883,7 +770,9 @@ mod tests {
             {"type": "thinking", "thinking": "Let me analyze the code structure"},
             {"type": "text", "text": "Here is my analysis"},
         ]);
-        let preview = extract_preview(&content, 100);
+        let blocks = parse_content_blocks(&content);
+        let preview =
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 100 });
         assert!(preview.contains("Let me analyze the code structure"));
         assert!(preview.contains("Here is my analysis"));
     }
@@ -891,7 +780,9 @@ mod tests {
     #[test]
     fn test_extract_preview_collapses_whitespace() {
         let content = serde_json::json!("Hello\n\n  world\t\ttab");
-        let preview = extract_preview(&content, 100);
+        let blocks = parse_content_blocks(&content);
+        let preview =
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 100 });
         assert!(!preview.contains('\n'));
         assert!(!preview.contains('\t'));
     }
