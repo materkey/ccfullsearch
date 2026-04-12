@@ -527,6 +527,18 @@ pub struct TreeState {
     pub tree_mode_standalone: bool,
 }
 
+/// AI search re-ranking state.
+pub struct AiState {
+    pub active: bool,
+    pub query: InputState,
+    pub thinking: bool,
+    pub(crate) result_rx: Option<Receiver<crate::ai::AiRankResult>>,
+    pub error: Option<String>,
+    pub ranked_count: Option<usize>,
+    pub(crate) original_recent_order: Option<Vec<RecentSession>>,
+    pub(crate) original_groups_order: Option<Vec<crate::search::SessionGroup>>,
+}
+
 /// All fields needed to resume a session, bundled as one value.
 /// Replaces the former 4 separate `Option<String>` fields on `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,6 +593,8 @@ pub struct App {
     pub current_project_paths: Vec<String>,
     /// Recent sessions sub-state
     pub recent: RecentState,
+    /// AI search re-ranking sub-state
+    pub ai: AiState,
     /// Picker mode: on_enter sets outcome to Pick instead of Resume
     pub picker_mode: bool,
     /// Last known tree area visible height (set from frame after draw, used for scroll calculations)
@@ -674,6 +688,16 @@ impl App {
             all_search_paths,
             current_project_paths,
             recent,
+            ai: AiState {
+                active: false,
+                query: InputState::new(),
+                thinking: false,
+                result_rx: None,
+                error: None,
+                ranked_count: None,
+                original_recent_order: None,
+                original_groups_order: None,
+            },
             picker_mode: false,
             last_tree_visible_height: 20,
         }
@@ -801,11 +825,71 @@ impl App {
             in_recent_sessions_mode: self.in_recent_sessions_mode(),
             has_recent_sessions: !self.recent.filtered.is_empty(),
             has_groups: !self.search.groups.is_empty(),
+            ai_mode: self.ai.active,
         }
     }
 
     /// Dispatch a `KeyAction` to the appropriate handler.
     pub fn handle_action(&mut self, action: KeyAction) {
+        // While AI mode is active, route text-editing keys to the AI query buffer
+        if self.ai.active {
+            match action {
+                KeyAction::InputChar(c) => {
+                    self.ai.query.push_char(c);
+                    return;
+                }
+                KeyAction::Backspace => {
+                    self.ai.query.backspace();
+                    return;
+                }
+                KeyAction::Delete => {
+                    self.ai.query.delete_forward();
+                    return;
+                }
+                KeyAction::ClearInput => {
+                    self.ai.query.clear();
+                    return;
+                }
+                KeyAction::DeleteWordLeft => {
+                    self.ai.query.delete_word_left();
+                    return;
+                }
+                KeyAction::DeleteWordRight => {
+                    self.ai.query.delete_word_right();
+                    return;
+                }
+                KeyAction::MoveWordLeft => {
+                    self.ai.query.move_word_left();
+                    return;
+                }
+                KeyAction::MoveWordRight => {
+                    self.ai.query.move_word_right();
+                    return;
+                }
+                KeyAction::MoveHome => {
+                    self.ai.query.move_home();
+                    return;
+                }
+                KeyAction::MoveEnd => {
+                    self.ai.query.move_end();
+                    return;
+                }
+                KeyAction::Left => {
+                    self.ai.query.move_left();
+                    return;
+                }
+                KeyAction::Right => {
+                    self.ai.query.move_right();
+                    return;
+                }
+                KeyAction::Enter => {
+                    self.submit_ai_query();
+                    return;
+                }
+                _ => {} // fall through for Up/Down navigation, Esc, Ctrl+G, etc.
+            }
+        }
+
         match action {
             KeyAction::Quit => self.should_quit = true,
 
@@ -840,6 +924,10 @@ impl App {
                 self.preview_mode = false;
             }
 
+            // AI mode
+            KeyAction::EnterAiMode => self.enter_ai_mode(),
+            KeyAction::ExitAiMode => self.exit_ai_mode(),
+
             // Search mode: tree entry
             KeyAction::EnterTreeMode => self.enter_tree_mode(),
             KeyAction::EnterTreeModeRecent => self.enter_tree_mode_recent(),
@@ -865,10 +953,14 @@ impl App {
                 &self.recent.all,
                 &mut self.automation_cache,
             );
-            self.apply_groups_filter();
-            self.apply_recent_sessions_filter();
+            // Skip rebuilding filtered lists while AI re-ranking is active;
+            // exit_ai_mode() will re-apply filters from the latest data.
+            if !self.ai.active {
+                self.apply_groups_filter();
+                self.apply_recent_sessions_filter();
+            }
         }
-        if project_loaded {
+        if project_loaded && !self.ai.active {
             self.apply_recent_sessions_filter();
         }
 
@@ -889,6 +981,15 @@ impl App {
                     }
                 }
                 self.tree.tree_load_rx = None;
+            }
+        }
+
+        // Check for AI ranking result
+        if let Some(ref rx) = self.ai.result_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.ai.result_rx = None;
+                self.ai.thinking = false;
+                self.handle_ai_result(result);
             }
         }
 
@@ -949,7 +1050,9 @@ impl App {
                     &mut self.automation_cache,
                 );
                 self.search.all_groups = groups;
-                self.apply_groups_filter();
+                if !self.ai.active {
+                    self.apply_groups_filter();
+                }
                 self.search.results_count = count;
                 self.search.group_cursor = 0;
                 self.search.sub_cursor = 0;
@@ -993,6 +1096,134 @@ impl App {
                 .cloned()
                 .collect(),
         };
+    }
+
+    // -- AI mode methods --
+
+    fn enter_ai_mode(&mut self) {
+        self.ai.active = true;
+        self.ai.thinking = false;
+        self.ai.query.clear();
+        self.ai.error = None;
+        self.ai.ranked_count = None;
+    }
+
+    pub fn exit_ai_mode(&mut self) {
+        self.ai.active = false;
+        self.ai.thinking = false;
+        self.ai.result_rx = None;
+        self.ai.error = None;
+        self.ai.ranked_count = None;
+        // Re-apply filters from current data instead of restoring a potentially
+        // stale snapshot (filters or background loads may have changed while in AI mode).
+        if self.ai.original_recent_order.take().is_some() {
+            self.apply_recent_sessions_filter();
+            self.recent.cursor = 0;
+            self.recent.scroll_offset = 0;
+        }
+        if self.ai.original_groups_order.take().is_some() {
+            self.apply_groups_filter();
+            self.search.group_cursor = 0;
+        }
+    }
+
+    fn submit_ai_query(&mut self) {
+        if self.ai.query.is_empty() || self.ai.thinking {
+            return;
+        }
+        let query = self.ai.query.text().to_string();
+
+        // Snapshot lightweight session descriptors — no file I/O on main thread
+        let sessions: Vec<crate::ai::SessionInfo> = if self.in_recent_sessions_mode() {
+            self.recent
+                .filtered
+                .iter()
+                .map(|s| crate::ai::SessionInfo {
+                    file_path: s.file_path.clone(),
+                    session_id: s.session_id.clone(),
+                    project: s.project.clone(),
+                    summary: s.summary.clone(),
+                })
+                .collect()
+        } else {
+            self.search
+                .groups
+                .iter()
+                .map(|g| crate::ai::SessionInfo {
+                    file_path: g.file_path.clone(),
+                    session_id: g.session_id.clone(),
+                    project: crate::search::extract_project_from_path(&g.file_path),
+                    summary: String::new(),
+                })
+                .collect()
+        };
+
+        if sessions.is_empty() {
+            return;
+        }
+
+        match crate::ai::spawn_ai_rank(query, sessions) {
+            Ok(rx) => {
+                self.ai.thinking = true;
+                self.ai.error = None;
+                self.ai.result_rx = Some(rx);
+            }
+            Err(e) => {
+                self.ai.error = Some(e);
+            }
+        }
+    }
+
+    fn handle_ai_result(&mut self, result: crate::ai::AiRankResult) {
+        if let Some(err) = result.error {
+            self.ai.error = Some(err);
+            return;
+        }
+
+        let rank: std::collections::HashMap<&str, usize> = result
+            .ranked_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+
+        if self.in_recent_sessions_mode() {
+            if self.ai.original_recent_order.is_none() {
+                self.ai.original_recent_order = Some(self.recent.filtered.clone());
+            }
+            self.recent.filtered.sort_by_key(|s| {
+                rank.get(s.session_id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+            self.recent.cursor = 0;
+            self.recent.scroll_offset = 0;
+        } else {
+            if self.ai.original_groups_order.is_none() {
+                self.ai.original_groups_order = Some(self.search.groups.clone());
+            }
+            self.search.groups.sort_by_key(|g| {
+                rank.get(g.session_id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+            self.search.group_cursor = 0;
+        }
+
+        let matched_count = if self.in_recent_sessions_mode() {
+            self.recent
+                .filtered
+                .iter()
+                .filter(|s| rank.contains_key(s.session_id.as_str()))
+                .count()
+        } else {
+            self.search
+                .groups
+                .iter()
+                .filter(|g| rank.contains_key(g.session_id.as_str()))
+                .count()
+        };
+        self.ai.ranked_count = Some(matched_count);
     }
 
     /// Start an async search in the background thread

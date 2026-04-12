@@ -36,6 +36,10 @@ pub enum KeyAction {
     TogglePreview,
     ExitPreview,
 
+    // -- Search mode: AI --
+    EnterAiMode,
+    ExitAiMode,
+
     // -- Search mode: tree entry --
     EnterTreeMode,
     EnterTreeModeRecent,
@@ -62,6 +66,7 @@ pub struct KeyContext {
     pub in_recent_sessions_mode: bool,
     pub has_recent_sessions: bool,
     pub has_groups: bool,
+    pub ai_mode: bool,
 }
 
 /// Returns true if the key event is Ctrl+H (sent as Ctrl+Backspace on some terminals).
@@ -185,11 +190,22 @@ fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
         return KeyAction::MoveEnd;
     }
 
+    // Ctrl+G -> toggle AI search mode
+    if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return if ctx.ai_mode {
+            KeyAction::ExitAiMode
+        } else {
+            KeyAction::EnterAiMode
+        };
+    }
+
     // --- Plain keys ---
 
     match key.code {
         KeyCode::Esc => {
-            if ctx.preview_mode {
+            if ctx.ai_mode {
+                KeyAction::ExitAiMode
+            } else if ctx.preview_mode {
                 KeyAction::ExitPreview
             } else {
                 KeyAction::Quit
@@ -241,6 +257,7 @@ mod tests {
             in_recent_sessions_mode: false,
             has_recent_sessions: false,
             has_groups: false,
+            ai_mode: false,
         }
     }
 
@@ -719,5 +736,41 @@ mod tests {
             ),
             KeyAction::MoveWordRight,
         );
+    }
+
+    // =====================================================================
+    // AI mode
+    // =====================================================================
+
+    #[test]
+    fn search_ctrl_g_enters_ai_mode() {
+        assert_eq!(
+            classify_key(
+                key_mod(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                &search_ctx()
+            ),
+            KeyAction::EnterAiMode,
+        );
+    }
+
+    #[test]
+    fn search_ctrl_g_in_ai_mode_exits() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('g'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::ExitAiMode,
+        );
+    }
+
+    #[test]
+    fn search_esc_in_ai_mode_exits_ai() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ..search_ctx()
+        };
+        assert_eq!(classify_key(key(KeyCode::Esc), &ctx), KeyAction::ExitAiMode,);
     }
 }

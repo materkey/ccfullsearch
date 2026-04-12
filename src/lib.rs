@@ -9,6 +9,7 @@ macro_rules! ccs_debug {
     };
 }
 
+pub mod ai;
 pub mod cli;
 pub mod dag;
 pub mod recent;

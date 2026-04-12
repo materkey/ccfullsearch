@@ -171,6 +171,9 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {
+        if self.ai.active {
+            return;
+        }
         if self.preview_mode {
             self.preview_mode = false;
             return;

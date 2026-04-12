@@ -1,0 +1,339 @@
+use std::fmt::Write as _;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+
+use crate::recent::{extract_non_meta_user_text, is_real_user_prompt, truncate_summary};
+
+/// Context extracted from a single session for AI ranking.
+pub struct SessionContext {
+    pub session_id: String,
+    pub project: String,
+    pub summary: String,
+    pub user_messages: Vec<String>,
+}
+
+/// Result of an AI ranking request.
+pub struct AiRankResult {
+    pub ranked_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Extract up to 3 real user messages from first 50 lines of a session JSONL file.
+pub fn collect_session_context(
+    file_path: &str,
+    session_id: &str,
+    project: &str,
+    summary: &str,
+) -> SessionContext {
+    let mut user_messages = Vec::new();
+
+    if let Ok(file) = std::fs::File::open(file_path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines().take(50).flatten() {
+            if user_messages.len() >= 3 {
+                break;
+            }
+
+            let json: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if let Some(text) = extract_non_meta_user_text(&json) {
+                if is_real_user_prompt(&text) {
+                    user_messages.push(truncate_summary(&text, 200));
+                }
+            }
+        }
+    }
+
+    SessionContext {
+        session_id: session_id.to_string(),
+        project: project.to_string(),
+        summary: summary.to_string(),
+        user_messages,
+    }
+}
+
+/// Build a prompt for Claude to rank sessions by relevance to a query.
+pub fn build_prompt(query: &str, sessions: &[SessionContext]) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "You are a session relevance ranker. Given a user query and a list of Claude sessions, ",
+    );
+    prompt.push_str("return a JSON array of session IDs ranked by relevance to the query (most relevant first). ");
+    prompt.push_str("Only include sessions that are at least somewhat relevant. ");
+    prompt.push_str("Return ONLY a JSON array of strings, no other text.\n\n");
+    let _ = writeln!(prompt, "Query: {}\n\nSessions:", query);
+
+    for (i, s) in sessions.iter().enumerate() {
+        let _ = writeln!(prompt, "{}. ID: {}", i + 1, s.session_id);
+        if !s.project.is_empty() {
+            let _ = writeln!(prompt, "   Project: {}", s.project);
+        }
+        if !s.summary.is_empty() {
+            let _ = writeln!(prompt, "   Summary: {}", s.summary);
+        }
+        for (j, msg) in s.user_messages.iter().enumerate() {
+            let _ = writeln!(prompt, "   Message {}: {}", j + 1, msg);
+        }
+        prompt.push('\n');
+    }
+
+    prompt.push_str("Return JSON array of session IDs ranked by relevance:");
+    prompt
+}
+
+/// Parse AI response to extract a JSON array of session IDs.
+/// Finds the first `[` and its matching `]`, then tries to parse as Vec<String>.
+pub fn parse_ai_response(output: &str) -> Vec<String> {
+    let start = match output.find('[') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+
+    let mut depth = 0;
+    let mut end = None;
+    for (i, ch) in output[start..].char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(start + i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let end = match end {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+
+    serde_json::from_str::<Vec<String>>(&output[start..end]).unwrap_or_default()
+}
+
+/// Lightweight session descriptor for passing to the background thread.
+/// Contains only the data needed to locate and identify sessions — no file content.
+pub struct SessionInfo {
+    pub file_path: String,
+    pub session_id: String,
+    pub project: String,
+    pub summary: String,
+}
+
+/// Spawn a background thread that collects session context (file I/O), builds the prompt,
+/// calls `claude -p`, and returns the parsed ranking result via a one-shot channel.
+pub fn spawn_ai_rank(
+    query: String,
+    sessions: Vec<SessionInfo>,
+) -> Result<Receiver<AiRankResult>, String> {
+    let claude_path =
+        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
+
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        // Collect context from JSONL files (file I/O happens here, off the main thread)
+        let contexts: Vec<SessionContext> = sessions
+            .iter()
+            .map(|s| collect_session_context(&s.file_path, &s.session_id, &s.project, &s.summary))
+            .collect();
+
+        let prompt = build_prompt(&query, &contexts);
+
+        let result = match Command::new(&claude_path)
+            .args(["-p", &prompt])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let ranked_ids = parse_ai_response(&stdout);
+                    if ranked_ids.is_empty() {
+                        AiRankResult {
+                            ranked_ids: Vec::new(),
+                            error: Some("AI returned no rankings".to_string()),
+                        }
+                    } else {
+                        AiRankResult {
+                            ranked_ids,
+                            error: None,
+                        }
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    AiRankResult {
+                        ranked_ids: Vec::new(),
+                        error: Some(format!("claude exited with error: {}", stderr.trim())),
+                    }
+                }
+            }
+            Err(e) => AiRankResult {
+                ranked_ids: Vec::new(),
+                error: Some(format!("Failed to run claude: {}", e)),
+            },
+        };
+
+        let _ = tx.send(result);
+    });
+
+    Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn make_user_line(text: &str, is_meta: bool) -> String {
+        if is_meta {
+            format!(
+                r#"{{"type":"user","isMeta":true,"message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}}"#,
+                text
+            )
+        } else {
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}}"#,
+                text
+            )
+        }
+    }
+
+    fn make_assistant_line(text: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}},"sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#,
+            text
+        )
+    }
+
+    #[test]
+    fn test_collect_session_context_extracts_messages() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "{}", make_user_line("Hello world", false)).unwrap();
+        writeln!(f, "{}", make_assistant_line("Hi there")).unwrap();
+        writeln!(f, "{}", make_user_line("Second question", false)).unwrap();
+        writeln!(f, "{}", make_user_line("Third question", false)).unwrap();
+
+        let ctx = collect_session_context(
+            f.path().to_str().unwrap(),
+            "s1",
+            "my-project",
+            "A test session",
+        );
+
+        assert_eq!(ctx.session_id, "s1");
+        assert_eq!(ctx.project, "my-project");
+        assert_eq!(ctx.summary, "A test session");
+        assert_eq!(ctx.user_messages.len(), 3);
+        assert_eq!(ctx.user_messages[0], "Hello world");
+        assert_eq!(ctx.user_messages[1], "Second question");
+        assert_eq!(ctx.user_messages[2], "Third question");
+    }
+
+    #[test]
+    fn test_collect_session_context_skips_meta_and_system_reminder() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "{}", make_user_line("init message", true)).unwrap();
+        writeln!(
+            f,
+            "{}",
+            make_user_line("<system-reminder>hook output</system-reminder>", false)
+        )
+        .unwrap();
+        writeln!(f, "{}", make_user_line("Real question here", false)).unwrap();
+
+        let ctx = collect_session_context(f.path().to_str().unwrap(), "s1", "proj", "summary");
+
+        assert_eq!(ctx.user_messages.len(), 1);
+        assert_eq!(ctx.user_messages[0], "Real question here");
+    }
+
+    #[test]
+    fn test_collect_session_context_truncates_long_messages() {
+        let long_msg = "a".repeat(300);
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "{}", make_user_line(&long_msg, false)).unwrap();
+
+        let ctx = collect_session_context(f.path().to_str().unwrap(), "s1", "", "");
+
+        assert_eq!(ctx.user_messages.len(), 1);
+        assert!(ctx.user_messages[0].len() <= 200 + 3); // 200 chars + "..."
+        assert!(ctx.user_messages[0].ends_with("..."));
+    }
+
+    #[test]
+    fn test_collect_session_context_max_three_messages() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..10 {
+            writeln!(f, "{}", make_user_line(&format!("Message {}", i), false)).unwrap();
+        }
+
+        let ctx = collect_session_context(f.path().to_str().unwrap(), "s1", "", "");
+
+        assert_eq!(ctx.user_messages.len(), 3);
+    }
+
+    #[test]
+    fn test_build_prompt_contains_query_and_ids() {
+        let sessions = vec![
+            SessionContext {
+                session_id: "id-001".to_string(),
+                project: "proj-a".to_string(),
+                summary: "Working on feature X".to_string(),
+                user_messages: vec!["How to sort?".to_string()],
+            },
+            SessionContext {
+                session_id: "id-002".to_string(),
+                project: "proj-b".to_string(),
+                summary: "Bug fix session".to_string(),
+                user_messages: vec![],
+            },
+        ];
+
+        let prompt = build_prompt("sorting algorithm", &sessions);
+
+        assert!(prompt.contains("sorting algorithm"));
+        assert!(prompt.contains("id-001"));
+        assert!(prompt.contains("id-002"));
+        assert!(prompt.contains("proj-a"));
+        assert!(prompt.contains("Working on feature X"));
+        assert!(prompt.contains("How to sort?"));
+        assert!(prompt.contains("Bug fix session"));
+        assert!(prompt.contains("JSON array"));
+    }
+
+    #[test]
+    fn test_parse_ai_response_clean_json() {
+        let output = r#"["id-001", "id-003", "id-002"]"#;
+        let result = parse_ai_response(output);
+        assert_eq!(result, vec!["id-001", "id-003", "id-002"]);
+    }
+
+    #[test]
+    fn test_parse_ai_response_wrapped_in_prose() {
+        let output = r#"Based on the query, here are the sessions ranked by relevance:
+
+["sess-abc", "sess-def"]
+
+These sessions are most relevant because..."#;
+        let result = parse_ai_response(output);
+        assert_eq!(result, vec!["sess-abc", "sess-def"]);
+    }
+
+    #[test]
+    fn test_parse_ai_response_invalid() {
+        assert!(parse_ai_response("no json here").is_empty());
+        assert!(parse_ai_response("[unclosed").is_empty());
+        assert!(parse_ai_response("").is_empty());
+        assert!(parse_ai_response("[1, 2, 3]").is_empty()); // not strings
+    }
+}

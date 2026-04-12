@@ -122,14 +122,25 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     );
     frame.render_widget(header, header_area);
 
-    // Input
-    let input_style = if app.typing {
+    // Input — switch between normal search and AI query
+    let (display_text, display_cursor) = if app.ai.active {
+        (app.ai.query.text(), app.ai.query.cursor_pos())
+    } else {
+        (app.input.text(), app.input.cursor_pos())
+    };
+    let input_style = if app.ai.active {
+        Style::default().fg(Color::Magenta)
+    } else if app.typing {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::White)
     };
     use crate::tui::state::AutomationFilter;
-    let mut search_title = String::from("Search");
+    let mut search_title = if app.ai.active {
+        String::from("AI")
+    } else {
+        String::from("Search")
+    };
     if app.picker_mode {
         search_title.push_str(" [PICK]");
     }
@@ -144,8 +155,10 @@ pub fn render(frame: &mut Frame, view: &AppView) {
         AutomationFilter::Manual => search_title.push_str(" [Manual]"),
         AutomationFilter::Auto => search_title.push_str(" [Auto]"),
     }
-    let has_active_filter =
-        app.regex_mode || app.project_filter || app.automation_filter != AutomationFilter::All;
+    let has_active_filter = app.ai.active
+        || app.regex_mode
+        || app.project_filter
+        || app.automation_filter != AutomationFilter::All;
     let title_style = if has_active_filter {
         Style::default()
             .fg(Color::Magenta)
@@ -153,19 +166,41 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     } else {
         Style::default()
     };
-    let input = Paragraph::new(app.input.text()).style(input_style).block(
+    let input = Paragraph::new(display_text).style(input_style).block(
         Block::default()
             .borders(Borders::ALL)
             .title(search_title.as_str())
             .title_style(title_style),
     );
     frame.render_widget(input, input_area);
-    // Place native terminal cursor at cursor_pos (inside the border: +1 for border offset)
-    let cursor_x = app.input.text()[..app.input.cursor_pos()].chars().count() as u16;
+    let cursor_x = display_text[..display_cursor].chars().count() as u16;
     frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
 
-    // Status
-    let status = if app.typing {
+    // Status — AI mode takes priority
+    let status = if app.ai.active && app.ai.thinking {
+        Span::styled(
+            "AI thinking...",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::ITALIC),
+        )
+    } else if app.ai.active {
+        if let Some(ref err) = app.ai.error {
+            Span::styled(format!("AI: {}", err), Style::default().fg(Color::Red))
+        } else if let Some(n) = app.ai.ranked_count {
+            Span::styled(
+                format!("AI: {} sessions ranked", n),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                "Type query, Enter to rank",
+                Style::default().fg(Color::Magenta),
+            )
+        }
+    } else if app.typing {
         Span::styled(
             "Typing...",
             Style::default()
@@ -225,7 +260,12 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     let mut help_spans: Vec<Span> = Vec::new();
     let dim = Style::default().fg(Color::DarkGray);
 
-    if app.preview_mode {
+    if app.ai.active {
+        help_spans.push(Span::styled(
+            "[Enter] Rank  [↑↓] Navigate  [Esc/Ctrl+G] Cancel",
+            dim,
+        ));
+    } else if app.preview_mode {
         help_spans.push(Span::styled(
             "[Tab/Ctrl+V/Enter] Close preview  [Ctrl+A] Project  [Ctrl+H] ",
             dim,
@@ -234,13 +274,13 @@ pub fn render(frame: &mut Frame, view: &AppView) {
         help_spans.push(Span::styled("  [Ctrl+R] Regex  [Esc] Quit", dim));
     } else if in_recent_mode {
         help_spans.push(Span::styled(
-            "[↑↓] Navigate  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ",
+            "[↑↓] Navigate  [Enter] Resume  [Ctrl+G] AI  [Ctrl+A] Project  [Ctrl+H] ",
             dim,
         ));
         help_spans.push(Span::styled(filter_label, filter_style));
         help_spans.push(Span::styled("  [Ctrl+B] Tree  [Esc] Quit", dim));
     } else if !app.search.groups.is_empty() {
-        help_spans.push(Span::styled("[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ", dim));
+        help_spans.push(Span::styled("[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+G] AI  [Ctrl+A] Project  [Ctrl+H] ", dim));
         help_spans.push(Span::styled(filter_label, filter_style));
         help_spans.push(Span::styled(
             "  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit",
