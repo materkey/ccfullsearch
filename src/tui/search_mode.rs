@@ -15,7 +15,7 @@ impl App {
         if self.in_recent_sessions_mode() {
             if !self.recent.filtered.is_empty() && self.recent.cursor > 0 {
                 self.recent.cursor -= 1;
-                self.adjust_recent_scroll(self.last_tree_visible_height);
+                self.recent.adjust_scroll(self.last_tree_visible_height);
             }
             return;
         }
@@ -47,7 +47,7 @@ impl App {
                 && self.recent.cursor < self.recent.filtered.len().saturating_sub(1)
             {
                 self.recent.cursor += 1;
-                self.adjust_recent_scroll(self.last_tree_visible_height);
+                self.recent.adjust_scroll(self.last_tree_visible_height);
             }
             return;
         }

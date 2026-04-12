@@ -219,25 +219,20 @@ fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Recent sessions sub-state: global list, project-specific list, filtered view,
-/// background loaders, and cursor/scroll state.
+/// Recent sessions sub-state: encapsulates global/project data sources,
+/// filtered view, background loaders, and navigation cursor.
 pub struct RecentState {
-    /// All recently accessed sessions (unfiltered, loaded once at startup)
+    /// Unfiltered global sessions (loaded once at startup)
     pub(crate) all: Vec<RecentSession>,
-    /// Project-specific recent sessions (loaded when project filter is activated)
+    /// Project-specific sessions (loaded when project filter is activated)
     pub(crate) project: Option<Vec<RecentSession>>,
-    /// Filtered view shown to the user
-    pub filtered: Vec<RecentSession>,
-    /// Cursor position in the visible list
-    pub cursor: usize,
-    /// Vertical scroll offset
-    pub scroll_offset: usize,
-    /// Whether global sessions are still loading
-    pub loading: bool,
+    pub(crate) filtered: Vec<RecentSession>,
+    pub(crate) cursor: usize,
+    pub(crate) scroll_offset: usize,
+    pub(crate) loading: bool,
     /// Channel for global recent session background load
     pub(crate) load_rx: Option<Receiver<Vec<RecentSession>>>,
-    /// Whether project-specific sessions are still loading
-    pub project_loading: bool,
+    pub(crate) project_loading: bool,
     /// Channel for project-specific recent session background load
     pub(crate) project_load_rx: Option<Receiver<Vec<RecentSession>>>,
 }
@@ -977,10 +972,6 @@ impl App {
             &self.current_project_paths,
             &self.automation_filter,
         );
-    }
-
-    pub(crate) fn adjust_recent_scroll(&mut self, visible_height: usize) {
-        self.recent.adjust_scroll(visible_height);
     }
 
     /// Rebuild `groups` from `all_groups` based on automation filter.
