@@ -20,6 +20,7 @@ Thumbs.db
 # External plugin skills (installed by plugins, not part of this project)
 .claude/skills/bmad-*/
 .claude/skills/wds-*/
+.claude/skills/rust-skills
 _bmad/
 
 # Agent-generated files
