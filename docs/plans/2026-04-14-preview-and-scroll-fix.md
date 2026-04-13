@@ -50,7 +50,7 @@
 - [x] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 
 ### Task 2: Replace render_widget with render_stateful_widget for auto-scroll
-- [ ] In `src/tui/render_search.rs`, in `render_groups()`, replace the current `frame.render_widget(list, area)` call with `ListState`-based stateful rendering. After building the `items` vec, add:
+- [x] In `src/tui/render_search.rs`, in `render_groups()`, replace the current `frame.render_widget(list, area)` call with `ListState`-based stateful rendering. After building the `items` vec, add:
   ```rust
   let mut list_state = ratatui::widgets::ListState::default();
   // Map group_cursor to item index.
@@ -72,7 +72,7 @@
   frame.render_stateful_widget(list, area, &mut list_state);
   ```
   This replaces the existing `frame.render_widget(list, area)` — no new fields in SearchState needed, ListState is created per-draw and auto-scrolls to `selected`
-- [ ] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+- [x] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 
 ### Task 3: Final verification
 - [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`

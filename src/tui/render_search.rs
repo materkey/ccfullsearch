@@ -497,10 +497,21 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     }
 
     let mut items: Vec<ListItem> = vec![];
+    let mut selected_item_idx = 0usize;
 
     for (i, group) in app.search.groups.iter().enumerate() {
         let is_selected = i == app.search.group_cursor;
         let is_expanded = is_selected && app.search.expanded;
+
+        // Track selected item index: for expanded group, header + 1 + sub_cursor;
+        // for collapsed group, just the header position.
+        if is_selected {
+            selected_item_idx = if is_expanded {
+                items.len() + 1 + app.search.sub_cursor
+            } else {
+                items.len()
+            };
+        }
 
         // Group header
         let header = render_group_header(group, is_selected, is_expanded);
@@ -539,21 +550,6 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 items.push(sub_item);
             }
         }
-    }
-
-    // Map group_cursor to item index for ListState auto-scroll.
-    // Each collapsed group = 2 items (header + preview).
-    // Only the group at group_cursor can be expanded.
-    let mut selected_item_idx = 0;
-    for (i, _group) in app.search.groups.iter().enumerate() {
-        if i == app.search.group_cursor {
-            if app.search.expanded {
-                selected_item_idx += 1 + app.search.sub_cursor;
-            }
-            break;
-        }
-        // Prior groups are always collapsed (expanded only applies to group_cursor)
-        selected_item_idx += 2; // 1 header + 1 preview
     }
 
     let mut list_state = ListState::default();
