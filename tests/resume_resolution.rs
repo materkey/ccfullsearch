@@ -355,3 +355,63 @@ fn e2e_generic_resume_does_not_linearize_branched_session() {
         format!("{}.jsonl", session_id)
     );
 }
+
+// =============================================================================
+// Scenario 9: resume_cli_child fails gracefully when claude is not in PATH
+//
+// This test mutates the global PATH env var, which would cause race conditions
+// with ripgrep tests if run as a unit test. As an integration test it gets its
+// own process, so the mutation is safe.
+// =============================================================================
+
+/// RAII guard that restores PATH on drop (even on panic).
+struct PathGuard {
+    original: String,
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        // SAFETY: integration tests run single-threaded in their own process;
+        // no concurrent env reads.
+        unsafe { std::env::set_var("PATH", &self.original) };
+    }
+}
+
+#[test]
+fn e2e_resume_cli_child_fails_without_claude_binary() {
+    let dir = TempDir::new().unwrap();
+    let project_dir = dir
+        .path()
+        .join(".claude")
+        .join("projects")
+        .join("-tmp-testproj");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    let session_id = "child-test";
+    let session_file = project_dir.join(format!("{}.jsonl", session_id));
+    {
+        let mut f = fs::File::create(&session_file).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#,
+            session_id
+        )
+        .unwrap();
+    }
+
+    let _guard = PathGuard {
+        original: std::env::var("PATH").unwrap_or_default(),
+    };
+    // SAFETY: integration tests run single-threaded in their own process;
+    // no concurrent env reads.
+    unsafe { std::env::set_var("PATH", dir.path()) };
+
+    let result =
+        ccs::resume::launcher::resume_cli_child(session_id, session_file.to_str().unwrap());
+
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().contains("not found"),
+        "expected error to contain 'not found'"
+    );
+}

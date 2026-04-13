@@ -628,36 +628,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resume_cli_child_fails_without_claude_binary() {
-        // resume_cli_child should fail gracefully when claude is not in PATH
-        let dir = TempDir::new().unwrap();
-        let project_dir = dir
-            .path()
-            .join(".claude")
-            .join("projects")
-            .join("-tmp-testproj");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let session_id = "child-test";
-        let session_file = project_dir.join(format!("{}.jsonl", session_id));
-        {
-            let mut f = fs::File::create(&session_file).unwrap();
-            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
-        }
-
-        // Override PATH to ensure claude is not found
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        unsafe { std::env::set_var("PATH", dir.path()) };
-
-        let result = resume_cli_child(session_id, session_file.to_str().unwrap());
-
-        unsafe { std::env::set_var("PATH", &original_path) };
-
-        assert!(result.is_err());
-        assert!(
-            result.unwrap_err().contains("not found"),
-            "Should report claude binary not found"
-        );
-    }
+    // NOTE: test_resume_cli_child_fails_without_claude_binary was moved to
+    // tests/resume_resolution.rs — it mutates PATH globally and caused flaky
+    // failures in parallel ripgrep tests when run as a unit test.
 }
