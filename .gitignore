@@ -21,3 +21,7 @@ Thumbs.db
 .claude/skills/bmad-*/
 .claude/skills/wds-*/
 _bmad/
+
+# Agent-generated files
+.agents/
+skills-lock.json
