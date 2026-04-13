@@ -75,9 +75,9 @@
 - [x] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 
 ### Task 3: Final verification
-- [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] Run `cargo test` — all tests must pass
-- [ ] Run `cargo run` and verify visually:
+- [x] Run `cargo clippy --all-targets --all-features -- -D warnings`
+- [x] Run `cargo test` — all tests must pass
+- [x] Run `cargo run` and verify visually:
   - Search → each collapsed group shows preview of first match content
   - Many results → arrow keys keep cursor visible, list scrolls
   - Expand/collapse (→/←) → preview hides, sub-matches show, scroll adjusts
