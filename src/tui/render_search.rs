@@ -633,15 +633,21 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
         ""
     };
 
+    let count_str = match group.message_count {
+        Some(total) => {
+            let suffix = if group.message_count_compacted {
+                "+"
+            } else {
+                ""
+            };
+            format!("{}/{}{}", group.matches.len(), total, suffix)
+        }
+        None => format!("{}", group.matches.len()),
+    };
+
     format!(
         "{} [{}] {} | {} | {} | {} ({} matches){}",
-        expand_indicator,
-        source,
-        date_str,
-        project,
-        branch,
-        session_display,
-        group.matches.len(),
+        expand_indicator, source, date_str, project, branch, session_display, count_str,
         auto_tag
     )
 }
@@ -1030,6 +1036,8 @@ mod tests {
             file_path: m.file_path.clone(),
             matches: vec![m],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.results_query = "test".to_string();
 
@@ -1239,6 +1247,8 @@ mod tests {
             file_path: m.file_path.clone(),
             matches: vec![m],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.preview_mode = true;
 
@@ -1281,6 +1291,8 @@ mod tests {
                 file_path: m.file_path.clone(),
                 matches: vec![m],
                 automation: None,
+                message_count: None,
+                message_count_compacted: false,
             });
         }
 
@@ -1352,6 +1364,8 @@ mod tests {
             file_path: large_match.file_path.clone(),
             matches: vec![large_match, small_match],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.results_query = "test".to_string();
 
@@ -1452,6 +1466,8 @@ mod tests {
             file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
             matches,
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.results_query = "test".to_string();
         app.preview_mode = true;
@@ -1558,6 +1574,8 @@ mod tests {
                 },
             ],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.results_query = "test".to_string();
         app.preview_mode = true;
@@ -1662,6 +1680,8 @@ mod tests {
                 },
             ],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.results_query = "test".to_string();
         app.preview_mode = true;
@@ -1719,6 +1739,8 @@ mod tests {
             file_path: m.file_path.clone(),
             matches: vec![m],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         };
 
         let text = build_group_header_text(&group, false);
@@ -1753,6 +1775,8 @@ mod tests {
             file_path: m.file_path.clone(),
             matches: vec![m],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         };
 
         let text = build_group_header_text(&group, false);
@@ -1946,6 +1970,8 @@ mod tests {
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: Some("ralphex".to_string()),
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.groups = vec![];
 
@@ -1988,6 +2014,8 @@ mod tests {
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.groups = app.search.all_groups.clone();
         app.search.search_truncated = true;
@@ -2031,6 +2059,8 @@ mod tests {
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.groups = app.search.all_groups.clone();
         app.search.search_truncated = false;

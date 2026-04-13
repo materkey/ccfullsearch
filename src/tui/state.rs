@@ -509,6 +509,10 @@ pub struct SearchState {
     pub(crate) search_seq: u64,
     /// Whether the last search hit the per-file match limit (results may be incomplete)
     pub search_truncated: bool,
+    /// Channel to receive (file_path, count, compacted) from background message-counting thread
+    pub(crate) message_count_rx: Option<std::sync::mpsc::Receiver<(String, usize, bool)>>,
+    /// Cancellation flag for the background counting thread
+    pub(crate) message_count_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Tree-view state: loaded tree, cursor, scroll, background loader.
@@ -661,6 +665,8 @@ impl App {
                 search_tx: query_tx,
                 search_seq: 0,
                 search_truncated: false,
+                message_count_rx: None,
+                message_count_cancel: None,
             },
             tree: TreeState {
                 session_tree: None,
@@ -768,6 +774,10 @@ impl App {
         self.search.latest_chains.clear();
         self.search.searching = false;
         self.search.error = None;
+        if let Some(flag) = self.search.message_count_cancel.take() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.search.message_count_rx = None;
     }
 
     /// Clear input and reset search state (Ctrl-C behavior)
@@ -984,6 +994,23 @@ impl App {
             }
         }
 
+        // Poll background message counts
+        if let Some(ref rx) = self.search.message_count_rx {
+            let mut any_updated = false;
+            while let Ok((file_path, count, compacted)) = rx.try_recv() {
+                for group in &mut self.search.all_groups {
+                    if group.file_path == file_path {
+                        group.message_count = Some(count);
+                        group.message_count_compacted = compacted;
+                        any_updated = true;
+                    }
+                }
+            }
+            if any_updated && !self.ai.active {
+                self.apply_groups_filter();
+            }
+        }
+
         // Check for AI ranking result
         if let Some(ref rx) = self.ai.result_rx {
             if let Ok(result) = rx.try_recv() {
@@ -1060,6 +1087,39 @@ impl App {
                 self.search.error = None;
                 self.search.latest_chains.clear();
                 self.search.searching = false;
+
+                // Spawn background thread to count total messages per session file
+                if let Some(flag) = self.search.message_count_cancel.take() {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                let file_paths: Vec<String> = self
+                    .search
+                    .all_groups
+                    .iter()
+                    .map(|g| g.file_path.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                if !file_paths.is_empty() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let cancel =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel_clone = cancel.clone();
+                    std::thread::spawn(move || {
+                        for fp in file_paths {
+                            if cancel_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            let (msg_count, compacted) =
+                                crate::search::count_session_messages(&fp);
+                            if tx.send((fp, msg_count, compacted)).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    self.search.message_count_rx = Some(rx);
+                    self.search.message_count_cancel = Some(cancel);
+                }
             }
             Err(e) => {
                 self.search.error = Some(e);
@@ -1551,6 +1611,8 @@ mod tests {
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.group_cursor = 1;
         app.search.sub_cursor = 2;
@@ -1836,6 +1898,8 @@ mod tests {
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.search.group_cursor = 1;
         app.search.sub_cursor = 2;

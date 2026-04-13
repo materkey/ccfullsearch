@@ -9,6 +9,10 @@ pub struct SessionGroup {
     pub file_path: String,
     pub matches: Vec<RipgrepMatch>,
     pub automation: Option<String>,
+    /// Total user+assistant messages in the session file. None = not yet loaded.
+    pub message_count: Option<usize>,
+    /// Whether the session was compacted (pre-compaction messages absent from file).
+    pub message_count_compacted: bool,
 }
 
 impl SessionGroup {
@@ -52,6 +56,8 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
                     file_path: m.file_path.clone(),
                     matches: vec![m],
                     automation: None,
+                    message_count: None,
+                    message_count_compacted: false,
                 },
             );
         }
@@ -78,6 +84,35 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 
     groups
 }
+
+/// Count user + assistant messages in a JSONL session file.
+/// Returns (count, compacted) — compacted=true if summary/compact_boundary records found.
+/// For compacted sessions, count reflects only post-compaction messages.
+pub fn count_session_messages(file_path: &str) -> (usize, bool) {
+    use std::io::{BufRead, BufReader};
+
+    let file = match std::fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return (0, false),
+    };
+    let reader = BufReader::new(file);
+    let mut count = 0usize;
+    let mut compacted = false;
+
+    for line in reader.lines().map_while(Result::ok) {
+        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match json.get("type").and_then(|v| v.as_str()) {
+            Some("user") | Some("assistant") => count += 1,
+            Some("summary") | Some("compact_boundary") => compacted = true,
+            _ => {}
+        }
+    }
+    (count, compacted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +246,8 @@ mod tests {
                 make_match("test", 15),
             ],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         };
 
         let latest = group.latest_timestamp();
@@ -227,6 +264,8 @@ mod tests {
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![make_match("test", 0), make_match("test", 1)],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         };
 
         let first = group.first_match();
@@ -245,6 +284,8 @@ mod tests {
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         };
 
         let first = group.first_match();
@@ -419,5 +460,43 @@ mod tests {
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].matches.len(), 1, "Should skip None messages");
+    }
+
+    #[test]
+    fn test_count_session_messages_normal() {
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"q1"}},"sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"a1"}},"sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"q2"}},"sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+
+        let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
+        assert_eq!(count, 3);
+        assert!(!compacted);
+    }
+
+    #[test]
+    fn test_count_session_messages_compacted() {
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"q1"}},"sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"a1"}},"sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"summary","summary":"conversation summary","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"q2"}},"sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"a2"}},"sessionId":"s1","timestamp":"2025-01-01T00:04:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"progress","uuid":"p1","sessionId":"s1","timestamp":"2025-01-01T00:05:00Z"}}"#).unwrap();
+
+        let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
+        assert_eq!(count, 4);
+        assert!(compacted);
+    }
+
+    #[test]
+    fn test_count_session_messages_nonexistent_file() {
+        let (count, compacted) = count_session_messages("/nonexistent/file.jsonl");
+        assert_eq!(count, 0);
+        assert!(!compacted);
     }
 }

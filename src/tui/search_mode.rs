@@ -304,6 +304,8 @@ mod tests {
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
 
         app.on_right();
@@ -321,6 +323,8 @@ mod tests {
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.input.set_text("query"); // cursor at end (5)
         app.search.expanded = true;
@@ -454,6 +458,8 @@ mod tests {
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         // Even with empty input, if groups exist we're in search results mode
         assert!(!app.in_recent_sessions_mode());
@@ -620,6 +626,8 @@ mod tests {
                 source: SessionSource::ClaudeCodeCLI,
             }],
             automation: None,
+            message_count: None,
+            message_count_compacted: false,
         }];
         app.input.set_text("hello");
 

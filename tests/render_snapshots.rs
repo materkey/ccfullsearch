@@ -83,6 +83,8 @@ fn snapshot_search_with_results() {
         file_path: m.file_path.clone(),
         matches: vec![m.clone()],
         automation: None,
+        message_count: None,
+        message_count_compacted: false,
     }];
     app.search.results_count = 1;
     app.search.results_query = "sort".to_string();
