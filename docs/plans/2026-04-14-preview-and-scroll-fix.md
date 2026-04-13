@@ -26,7 +26,7 @@
 ## Implementation Steps
 
 ### Task 1: Add preview line for collapsed groups
-- [ ] In `src/tui/render_search.rs`, in `render_groups()` function (around line 499-526), after `items.push(header)` for collapsed (NOT expanded) groups, add a second ListItem showing the first match's content preview:
+- [x] In `src/tui/render_search.rs`, in `render_groups()` function (around line 499-526), after `items.push(header)` for collapsed (NOT expanded) groups, add a second ListItem showing the first match's content preview:
   ```rust
   if !is_expanded {
       if let Some(first) = group.first_match() {
@@ -47,7 +47,7 @@
   }
   ```
   The functions `sanitize_content()` and `truncate_to_width()` already exist in render_search.rs
-- [ ] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+- [x] Verify: `cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 
 ### Task 2: Replace render_widget with render_stateful_widget for auto-scroll
 - [ ] In `src/tui/render_search.rs`, in `render_groups()`, replace the current `frame.render_widget(list, area)` call with `ListState`-based stateful rendering. After building the `items` vec, add:
