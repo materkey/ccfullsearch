@@ -1,5 +1,5 @@
 use crate::search::{extract_project_from_path, sanitize_content};
-use crate::tui::render_search::truncate_to_width;
+use crate::tui::render_search::{build_help_line, truncate_to_width, HintItem};
 use crate::tui::view::AppView;
 use ratatui::{
     layout::{Constraint, Layout},
@@ -53,12 +53,44 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
     }
 
     // Help bar
-    let help_text = if app.preview_mode {
-        "[Tab/Enter] Close preview  [Esc] Back to search"
+    let dim = Style::default().fg(Color::DarkGray);
+    let hints: Vec<HintItem> = if app.preview_mode {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[Tab/Enter] Close preview", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Back", dim)],
+                min_width: 0,
+            },
+        ]
     } else {
-        "[Up/Down] Navigate  [Left/Right] Jump branches  [Tab] Preview  [Enter] Resume  [b/Esc] Back"
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[←→] Jump branches", dim)],
+                min_width: 80,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Tab] Preview", dim)],
+                min_width: 70,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[b/Esc] Back", dim)],
+                min_width: 0,
+            },
+        ]
     };
-    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    let help_line = build_help_line(&hints, help_area.width);
+    let help = Paragraph::new(help_line);
     frame.render_widget(help, help_area);
 }
 

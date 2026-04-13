@@ -62,8 +62,8 @@ src/
     ├── view.rs       # AppView<'a> — read-only projection of App for pure rendering
     ├── search_mode.rs# Search navigation, filtering, input handling, recent sessions navigation
     ├── tree_mode.rs  # Tree mode enter/exit, DAG navigation
-    ├── render_search.rs # Search results + preview rendering (takes &AppView, not &mut App)
-    └── render_tree.rs   # Tree DAG rendering with graph symbols (takes &AppView, not &mut App)
+    ├── render_search.rs # Search results + preview rendering (takes &AppView, not &mut App); defines HintItem/build_help_line() for adaptive width-aware help bars, used by render_tree.rs
+    └── render_tree.rs   # Tree DAG rendering with graph symbols (takes &AppView, not &mut App); imports HintItem/build_help_line from render_search.rs
 
 .claude-plugin/
 ├── plugin.json                         # Claude Code plugin manifest (name, version, skills path)

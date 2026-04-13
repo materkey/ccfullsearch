@@ -12,6 +12,77 @@ use ratatui::{
 };
 use std::collections::HashSet;
 
+#[derive(Clone)]
+pub(crate) struct HintItem<'a> {
+    pub spans: Vec<Span<'a>>,
+    pub min_width: u16,
+}
+
+pub(crate) fn build_help_line<'a>(hints: &[HintItem<'a>], available_width: u16) -> Line<'a> {
+    let separator = "  ";
+    let sep_len = separator.len();
+    let width = available_width as usize;
+
+    // Pre-compute char widths for all hints
+    let widths: Vec<usize> = hints
+        .iter()
+        .map(|h| h.spans.iter().map(|s| s.content.chars().count()).sum())
+        .collect();
+
+    // Phase 1: keep hints whose min_width threshold is met
+    let mut keep: Vec<bool> = hints
+        .iter()
+        .map(|h| h.min_width <= available_width)
+        .collect();
+
+    // Phase 2: if selected hints overflow, drop optional hints (highest min_width first)
+    while kept_line_width(&keep, &widths, sep_len) > width {
+        let mut best: Option<usize> = None;
+        for i in 0..hints.len() {
+            if keep[i]
+                && hints[i].min_width > 0
+                && best.is_none_or(|b| hints[i].min_width > hints[b].min_width)
+            {
+                best = Some(i);
+            }
+        }
+        match best {
+            Some(idx) => keep[idx] = false,
+            None => break, // only essentials remain
+        }
+    }
+
+    // Build final spans
+    let mut result_spans: Vec<Span<'a>> = Vec::new();
+    let mut first = true;
+    for (i, hint) in hints.iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        if !first {
+            result_spans.push(Span::raw(separator));
+        }
+        result_spans.extend(hint.spans.clone());
+        first = false;
+    }
+    Line::from(result_spans)
+}
+
+fn kept_line_width(keep: &[bool], widths: &[usize], sep_len: usize) -> usize {
+    let mut total = 0;
+    let mut count = 0usize;
+    for (i, &k) in keep.iter().enumerate() {
+        if k {
+            total += widths[i];
+            count += 1;
+        }
+    }
+    if count > 1 {
+        total += (count - 1) * sep_len;
+    }
+    total
+}
+
 fn search_results_status_text(app: &AppView) -> Option<String> {
     if app.search.results_query.is_empty() {
         return None;
@@ -257,45 +328,152 @@ pub fn render(frame: &mut Frame, view: &AppView) {
             .add_modifier(Modifier::BOLD),
     };
 
-    let mut help_spans: Vec<Span> = Vec::new();
     let dim = Style::default().fg(Color::DarkGray);
 
-    if app.ai.active {
-        help_spans.push(Span::styled(
-            "[Enter] Rank  [↑↓] Navigate  [Esc/Ctrl+G] Cancel",
-            dim,
-        ));
-    } else if app.preview_mode {
-        help_spans.push(Span::styled(
-            "[Tab/Ctrl+V/Enter] Close preview  [Ctrl+A] Project  [Ctrl+H] ",
-            dim,
-        ));
-        help_spans.push(Span::styled(filter_label, filter_style));
-        help_spans.push(Span::styled("  [Ctrl+R] Regex  [Esc] Quit", dim));
-    } else if in_recent_mode {
-        help_spans.push(Span::styled(
-            "[↑↓] Navigate  [Enter] Resume  [Ctrl+G] AI  [Ctrl+A] Project  [Ctrl+H] ",
-            dim,
-        ));
-        help_spans.push(Span::styled(filter_label, filter_style));
-        help_spans.push(Span::styled("  [Ctrl+B] Tree  [Esc] Quit", dim));
-    } else if !app.search.groups.is_empty() {
-        help_spans.push(Span::styled("[↑↓] Navigate  [→←] Expand  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+G] AI  [Ctrl+A] Project  [Ctrl+H] ", dim));
-        help_spans.push(Span::styled(filter_label, filter_style));
-        help_spans.push(Span::styled(
-            "  [Ctrl+B] Tree  [Ctrl+R] Regex  [Esc] Quit",
-            dim,
-        ));
+    let hints: Vec<HintItem> = if app.ai.active {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[Enter] Rank", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc/Ctrl+G] Cancel", dim)],
+                min_width: 0,
+            },
+        ]
     } else {
-        help_spans.push(Span::styled(
-            "[↑↓] Navigate  [Tab/Ctrl+V] Preview  [Enter] Resume  [Ctrl+A] Project  [Ctrl+H] ",
-            dim,
-        ));
-        help_spans.push(Span::styled(filter_label, filter_style));
-        help_spans.push(Span::styled("  [Ctrl+R] Regex  [Esc] Quit", dim));
-    }
+        let filter_hint = HintItem {
+            spans: vec![
+                Span::styled("[Ctrl+H] ", dim),
+                Span::styled(filter_label, filter_style),
+            ],
+            min_width: 60,
+        };
 
-    let help = Paragraph::new(Line::from(help_spans));
+        if app.preview_mode {
+            vec![
+                HintItem {
+                    spans: vec![Span::styled("[Tab/Ctrl+V/Enter] Close preview", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                    min_width: 70,
+                },
+                filter_hint,
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                    min_width: 90,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Esc] Quit", dim)],
+                    min_width: 0,
+                },
+            ]
+        } else if in_recent_mode {
+            vec![
+                HintItem {
+                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Enter] Resume", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+G] AI", dim)],
+                    min_width: 80,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                    min_width: 70,
+                },
+                filter_hint,
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
+                    min_width: 90,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Esc] Quit", dim)],
+                    min_width: 0,
+                },
+            ]
+        } else if !app.search.groups.is_empty() {
+            vec![
+                HintItem {
+                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[→←] Expand", dim)],
+                    min_width: 100,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
+                    min_width: 90,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Enter] Resume", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+G] AI", dim)],
+                    min_width: 80,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                    min_width: 70,
+                },
+                filter_hint,
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
+                    min_width: 90,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                    min_width: 100,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Esc] Quit", dim)],
+                    min_width: 0,
+                },
+            ]
+        } else {
+            vec![
+                HintItem {
+                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
+                    min_width: 80,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Enter] Resume", dim)],
+                    min_width: 0,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                    min_width: 70,
+                },
+                filter_hint,
+                HintItem {
+                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                    min_width: 90,
+                },
+                HintItem {
+                    spans: vec![Span::styled("[Esc] Quit", dim)],
+                    min_width: 0,
+                },
+            ]
+        }
+    };
+
+    let help = Paragraph::new(build_help_line(&hints, help_area.width));
     frame.render_widget(help, help_area);
 }
 
@@ -1705,7 +1883,7 @@ mod tests {
         use crate::recent::RecentSession;
         use chrono::TimeZone;
 
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -1726,9 +1904,10 @@ mod tests {
             .expect("Render should not panic");
 
         // Check that help bar shows recent sessions keybindings
+        // Width 120 ensures all hints fit without overflow truncation
         let buffer = terminal.backend().buffer();
         let mut last_line = String::new();
-        for x in 0..100 {
+        for x in 0..120 {
             last_line.push_str(buffer.cell((x, 23)).unwrap().symbol());
         }
         assert!(
@@ -1936,5 +2115,205 @@ mod tests {
             !buffer_contains(terminal.backend().buffer(), 100, 24, "[PICK]"),
             "Status bar should NOT contain [PICK] indicator in normal mode"
         );
+    }
+
+    fn line_to_string(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn make_test_hints() -> Vec<HintItem<'static>> {
+        let dim = Style::default().fg(Color::DarkGray);
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 70,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_build_help_line_wide_shows_all() {
+        let hints = make_test_hints();
+        let line = build_help_line(&hints, 120);
+        let text = line_to_string(&line);
+        assert!(text.contains("[Enter] Resume"));
+        assert!(text.contains("[Ctrl+A] Project"));
+        assert!(text.contains("[Ctrl+R] Regex"));
+        assert!(text.contains("[Esc] Quit"));
+    }
+
+    #[test]
+    fn test_build_help_line_narrow_shows_only_essential() {
+        let hints = make_test_hints();
+        let line = build_help_line(&hints, 50);
+        let text = line_to_string(&line);
+        assert!(text.contains("[Enter] Resume"));
+        assert!(!text.contains("[Ctrl+A] Project"));
+        assert!(!text.contains("[Ctrl+R] Regex"));
+        assert!(text.contains("[Esc] Quit"));
+    }
+
+    #[test]
+    fn test_build_help_line_mid_range_shows_partial() {
+        let hints = make_test_hints();
+        let line = build_help_line(&hints, 85);
+        let text = line_to_string(&line);
+        assert!(text.contains("[Enter] Resume"));
+        assert!(
+            text.contains("[Ctrl+A] Project"),
+            "min_width 70 should show at width 85"
+        );
+        assert!(
+            !text.contains("[Ctrl+R] Regex"),
+            "min_width 90 should hide at width 85"
+        );
+        assert!(text.contains("[Esc] Quit"));
+    }
+
+    #[test]
+    fn test_build_help_line_boundary_width_equals_min_width() {
+        let hints = make_test_hints();
+        let line = build_help_line(&hints, 70);
+        let text = line_to_string(&line);
+        assert!(
+            text.contains("[Ctrl+A] Project"),
+            "hint with min_width 70 should show at exactly width 70"
+        );
+        assert!(
+            !text.contains("[Ctrl+R] Regex"),
+            "hint with min_width 90 should hide at width 70"
+        );
+    }
+
+    #[test]
+    fn test_build_help_line_empty_hints() {
+        let line = build_help_line(&[], 100);
+        assert!(
+            line.spans.is_empty(),
+            "empty hints should produce empty line"
+        );
+    }
+
+    #[test]
+    fn test_build_help_line_all_hints_filtered() {
+        let dim = Style::default().fg(Color::DarkGray);
+        let hints = vec![
+            HintItem {
+                spans: vec![Span::styled("[A] First", dim)],
+                min_width: 80,
+            },
+            HintItem {
+                spans: vec![Span::styled("[B] Second", dim)],
+                min_width: 90,
+            },
+        ];
+        let line = build_help_line(&hints, 50);
+        assert!(
+            line.spans.is_empty(),
+            "all hints above threshold should produce empty line"
+        );
+    }
+
+    #[test]
+    fn test_build_help_line_multi_span_hint() {
+        let dim = Style::default().fg(Color::DarkGray);
+        let bold = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        let hints = vec![
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+H] ", dim), Span::styled("Manual", bold)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ];
+        let line = build_help_line(&hints, 100);
+        let text = line_to_string(&line);
+        assert!(
+            text.contains("[Ctrl+H] "),
+            "multi-span hint key label should appear"
+        );
+        assert!(
+            text.contains("Manual"),
+            "multi-span hint value label should appear"
+        );
+        assert!(text.contains("[Esc] Quit"));
+    }
+
+    #[test]
+    fn test_build_help_line_overflow_drops_optional_highest_first() {
+        let dim = Style::default().fg(Color::DarkGray);
+        // Total if all shown: 14 + 2 + 16 + 2 + 17 + 2 + 10 = 63 chars
+        // At width 50, min_width filter passes all (all <= 50 or 0),
+        // but total overflows — optional hints should be dropped highest-first.
+        let hints = vec![
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 40,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+H] AllSess", dim)],
+                min_width: 30,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ];
+        let line = build_help_line(&hints, 50);
+        let text = line_to_string(&line);
+        // Essentials must survive
+        assert!(
+            text.contains("[Enter] Resume"),
+            "essential hint should survive overflow"
+        );
+        assert!(
+            text.contains("[Esc] Quit"),
+            "essential [Esc] Quit must not be clipped"
+        );
+        // Highest optional (min_width=40) dropped first
+        assert!(
+            !text.contains("[Ctrl+A] Project"),
+            "highest optional should be dropped first on overflow"
+        );
+    }
+
+    #[test]
+    fn test_build_help_line_no_overflow_when_fits() {
+        let dim = Style::default().fg(Color::DarkGray);
+        let hints = vec![
+            HintItem {
+                spans: vec![Span::styled("[A] X", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[B] Y", dim)],
+                min_width: 10,
+            },
+        ];
+        // Total: 5 + 2 + 5 = 12, width 20 — fits fine
+        let line = build_help_line(&hints, 20);
+        let text = line_to_string(&line);
+        assert!(text.contains("[A] X"));
+        assert!(text.contains("[B] Y"));
     }
 }
