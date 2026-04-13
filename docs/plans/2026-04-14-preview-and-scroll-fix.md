@@ -83,8 +83,8 @@
   - Expand/collapse (→/←) → preview hides, sub-matches show, scroll adjusts
 
 ### Task 4: Commit and push
-- [ ] Commit changes with message: `feat: add preview line and fix scroll for search results`
-- [ ] Push to current branch
+- [x] Commit changes with message: `feat: add preview line and fix scroll for search results`
+- [x] Push to current branch
 
 ## Post-Completion
 - Test with real session data — long messages should truncate cleanly
