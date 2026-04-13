@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use std::collections::HashSet;
@@ -506,6 +506,25 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         let header = render_group_header(group, is_selected, is_expanded);
         items.push(header);
 
+        // Preview line for collapsed groups (like recent sessions show summaries)
+        if !is_expanded {
+            if let Some(first) = group.first_match() {
+                if let Some(msg) = &first.message {
+                    let role_label = if msg.role == "user" { "User" } else { "Claude" };
+                    let content = sanitize_content(&msg.content);
+                    let prefix = format!("     {}: ", role_label);
+                    let prefix_len = prefix.len();
+                    let max_content = (area.width as usize).saturating_sub(prefix_len);
+                    let truncated = truncate_to_width(&content, max_content);
+                    let preview_item = ListItem::new(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                        Span::styled(truncated, Style::default().fg(Color::DarkGray)),
+                    ]));
+                    items.push(preview_item);
+                }
+            }
+        }
+
         // If expanded, show individual messages
         if is_expanded {
             let latest_chain = app.search.latest_chains.get(&group.file_path);
@@ -522,8 +541,27 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         }
     }
 
-    let list = List::new(items).block(Block::default().borders(Borders::NONE));
-    frame.render_widget(list, area);
+    // Map group_cursor to item index for ListState auto-scroll.
+    // Each collapsed group = 2 items (header + preview).
+    // Only the group at group_cursor can be expanded.
+    let mut selected_item_idx = 0;
+    for (i, _group) in app.search.groups.iter().enumerate() {
+        if i == app.search.group_cursor {
+            if app.search.expanded {
+                selected_item_idx += 1 + app.search.sub_cursor;
+            }
+            break;
+        }
+        // Prior groups are always collapsed (expanded only applies to group_cursor)
+        selected_item_idx += 2; // 1 header + 1 preview
+    }
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected_item_idx));
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .highlight_style(Style::default()); // no-op — custom styles already on items
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
