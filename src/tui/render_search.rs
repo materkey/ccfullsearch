@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
+use regex::RegexBuilder;
 use std::collections::HashSet;
 
 #[derive(Clone)]
@@ -499,6 +500,17 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     let mut items: Vec<ListItem> = vec![];
     let mut selected_item_idx = 0usize;
 
+    // Pre-compile regex and lowercase query once for preview matching
+    let preview_regex = if app.regex_mode && !app.search.results_query.is_empty() {
+        RegexBuilder::new(&app.search.results_query)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    } else {
+        None
+    };
+    let query_lower = app.search.results_query.to_lowercase();
+
     for (i, group) in app.search.groups.iter().enumerate() {
         let is_selected = i == app.search.group_cursor;
         let is_expanded = is_selected && app.search.expanded;
@@ -519,20 +531,62 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
 
         // Preview line for collapsed groups (like recent sessions show summaries)
         if !is_expanded {
-            if let Some(first) = group.first_match() {
-                if let Some(msg) = &first.message {
-                    let role_label = if msg.role == "user" { "User" } else { "Claude" };
-                    let content = sanitize_content(&msg.content);
-                    let prefix = format!("     {}: ", role_label);
-                    let prefix_len = prefix.len();
-                    let max_content = (area.width as usize).saturating_sub(prefix_len);
-                    let truncated = truncate_to_width(&content, max_content);
-                    let preview_item = ListItem::new(Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-                        Span::styled(truncated, Style::default().fg(Color::DarkGray)),
-                    ]));
-                    items.push(preview_item);
-                }
+            let matches_iter = || group.matches.iter().filter_map(|m| m.message.as_ref());
+            // Phase 1: prefer message where text_content contains the query
+            let preview_msg = if !app.search.results_query.is_empty() {
+                matches_iter().find(|msg| {
+                    if msg.text_content.trim().is_empty() {
+                        return false;
+                    }
+                    if app.regex_mode {
+                        preview_regex
+                            .as_ref()
+                            .is_some_and(|re| re.is_match(&msg.text_content))
+                    } else {
+                        msg.text_content.to_lowercase().contains(&query_lower)
+                    }
+                })
+            } else {
+                None
+            };
+            // Phase 2: first with non-empty text_content
+            let preview_msg = preview_msg
+                .or_else(|| matches_iter().find(|msg| !msg.text_content.trim().is_empty()));
+            // Phase 3: first with non-empty content
+            let preview_msg =
+                preview_msg.or_else(|| matches_iter().find(|msg| !msg.content.trim().is_empty()));
+            if let Some(msg) = preview_msg {
+                let role_label = if msg.role == "user" { "User" } else { "Claude" };
+                let query = &app.search.results_query;
+                let text_content_matches = if query.is_empty() {
+                    true
+                } else if app.regex_mode {
+                    preview_regex
+                        .as_ref()
+                        .is_some_and(|re| re.is_match(&msg.text_content))
+                } else {
+                    msg.text_content.to_lowercase().contains(&query_lower)
+                };
+                let preview_text = if msg.text_content.trim().is_empty() {
+                    &msg.content
+                } else if !text_content_matches {
+                    // text_content doesn't contain the search query (match is
+                    // likely in a tool_result block) — fall back to full content
+                    // so the matched portion is visible in the preview.
+                    &msg.content
+                } else {
+                    &msg.text_content
+                };
+                let content = sanitize_content(preview_text);
+                let prefix = format!("     {}: ", role_label);
+                let prefix_len = prefix.len();
+                let max_content = (area.width as usize).saturating_sub(prefix_len);
+                let truncated = truncate_to_width(&content, max_content);
+                let preview_item = ListItem::new(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                    Span::styled(truncated, Style::default().fg(Color::DarkGray)),
+                ]));
+                items.push(preview_item);
             }
         }
 
@@ -1051,11 +1105,11 @@ mod tests {
             session_id: "test-session".to_string(),
             role: "user".to_string(),
             content: "Test content for preview".to_string(),
+            text_content: "Test content for preview".to_string(),
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let m = RipgrepMatch {
@@ -1265,8 +1319,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let m = RipgrepMatch {
@@ -1306,8 +1359,7 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 branch: Some("main".to_string()),
                 line_number: 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             };
 
             let m = RipgrepMatch {
@@ -1363,8 +1415,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         // Create a small content message
@@ -1375,8 +1426,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let large_match = RipgrepMatch {
@@ -1484,8 +1534,7 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 branch: Some("main".to_string()),
                 line_number: i + 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             };
             matches.push(RipgrepMatch {
                 file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
@@ -1575,8 +1624,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         // Small follow-up message (Cyrillic like in user's session)
@@ -1587,8 +1635,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         app.search.groups = vec![SessionGroup {
@@ -1682,8 +1729,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let small_msg = Message {
@@ -1693,8 +1739,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 1, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 2,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         app.search.groups = vec![SessionGroup {
@@ -1757,8 +1802,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let m = RipgrepMatch {
@@ -1793,8 +1837,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, 0, 0).unwrap(),
             branch: Some("main".to_string()),
             line_number: 1,
-            uuid: None,
-            parent_uuid: None,
+            ..Default::default()
         };
 
         let m = RipgrepMatch {
@@ -1990,10 +2033,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "Later answer".to_string(),
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
-                branch: None,
                 line_number: 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
@@ -2034,10 +2075,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "test answer".to_string(),
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
-                branch: None,
                 line_number: 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
@@ -2079,10 +2118,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "test answer".to_string(),
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
-                branch: None,
                 line_number: 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };

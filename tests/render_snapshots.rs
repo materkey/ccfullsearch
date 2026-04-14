@@ -64,11 +64,11 @@ fn snapshot_search_with_results() {
         session_id: "abc12345-def6-7890".to_string(),
         role: "user".to_string(),
         content: "How do I sort a list in Python?".to_string(),
+        text_content: "How do I sort a list in Python?".to_string(),
         timestamp: Utc.with_ymd_and_hms(2025, 6, 15, 14, 30, 0).unwrap(),
         branch: Some("main".to_string()),
         line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+        ..Default::default()
     };
 
     let m = RipgrepMatch {

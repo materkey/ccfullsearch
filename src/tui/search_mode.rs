@@ -618,10 +618,9 @@ mod tests {
                     role: "user".to_string(),
                     content: "hello".to_string(),
                     timestamp: Utc::now(),
-                    branch: None,
                     line_number: 1,
                     uuid: Some("uuid-1".to_string()),
-                    parent_uuid: None,
+                    ..Default::default()
                 }),
                 source: SessionSource::ClaudeCodeCLI,
             }],

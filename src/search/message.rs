@@ -2,11 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Represents a message from Claude Code JSONL session
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Message {
     pub session_id: String,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub text_content: String,
     pub timestamp: DateTime<Utc>,
     pub branch: Option<String>,
     pub line_number: usize,
@@ -42,6 +44,7 @@ impl Message {
         };
 
         let content = SessionRecord::render_content(&content_blocks, &ContentMode::Full);
+        let text_content = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
 
         // Skip empty content
         if content.trim().is_empty() {
@@ -66,6 +69,7 @@ impl Message {
             session_id,
             role,
             content,
+            text_content,
             timestamp,
             branch,
             line_number,
@@ -96,6 +100,7 @@ mod tests {
         assert_eq!(msg.session_id, "abc123");
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content, "Hello Claude");
+        assert_eq!(msg.text_content, "Hello Claude");
         assert_eq!(msg.line_number, 1);
     }
 
@@ -107,6 +112,7 @@ mod tests {
 
         assert_eq!(msg.role, "assistant");
         assert_eq!(msg.content, "Hello! How can I help?");
+        assert_eq!(msg.text_content, "Hello! How can I help?");
     }
 
     #[test]
@@ -125,6 +131,7 @@ mod tests {
         let msg = Message::from_jsonl(jsonl, 1).expect("Should parse multiple text blocks");
 
         assert_eq!(msg.content, "Part 1\nPart 2");
+        assert_eq!(msg.text_content, "Part 1 Part 2");
     }
 
     #[test]
@@ -135,6 +142,10 @@ mod tests {
 
         assert!(msg.content.contains("file_path"));
         assert!(msg.content.contains("/tmp/test.txt"));
+        assert!(
+            msg.text_content.is_empty(),
+            "TextOnly mode should skip tool_use blocks"
+        );
     }
 
     #[test]
@@ -226,6 +237,7 @@ mod tests {
         let msg = Message::from_jsonl(jsonl, 1).expect("Should parse plain string content");
 
         assert_eq!(msg.content, "Hello plain string");
+        assert_eq!(msg.text_content, "Hello plain string");
         assert_eq!(msg.role, "user");
     }
 
@@ -256,5 +268,28 @@ mod tests {
         let content = Message::extract_content(&raw);
 
         assert_eq!(content, "plain text content");
+    }
+
+    #[test]
+    fn test_parse_server_tool_use_message_not_dropped() {
+        let jsonl = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"server_tool_use","name":"web_search","id":"tu_123"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("server_tool_use should not be dropped");
+
+        assert_eq!(msg.content, "web_search");
+    }
+
+    #[test]
+    fn test_parse_tool_result_only_message_not_dropped() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"file contents here","tool_use_id":"tu_123"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        let msg =
+            Message::from_jsonl(jsonl, 1).expect("tool_result-only message should not be dropped");
+
+        assert!(msg.content.contains("file contents here"));
+        assert!(
+            msg.text_content.is_empty(),
+            "TextOnly mode should skip tool_result blocks"
+        );
     }
 }

@@ -41,13 +41,13 @@ src/
 ├── update.rs         # Self-update: GitHub release download, Homebrew detection, version comparison
 ├── session/
 │   ├── mod.rs        # SessionSource enum (ClaudeCodeCLI | ClaudeDesktop), shared field extractors, resolve_parent_session, extract_message_content
-│   └── record.rs     # SessionRecord enum (Message, Summary, CustomTitle, etc.), ContentBlock, ContentMode, MessageRole, parse_content_blocks(), render_text_content() — unified JSONL parsing and content rendering
+│   └── record.rs     # SessionRecord enum (Message, Summary, CustomTitle, etc.), ContentBlock, ContentMode, MessageRole, parse_content_blocks() (handles text, tool_use, tool_result, thinking, image, document, redacted_thinking, server_tool_use, connector_text), render_content() — unified JSONL parsing and content rendering
 ├── dag/
 │   └── mod.rs        # SessionDag — unified DAG engine: TipStrategy (LastAppended | MaxTimestamp), DisplayFilter, chain_from(), from_file()
 ├── search/
 │   ├── mod.rs        # Module re-exports for search API surface
 │   ├── ripgrep.rs    # Spawns `rg --json`, parses matches, post-filters content, extracts project names
-│   ├── message.rs    # Parses JSONL lines into Message structs, delegates content extraction to SessionRecord
+│   ├── message.rs    # Parses JSONL lines into Message structs (content via Full mode, text_content via TextOnly for preview), delegates to SessionRecord
 │   └── group.rs      # Groups RipgrepMatch by session_id, sorts by timestamp
 ├── tree/
 │   └── mod.rs        # DagNode/TreeRow/SessionTree rendering model, uses SessionDag for chain building and SessionRecord for content
@@ -74,7 +74,7 @@ src/
 
 ### Key data flow
 
-1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` (delegates content extraction to `SessionRecord`) → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc → if any file hit the per-file match limit (1000), flag `truncated` and show warning in status bar
+1. **Search**: User types query → 300ms debounce → background thread spawns `rg --json --glob="*.jsonl"` → parse JSON output → parse each JSONL line into `Message` (each Message carries both `content` via Full mode and `text_content` via TextOnly mode for clean preview display) → **post-filter** to ensure query matches message *content* (not metadata) → group by `session_id` → sort by timestamp desc → if any file hit the per-file match limit (1000), flag `truncated` and show warning in status bar
 2. **Tree mode**: Load full JSONL file → `SessionDag::from_file(path, Standard)` builds DAG in single pass (parses via `SessionRecord::from_jsonl`, filters sidechains, bridges `compact_boundary` via `logicalParentUuid`) → `dag.tip(MaxTimestamp)` picks latest terminal → `dag.chain_from(tip)` walks backward → mark branch points (nodes with >1 child) → flatten to `TreeRow` list. Content rendered via `SessionRecord::render_content(blocks, Preview { max_chars: 120 })`
 3. **Resume**: On Enter, find `claude` binary via `which` → resolve project working directory from session path (only use decoded path if it exists on disk; fall back to session file parent → `$HOME` → `/tmp`) → if selected message is NOT on latest chain, create a forked JSONL file: `SessionDag::from_file` + `dag.tip(LastAppended)` + `dag.chain_from(tip)` determine the chain, then write filtered records → exec/spawn `claude --resume <file-path>` (absolute `.jsonl` path for cross-project support). Session index uses per-process temp files for atomic writes.
 4. **TUI lifecycle**: `main()` calls `run_tui()` → key events go through `classify_key()` → `KeyAction` enum → `App::handle_action()`. Returns `TuiOutcome` (Quit, Resume, Pick). In overlay mode (`--overlay`), `Resume` spawns Claude as child via `resume_cli_child()` and loops back. In normal mode, `Resume` calls `resume()` (exec, replaces process). `Pick` writes `PickedSession` key-value output and exits 0/1. Rendering uses `AppView` (read-only projection) — no mutation during draw.

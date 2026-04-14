@@ -270,6 +270,24 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
                     let content = if let Some(c) = item.get("content") {
                         if let Some(s) = c.as_str() {
                             s.to_string()
+                        } else if let Some(arr) = c.as_array() {
+                            let mut parts = Vec::new();
+                            for entry in arr {
+                                let entry_type =
+                                    entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                match entry_type {
+                                    "text" => {
+                                        if let Some(t) = entry.get("text").and_then(|t| t.as_str())
+                                        {
+                                            parts.push(t.to_string());
+                                        }
+                                    }
+                                    "image" => parts.push("[image]".to_string()),
+                                    "document" => parts.push("[document]".to_string()),
+                                    _ => {}
+                                }
+                            }
+                            parts.join("\n")
                         } else {
                             serde_json::to_string(c).unwrap_or_default()
                         }
@@ -281,6 +299,31 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
                 "thinking" => {
                     if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
                         blocks.push(ContentBlock::Thinking(t.to_string()));
+                    }
+                }
+                "image" => {
+                    blocks.push(ContentBlock::Text("[image]".to_string()));
+                }
+                "document" => {
+                    blocks.push(ContentBlock::Text("[document]".to_string()));
+                }
+                "redacted_thinking" => {
+                    blocks.push(ContentBlock::Thinking("[redacted]".to_string()));
+                }
+                "server_tool_use" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    blocks.push(ContentBlock::ToolUse {
+                        name,
+                        input: String::new(),
+                    });
+                }
+                "connector_text" => {
+                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                        blocks.push(ContentBlock::Text(text.to_string()));
                     }
                 }
                 _ => {}
@@ -296,7 +339,13 @@ fn render_full(blocks: &[ContentBlock]) -> String {
         .iter()
         .map(|b| match b {
             ContentBlock::Text(t) => t.as_str(),
-            ContentBlock::ToolUse { input, .. } => input.as_str(),
+            ContentBlock::ToolUse { name, input } => {
+                if input.is_empty() {
+                    name.as_str()
+                } else {
+                    input.as_str()
+                }
+            }
             ContentBlock::ToolResult(c) => c.as_str(),
             ContentBlock::Thinking(t) => t.as_str(),
         })
@@ -835,5 +884,162 @@ mod tests {
         };
         assert!(!other.is_sidechain());
         assert!(!SessionRecord::CustomTitle("t".into()).is_sidechain());
+    }
+
+    // --- parse_content_blocks new block types ---
+
+    #[test]
+    fn test_parse_tool_result_with_array_content() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "tool_result", "content": [
+                {"type": "text", "text": "file output"},
+                {"type": "image"},
+                {"type": "document"}
+            ]}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolResult(c) => {
+                assert!(c.contains("file output"));
+                assert!(c.contains("[image]"));
+                assert!(c.contains("[document]"));
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_tool_result_with_array_unknown_entry_type() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "tool_result", "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "unknown_future_type", "data": "ignored"}
+            ]}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolResult(c) => {
+                assert_eq!(c, "hello");
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_image_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "image", "source": {"type": "base64", "data": "..."}}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], ContentBlock::Text("[image]".to_string()));
+    }
+
+    #[test]
+    fn test_parse_document_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "document", "source": {"type": "base64", "data": "..."}}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], ContentBlock::Text("[document]".to_string()));
+    }
+
+    #[test]
+    fn test_parse_redacted_thinking_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "redacted_thinking"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], ContentBlock::Thinking("[redacted]".to_string()));
+    }
+
+    #[test]
+    fn test_parse_server_tool_use_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "server_tool_use", "name": "web_search", "id": "srvtu_123"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolUse { name, input } => {
+                assert_eq!(name, "web_search");
+                assert_eq!(input, "");
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_server_tool_use_without_name() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "server_tool_use", "id": "srvtu_123"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolUse { name, .. } => {
+                assert_eq!(name, "unknown");
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_connector_text_block() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "connector_text", "text": "Connected output"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text("Connected output".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_connector_text_without_text_field() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "connector_text"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_image_block_visible_in_text_only_mode() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "text", "text": "See this:"},
+            {"type": "image", "source": {"type": "base64", "data": "..."}}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        let text_only = SessionRecord::render_content(&blocks, &ContentMode::TextOnly);
+        assert!(text_only.contains("See this:"));
+        assert!(text_only.contains("[image]"));
+    }
+
+    #[test]
+    fn test_render_full_server_tool_use_uses_name() {
+        let blocks = vec![ContentBlock::ToolUse {
+            name: "web_search".into(),
+            input: String::new(),
+        }];
+        let result = SessionRecord::render_content(&blocks, &ContentMode::Full);
+        assert_eq!(result, "web_search");
+    }
+
+    #[test]
+    fn test_render_full_tool_use_with_input_uses_input() {
+        let blocks = vec![ContentBlock::ToolUse {
+            name: "Read".into(),
+            input: r#"{"file_path":"/tmp/test.txt"}"#.into(),
+        }];
+        let result = SessionRecord::render_content(&blocks, &ContentMode::Full);
+        assert!(result.contains("file_path"));
+        assert!(!result.contains("Read"));
     }
 }
