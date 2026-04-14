@@ -1102,16 +1102,14 @@ impl App {
                     .collect();
                 if !file_paths.is_empty() {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    let cancel =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let cancel_clone = cancel.clone();
                     std::thread::spawn(move || {
                         for fp in file_paths {
                             if cancel_clone.load(std::sync::atomic::Ordering::Relaxed) {
                                 break;
                             }
-                            let (msg_count, compacted) =
-                                crate::search::count_session_messages(&fp);
+                            let (msg_count, compacted) = crate::search::count_session_messages(&fp);
                             if tx.send((fp, msg_count, compacted)).is_err() {
                                 break;
                             }
@@ -1156,6 +1154,17 @@ impl App {
                 .cloned()
                 .collect(),
         };
+        // Clamp cursor so it stays valid after the filtered list shrinks
+        // (e.g. async automation metadata arrives while Manual/Auto filter is active).
+        if self.search.groups.is_empty() {
+            self.search.group_cursor = 0;
+            self.search.sub_cursor = 0;
+            self.search.expanded = false;
+        } else if self.search.group_cursor >= self.search.groups.len() {
+            self.search.group_cursor = self.search.groups.len() - 1;
+            self.search.sub_cursor = 0;
+            self.search.expanded = false;
+        }
     }
 
     // -- AI mode methods --
