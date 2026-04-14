@@ -270,6 +270,27 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
                     let content = if let Some(c) = item.get("content") {
                         if let Some(s) = c.as_str() {
                             s.to_string()
+                        } else if let Some(arr) = c.as_array() {
+                            let mut parts = Vec::new();
+                            for entry in arr {
+                                let entry_type = entry
+                                    .get("type")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("");
+                                match entry_type {
+                                    "text" => {
+                                        if let Some(t) =
+                                            entry.get("text").and_then(|t| t.as_str())
+                                        {
+                                            parts.push(t.to_string());
+                                        }
+                                    }
+                                    "image" => parts.push("[image]".to_string()),
+                                    "document" => parts.push("[document]".to_string()),
+                                    _ => {}
+                                }
+                            }
+                            parts.join("\n")
                         } else {
                             serde_json::to_string(c).unwrap_or_default()
                         }
@@ -281,6 +302,31 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
                 "thinking" => {
                     if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
                         blocks.push(ContentBlock::Thinking(t.to_string()));
+                    }
+                }
+                "image" => {
+                    blocks.push(ContentBlock::ToolResult("[image]".to_string()));
+                }
+                "document" => {
+                    blocks.push(ContentBlock::ToolResult("[document]".to_string()));
+                }
+                "redacted_thinking" => {
+                    blocks.push(ContentBlock::Thinking("[redacted]".to_string()));
+                }
+                "server_tool_use" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    blocks.push(ContentBlock::ToolUse {
+                        name,
+                        input: String::new(),
+                    });
+                }
+                "connector_text" => {
+                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                        blocks.push(ContentBlock::Text(text.to_string()));
                     }
                 }
                 _ => {}

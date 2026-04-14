@@ -24,9 +24,9 @@
 ## Implementation Steps
 
 ### Task 1: Fix parse_content_blocks in record.rs
-- [ ] In `src/session/record.rs` function `parse_content_blocks` (line 269-279), replace the `tool_result` arm: instead of `serde_json::to_string(c)` for non-string content, iterate the array extracting text blocks and using `[image]`/`[document]` placeholders for binary content
-- [ ] In the same `match item_type` block (before `_ => {}` at line 286), add cases for: `image` → `ContentBlock::ToolResult("[image]".to_string())`, `document` → `ContentBlock::ToolResult("[document]".to_string())`, `redacted_thinking` → `ContentBlock::Thinking("[redacted]".to_string())`, `server_tool_use` → `ContentBlock::ToolUse { name, input: String::new() }`, `connector_text` → `ContentBlock::Text(text)`
-- [ ] Verify: `cargo build` succeeds, `cargo test` passes
+- [x] In `src/session/record.rs` function `parse_content_blocks` (line 269-279), replace the `tool_result` arm: instead of `serde_json::to_string(c)` for non-string content, iterate the array extracting text blocks and using `[image]`/`[document]` placeholders for binary content
+- [x] In the same `match item_type` block (before `_ => {}` at line 286), add cases for: `image` → `ContentBlock::ToolResult("[image]".to_string())`, `document` → `ContentBlock::ToolResult("[document]".to_string())`, `redacted_thinking` → `ContentBlock::Thinking("[redacted]".to_string())`, `server_tool_use` → `ContentBlock::ToolUse { name, input: String::new() }`, `connector_text` → `ContentBlock::Text(text)`
+- [x] Verify: `cargo build` succeeds, `cargo test` passes
 
 ### Task 2: Add text_content field to Message
 - [ ] In `src/search/message.rs`, add `Default` to derive macro on Message struct (line 5): `#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]`
