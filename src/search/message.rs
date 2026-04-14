@@ -7,11 +7,28 @@ pub struct Message {
     pub session_id: String,
     pub role: String,
     pub content: String,
+    pub text_content: String,
     pub timestamp: DateTime<Utc>,
     pub branch: Option<String>,
     pub line_number: usize,
     pub uuid: Option<String>,
     pub parent_uuid: Option<String>,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            role: String::new(),
+            content: String::new(),
+            text_content: String::new(),
+            timestamp: DateTime::<Utc>::default(),
+            branch: None,
+            line_number: 0,
+            uuid: None,
+            parent_uuid: None,
+        }
+    }
 }
 
 impl Message {
@@ -42,6 +59,7 @@ impl Message {
         };
 
         let content = SessionRecord::render_content(&content_blocks, &ContentMode::Full);
+        let text_content = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
 
         // Skip empty content
         if content.trim().is_empty() {
@@ -66,6 +84,7 @@ impl Message {
             session_id,
             role,
             content,
+            text_content,
             timestamp,
             branch,
             line_number,

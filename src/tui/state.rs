@@ -1421,10 +1421,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "Later answer".to_string(),
                 timestamp: Utc::now(),
-                branch: None,
                 line_number: 1,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
@@ -1465,10 +1463,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "Automation reply".to_string(),
                 timestamp: Utc::now(),
-                branch: None,
                 line_number: 2,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };
@@ -1511,10 +1507,8 @@ mod tests {
                 content: r#"такие тоже надо детектить <scheduled-task name="chezmoi-sync">"#
                     .to_string(),
                 timestamp: Utc::now(),
-                branch: None,
                 line_number: 3,
-                uuid: None,
-                parent_uuid: None,
+                ..Default::default()
             }),
             source: SessionSource::ClaudeCodeCLI,
         };

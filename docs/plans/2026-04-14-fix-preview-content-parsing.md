@@ -29,11 +29,11 @@
 - [x] Verify: `cargo build` succeeds, `cargo test` passes
 
 ### Task 2: Add text_content field to Message
-- [ ] In `src/search/message.rs`, add `Default` to derive macro on Message struct (line 5): `#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]`
-- [ ] Add field `pub text_content: String` to Message struct after `content` field
-- [ ] In `from_jsonl` method (line 44), compute `let text_content = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);` and add it to the Message constructor
-- [ ] Update 23 test literals to add `..Default::default()` at the end of each Message struct literal in: `src/search/group.rs` (lines 129, 304, 385, 430), `src/tui/render_search.rs` (lines 1050, 1261, 1302, 1359, 1371, 1480, 1571, 1583, 1678, 1689, 1753, 1789, 1988, 2032, 2077), `src/tui/state.rs` (lines 1419, 1463, 1508), `src/tui/search_mode.rs` (line 616)
-- [ ] Verify: `cargo build` succeeds, `cargo test` passes
+- [x] In `src/search/message.rs`, add `Default` to derive macro on Message struct (line 5): `#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]`
+- [x] Add field `pub text_content: String` to Message struct after `content` field
+- [x] In `from_jsonl` method (line 44), compute `let text_content = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);` and add it to the Message constructor
+- [x] Update 23 test literals to add `..Default::default()` at the end of each Message struct literal in: `src/search/group.rs` (lines 129, 304, 385, 430), `src/tui/render_search.rs` (lines 1050, 1261, 1302, 1359, 1371, 1480, 1571, 1583, 1678, 1689, 1753, 1789, 1988, 2032, 2077), `src/tui/state.rs` (lines 1419, 1463, 1508), `src/tui/search_mode.rs` (line 616)
+- [x] Verify: `cargo build` succeeds, `cargo test` passes
 
 ### Task 3: Fix preview rendering in render_search.rs
 - [ ] In `src/tui/render_search.rs` (lines 520-536), replace the preview block: instead of `group.first_match()` + `msg.content`, iterate `group.matches` to find first match with non-empty `msg.text_content`, then use `sanitize_content(&msg.text_content)` for display

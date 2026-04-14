@@ -67,8 +67,7 @@ fn snapshot_search_with_results() {
         timestamp: Utc.with_ymd_and_hms(2025, 6, 15, 14, 30, 0).unwrap(),
         branch: Some("main".to_string()),
         line_number: 1,
-        uuid: None,
-        parent_uuid: None,
+        ..Default::default()
     };
 
     let m = RipgrepMatch {
