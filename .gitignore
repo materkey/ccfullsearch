@@ -26,3 +26,4 @@ _bmad/
 # Agent-generated files
 .agents/
 skills-lock.json
+repo.zip
