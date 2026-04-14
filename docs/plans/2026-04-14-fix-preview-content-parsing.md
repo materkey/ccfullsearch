@@ -40,8 +40,8 @@
 - [x] Verify: `cargo build` succeeds, `cargo test` passes, `cargo clippy --all-targets --all-features -- -D warnings` passes
 
 ### Task 4: Commit and push
-- [ ] Commit changes with descriptive message
-- [ ] Push to current branch
+- [x] Commit changes with descriptive message
+- [x] Push to current branch
 
 ## Post-Completion
 - Run `cargo run -- search "as@"` and verify preview shows readable text instead of JSON
