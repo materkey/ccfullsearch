@@ -36,8 +36,8 @@
 - [x] Verify: `cargo build` succeeds, `cargo test` passes
 
 ### Task 3: Fix preview rendering in render_search.rs
-- [ ] In `src/tui/render_search.rs` (lines 520-536), replace the preview block: instead of `group.first_match()` + `msg.content`, iterate `group.matches` to find first match with non-empty `msg.text_content`, then use `sanitize_content(&msg.text_content)` for display
-- [ ] Verify: `cargo build` succeeds, `cargo test` passes, `cargo clippy --all-targets --all-features -- -D warnings` passes
+- [x] In `src/tui/render_search.rs` (lines 520-536), replace the preview block: instead of `group.first_match()` + `msg.content`, iterate `group.matches` to find first match with non-empty `msg.text_content`, then use `sanitize_content(&msg.text_content)` for display
+- [x] Verify: `cargo build` succeeds, `cargo test` passes, `cargo clippy --all-targets --all-features -- -D warnings` passes
 
 ### Task 4: Commit and push
 - [ ] Commit changes with descriptive message

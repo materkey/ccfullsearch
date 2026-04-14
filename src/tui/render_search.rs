@@ -519,20 +519,23 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
 
         // Preview line for collapsed groups (like recent sessions show summaries)
         if !is_expanded {
-            if let Some(first) = group.first_match() {
-                if let Some(msg) = &first.message {
-                    let role_label = if msg.role == "user" { "User" } else { "Claude" };
-                    let content = sanitize_content(&msg.content);
-                    let prefix = format!("     {}: ", role_label);
-                    let prefix_len = prefix.len();
-                    let max_content = (area.width as usize).saturating_sub(prefix_len);
-                    let truncated = truncate_to_width(&content, max_content);
-                    let preview_item = ListItem::new(Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-                        Span::styled(truncated, Style::default().fg(Color::DarkGray)),
-                    ]));
-                    items.push(preview_item);
-                }
+            let preview_msg = group
+                .matches
+                .iter()
+                .filter_map(|m| m.message.as_ref())
+                .find(|msg| !msg.text_content.trim().is_empty());
+            if let Some(msg) = preview_msg {
+                let role_label = if msg.role == "user" { "User" } else { "Claude" };
+                let content = sanitize_content(&msg.text_content);
+                let prefix = format!("     {}: ", role_label);
+                let prefix_len = prefix.len();
+                let max_content = (area.width as usize).saturating_sub(prefix_len);
+                let truncated = truncate_to_width(&content, max_content);
+                let preview_item = ListItem::new(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                    Span::styled(truncated, Style::default().fg(Color::DarkGray)),
+                ]));
+                items.push(preview_item);
             }
         }
 

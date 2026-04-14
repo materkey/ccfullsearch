@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Represents a message from Claude Code JSONL session
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Message {
     pub session_id: String,
     pub role: String,
@@ -13,22 +13,6 @@ pub struct Message {
     pub line_number: usize,
     pub uuid: Option<String>,
     pub parent_uuid: Option<String>,
-}
-
-impl Default for Message {
-    fn default() -> Self {
-        Self {
-            session_id: String::new(),
-            role: String::new(),
-            content: String::new(),
-            text_content: String::new(),
-            timestamp: DateTime::<Utc>::default(),
-            branch: None,
-            line_number: 0,
-            uuid: None,
-            parent_uuid: None,
-        }
-    }
 }
 
 impl Message {
