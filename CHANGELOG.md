@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.0 - 2026-04-19
+
+### New Features
+- Detect claude-mem observer sessions as automation (path-based `~/.claude-mem/observer-sessions/` + content marker `<observed_from_primary_session>`)
+- Hide automation sessions by default — new `AutomationFilter::Manual` default (toggle Ctrl+H: Manual → Auto → All)
+- Per-class cap in `collect_recent_sessions` — Manual filter is no longer crowded out when auto sessions dominate mtime
+- AI-powered session re-ranking via Ctrl+G (invokes `claude -p` in background to sort visible sessions by relevance to a query)
+- Adaptive help bar — hints drop based on terminal width
+- Preview line for search results with correct scroll behavior on ListState
+- Show total session message count in each search result group
+- Expanded preview content parsing — tool_use, tool_result, thinking, image, document, redacted_thinking, server_tool_use, connector_text
+- Sort recent sessions by content timestamp (max `timestamp`/`_audit_timestamp` from JSONL) instead of file mtime
+
+### Fixed
+- Anchor claude-mem content marker to message start — sessions discussing the marker no longer mis-classify as automation
+- Clamp `InputState` cursor to UTF-8 char boundary (prevents panic on multi-byte input editing)
+- Ripgrep search: validate regex before spawn, capture stderr, align `--ignore-case` with post-filter
+- Clarify search result count label — "matches" instead of "messages"
+- Fix flaky ripgrep tests by moving PATH-mutating test to integration tests
+
+### Changed
+- Grey `[Ctrl+H] Manual` hint (was green+bold) to match the new default state; Auto stays magenta+bold
+- Extract shared `collect_session_jsonl_files` walker — single skip policy for `subagents/` and `agent-*.jsonl`
+- Try cheap decode strategies before filesystem walk in `path_codec` (perf)
+
 ## v0.8.0 - 2026-04-05
 
 ### New Features
