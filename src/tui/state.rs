@@ -481,9 +481,9 @@ pub enum TuiOutcome {
 /// Filter mode for automated vs manual sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationFilter {
-    /// Show all sessions (default)
+    /// Show all sessions
     All,
-    /// Show only manual (non-automated) sessions
+    /// Show only manual (non-automated) sessions (default)
     Manual,
     /// Show only automated sessions
     Auto,
@@ -701,7 +701,7 @@ impl App {
             last_search_paths: all_search_paths.clone(),
             tree_mode: false,
             project_filter: false,
-            automation_filter: AutomationFilter::All,
+            automation_filter: AutomationFilter::Manual,
             automation_cache: HashMap::new(),
             all_search_paths,
             current_project_paths,
