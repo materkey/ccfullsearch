@@ -320,10 +320,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
         AF::Auto => "Auto",
     };
     let filter_style = match app.automation_filter {
-        AF::All => Style::default().fg(Color::DarkGray),
-        AF::Manual => Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
+        AF::All | AF::Manual => Style::default().fg(Color::DarkGray),
         AF::Auto => Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
