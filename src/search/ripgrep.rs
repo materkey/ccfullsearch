@@ -28,6 +28,37 @@ pub struct SearchResult {
     pub truncated: bool,
 }
 
+fn build_regex_matcher(query: &str, use_regex: bool) -> Result<Option<regex::Regex>, String> {
+    if use_regex {
+        RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+            .map(Some)
+            .map_err(|e| format!("Invalid regex '{query}': {e}"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn build_ripgrep_args(query: &str, search_path: &str, use_regex: bool) -> Vec<String> {
+    let mut args = vec![
+        "--json".to_string(),
+        "--glob".to_string(),
+        "*.jsonl".to_string(),
+        "--max-count".to_string(),
+        MAX_COUNT_PER_FILE.to_string(),
+        "--ignore-case".to_string(),
+    ];
+
+    if !use_regex {
+        args.push("--fixed-strings".to_string());
+    }
+
+    args.push(query.to_string());
+    args.push(search_path.to_string());
+    args
+}
+
 /// Search for query in JSONL files using ripgrep (test helper, discards truncation flag)
 #[cfg(test)]
 pub fn search(query: &str, search_path: &str) -> Result<Vec<RipgrepMatch>, String> {
@@ -51,6 +82,8 @@ pub fn search_multiple_paths(
     search_paths: &[String],
     use_regex: bool,
 ) -> Result<SearchResult, String> {
+    let _ = build_regex_matcher(query, use_regex)?;
+
     let mut all_results = Vec::new();
     let mut any_truncated = false;
 
@@ -83,27 +116,24 @@ fn search_single_path(
     search_path: &str,
     use_regex: bool,
 ) -> Result<(Vec<RipgrepMatch>, bool), String> {
-    let mut args = vec![
-        "--json".to_string(),
-        "--glob".to_string(),
-        "*.jsonl".to_string(),
-        "--max-count".to_string(),
-        MAX_COUNT_PER_FILE.to_string(),
-    ];
-
-    if !use_regex {
-        args.push("--fixed-strings".to_string());
-    }
-
-    args.push(query.to_string());
-    args.push(search_path.to_string());
+    let args = build_ripgrep_args(query, search_path, use_regex);
 
     let output = Command::new("rg")
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Failed to run ripgrep: {}", e))?;
+
+    if !output.status.success() && output.status.code() != Some(1) {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(format!("ripgrep search failed: {}", detail));
+    }
 
     let reader = BufReader::new(&output.stdout[..]);
     let mut results = Vec::new();
@@ -111,11 +141,7 @@ fn search_single_path(
     let mut file_match_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
-    let regex_matcher = if use_regex {
-        RegexBuilder::new(query).case_insensitive(true).build().ok()
-    } else {
-        None
-    };
+    let regex_matcher = build_regex_matcher(query, use_regex)?;
     let query_lower = query.to_lowercase();
     let mut resolve_cache: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -471,6 +497,29 @@ mod tests {
     }
 
     #[test]
+    fn test_build_ripgrep_args_fixed_string_search_is_case_insensitive() {
+        let args = build_ripgrep_args("hello", "/tmp/search", false);
+        assert!(args.contains(&"--ignore-case".to_string()));
+        assert!(args.contains(&"--fixed-strings".to_string()));
+        assert_eq!(args.last(), Some(&"/tmp/search".to_string()));
+    }
+
+    #[test]
+    fn test_build_ripgrep_args_regex_search_is_case_insensitive() {
+        let args = build_ripgrep_args("hello.*world", "/tmp/search", true);
+        assert!(args.contains(&"--ignore-case".to_string()));
+        assert!(!args.contains(&"--fixed-strings".to_string()));
+    }
+
+    #[test]
+    fn test_search_multiple_paths_invalid_regex_returns_error() {
+        let result = search_multiple_paths("(", &["/path/that/does/not/exist".to_string()], true);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("Invalid regex"), "unexpected error: {}", err);
+    }
+
+    #[test]
     fn test_search_finds_matches() {
         let temp_dir = TempDir::new().unwrap();
         let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}
@@ -483,6 +532,19 @@ mod tests {
 
         assert!(!results.is_empty(), "Should find matches");
         assert!(results.iter().any(|r| r.message.is_some()));
+    }
+
+    #[test]
+    fn test_search_is_case_insensitive() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let results =
+            search("hello", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        assert!(!results.is_empty(), "Should match regardless of case");
     }
 
     #[test]
