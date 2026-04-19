@@ -111,7 +111,10 @@ fn matches_ralphex_marker(content: &str) -> bool {
 }
 
 fn matches_claude_mem_content_marker(content: &str) -> bool {
-    content.contains(CLAUDE_MEM_CONTENT_MARKER)
+    // Must appear at the very start of the message: the claude-mem observer
+    // prompt always begins with this XML block. A mid-text mention (e.g. someone
+    // discussing the marker in a regular conversation) must NOT match.
+    content.trim_start().starts_with(CLAUDE_MEM_CONTENT_MARKER)
 }
 
 /// Recursively collect session JSONL files from the given search roots.
@@ -422,6 +425,22 @@ mod tests {
     fn test_detect_automation_claude_mem_content_marker() {
         let content = r#"<observed_from_primary_session><user_request>hello</user_request></observed_from_primary_session>"#;
         assert_eq!(detect_automation(content), Some("claude-mem"));
+    }
+
+    #[test]
+    fn test_detect_automation_claude_mem_marker_with_leading_whitespace() {
+        // Observer prompts may have leading whitespace/newlines before the tag.
+        let content = "\n  <observed_from_primary_session>hello</observed_from_primary_session>";
+        assert_eq!(detect_automation(content), Some("claude-mem"));
+    }
+
+    #[test]
+    fn test_detect_automation_claude_mem_marker_mid_text_no_match() {
+        // Regression: casual mention of the tag inside a normal conversation
+        // (e.g. discussing claude-mem in chat, pasting examples, writing tests)
+        // must NOT classify the session as automation.
+        let content = "Обсуждаем маркер <observed_from_primary_session> в переписке";
+        assert_eq!(detect_automation(content), None);
     }
 
     #[test]
