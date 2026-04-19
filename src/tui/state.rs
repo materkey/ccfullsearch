@@ -29,6 +29,14 @@ impl InputState {
         }
     }
 
+    fn clamp_cursor_to_boundary(text: &str, cursor: usize) -> usize {
+        let mut cursor = cursor.min(text.len());
+        while cursor > 0 && !text.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        cursor
+    }
+
     // -- Getters --
 
     pub fn text(&self) -> &str {
@@ -53,10 +61,14 @@ impl InputState {
         self.cursor_pos = self.text.len();
     }
 
-    /// Set text and cursor position (cursor clamped to text length).
+    /// Set text and cursor position.
+    ///
+    /// The cursor is clamped to the nearest valid UTF-8 character boundary at or
+    /// before the requested byte offset so subsequent cursor movement and delete
+    /// operations never panic on mid-codepoint offsets.
     pub fn set_text_and_cursor(&mut self, s: &str, cursor: usize) {
         self.text = s.to_string();
-        self.cursor_pos = cursor.min(self.text.len());
+        self.cursor_pos = Self::clamp_cursor_to_boundary(&self.text, cursor);
     }
 
     /// Consume and return the inner text.
@@ -2322,6 +2334,17 @@ mod tests {
         let mut input = InputState::new();
         input.set_text_and_cursor("abc", 100);
         assert_eq!(input.cursor_pos(), 3); // clamped to len
+    }
+
+    #[test]
+    fn test_input_state_set_text_and_cursor_clamps_to_utf8_boundary() {
+        let mut input = InputState::new();
+        input.set_text_and_cursor("aёb", 2); // middle of 'ё' (bytes: a=0..1, ё=1..3)
+        assert_eq!(input.cursor_pos(), 1);
+
+        assert!(input.delete_forward());
+        assert_eq!(input.text(), "ab");
+        assert_eq!(input.cursor_pos(), 1);
     }
 
     #[test]
