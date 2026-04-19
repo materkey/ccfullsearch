@@ -97,12 +97,21 @@ pub fn is_sidechain(json: &serde_json::Value) -> bool {
 
 const RALPHEX_MARKER: &str = "<<<RALPHEX:";
 const SCHEDULED_TASK_MARKER: &str = "<scheduled-task";
+const CLAUDE_MEM_OBSERVER_PATH_SEGMENT: &str = "-claude-mem-observer-sessions";
+const CLAUDE_MEM_OBSERVER_PATH_RAW: &str = "/.claude-mem/observer-sessions/";
+const CLAUDE_MEM_CONTENT_MARKER: &str = "<observed_from_primary_session>";
+const CLAUDE_MEM_TAG: &str = "claude-mem";
+
 fn matches_scheduled_task_marker(content: &str) -> bool {
     content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
 }
 
 fn matches_ralphex_marker(content: &str) -> bool {
     content.contains(RALPHEX_MARKER)
+}
+
+fn matches_claude_mem_content_marker(content: &str) -> bool {
+    content.contains(CLAUDE_MEM_CONTENT_MARKER)
 }
 
 /// Recursively collect session JSONL files from the given search roots.
@@ -255,6 +264,22 @@ pub fn detect_automation(content: &str) -> Option<&'static str> {
         return Some("ralphex");
     }
 
+    if matches_claude_mem_content_marker(content) {
+        return Some(CLAUDE_MEM_TAG);
+    }
+
+    None
+}
+
+/// Detect automation by session file path. Reliable for tools that store
+/// their sessions in a well-known directory (e.g. claude-mem's observer sessions
+/// land under `~/.claude/projects/-Users-<u>--claude-mem-observer-sessions/`
+/// because its worker cwd is `~/.claude-mem/observer-sessions`).
+pub fn detect_automation_by_path(path: &std::path::Path) -> Option<&'static str> {
+    let s = path.to_string_lossy();
+    if s.contains(CLAUDE_MEM_OBSERVER_PATH_SEGMENT) || s.contains(CLAUDE_MEM_OBSERVER_PATH_RAW) {
+        return Some(CLAUDE_MEM_TAG);
+    }
     None
 }
 
@@ -391,6 +416,46 @@ mod tests {
         // Just "RALPHEX" without the <<< prefix should not match
         let content = "discussing RALPHEX in a conversation";
         assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_claude_mem_content_marker() {
+        let content = r#"<observed_from_primary_session><user_request>hello</user_request></observed_from_primary_session>"#;
+        assert_eq!(detect_automation(content), Some("claude-mem"));
+    }
+
+    #[test]
+    fn test_detect_automation_priority_scheduled_over_claude_mem() {
+        // If both markers present, cheaper/earlier detector wins.
+        let content = r#"<scheduled-task name="x"> and later <observed_from_primary_session>..."#;
+        assert_eq!(detect_automation(content), Some("scheduled"));
+    }
+
+    #[test]
+    fn test_detect_automation_by_path_encoded_projects_dir() {
+        let path = std::path::Path::new(
+            "/Users/u/.claude/projects/-Users-u--claude-mem-observer-sessions/abc.jsonl",
+        );
+        assert_eq!(detect_automation_by_path(path), Some("claude-mem"));
+    }
+
+    #[test]
+    fn test_detect_automation_by_path_raw_data_dir() {
+        let path = std::path::Path::new("/home/u/.claude-mem/observer-sessions/abc.jsonl");
+        assert_eq!(detect_automation_by_path(path), Some("claude-mem"));
+    }
+
+    #[test]
+    fn test_detect_automation_by_path_ignores_unrelated() {
+        // Plain project path
+        let p1 =
+            std::path::Path::new("/Users/u/.claude/projects/-Users-u-projects-myapp/session.jsonl");
+        assert_eq!(detect_automation_by_path(p1), None);
+
+        // Path that mentions "claude-mem" but NOT the observer-sessions subdir —
+        // e.g. a clone of the claude-mem repo itself must not false-positive.
+        let p2 = std::path::Path::new("/Users/u/projects/claude-mem/src/foo.ts");
+        assert_eq!(detect_automation_by_path(p2), None);
     }
 
     #[test]

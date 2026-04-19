@@ -112,6 +112,10 @@ fn scan_head(
     let reader = BufReader::new(file);
     let mut scan = ScanResult::default();
 
+    if let Some(tool) = session::detect_automation_by_path(path) {
+        scan.automation = Some(tool.to_string());
+    }
+
     for (i, line) in reader.lines().enumerate() {
         if i >= max_lines {
             break;
@@ -519,6 +523,12 @@ fn extract_latest_user_message_on_chain(
 }
 
 pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
+    // Cheap path-based shortcut for tools that land in a well-known directory
+    // (e.g. claude-mem's observer sessions): skip content read entirely.
+    if let Some(tool) = session::detect_automation_by_path(path) {
+        return Some(tool.to_string());
+    }
+
     // Automation markers appear early in the file (first user message),
     // so limit scan to avoid reading entire large JSONL files on the main thread.
     const MAX_LINES: usize = 50;
