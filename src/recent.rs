@@ -764,6 +764,45 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         .collect();
     files_with_mtime.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
+    // Partition by path-based automation so each class gets its own `limit` quota.
+    // Otherwise a burst of claude-mem observer sessions can crowd the top-mtime
+    // window and the TUI's AutomationFilter has nothing left to show as Manual.
+    let (auto_files, manual_files): (Vec<_>, Vec<_>) = files_with_mtime
+        .into_iter()
+        .partition(|(p, _)| session::detect_automation_by_path(p).is_some());
+
+    let mut sessions = collect_from_files(manual_files, limit);
+    sessions.extend(collect_from_files(auto_files, limit));
+
+    // Merge-level dedup across partitions (rare: same session_id appearing in both
+    // manual and auto pools — possible only if the two pools somehow share a file,
+    // but cheap to guard against).
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut deduped: Vec<RecentSession> = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        if let Some(&idx) = seen.get(&session.session_id) {
+            if session.timestamp > deduped[idx].timestamp {
+                deduped[idx] = session;
+            }
+        } else {
+            seen.insert(session.session_id.clone(), deduped.len());
+            deduped.push(session);
+        }
+    }
+    deduped.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.file_path.cmp(&a.file_path))
+    });
+    deduped
+}
+
+/// Apply the mtime-ordered batching + dedup + sort + truncate pipeline to a
+/// single pre-sorted (descending by mtime) file list.
+fn collect_from_files(
+    files_with_mtime: Vec<(PathBuf, std::time::SystemTime)>,
+    limit: usize,
+) -> Vec<RecentSession> {
     // Process files in batches to avoid reading the entire corpus when only `limit`
     // sessions are needed. Non-session JSONL files (metadata, auxiliary) return None
     // from extract_summary(), so we process extra files per batch to compensate.
@@ -776,7 +815,6 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         let batch_size = if offset == 0 {
             (limit * batch_multiplier).max(limit)
         } else {
-            // Subsequent batches: process remaining files
             files_with_mtime.len().saturating_sub(offset)
         };
         let end = (offset + batch_size).min(files_with_mtime.len());
@@ -791,8 +829,6 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         sessions.extend(batch_sessions);
         offset = end;
 
-        // Count unique session_ids to account for worktree duplicates that will
-        // be collapsed during deduplication.
         let unique_count = {
             let mut seen = HashSet::new();
             sessions
@@ -832,8 +868,8 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
         }
     }
 
-    // Deduplicate sessions by session_id, keeping the one with the newest timestamp.
-    // This handles git worktrees where the same session appears in multiple project dirs.
+    // Deduplicate by session_id, keeping the newest-timestamp record.
+    // This handles git worktrees where the same session appears in multiple dirs.
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut deduped: Vec<RecentSession> = Vec::with_capacity(sessions.len());
     for session in sessions {
@@ -846,17 +882,14 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
             deduped.push(session);
         }
     }
-    let mut sessions = deduped;
 
-    // Sort by timestamp descending and apply limit
-    sessions.sort_by(|a, b| {
+    deduped.sort_by(|a, b| {
         b.timestamp
             .cmp(&a.timestamp)
             .then_with(|| b.file_path.cmp(&a.file_path))
     });
-    sessions.truncate(limit);
-
-    sessions
+    deduped.truncate(limit);
+    deduped
 }
 
 #[cfg(test)]
@@ -1563,6 +1596,50 @@ mod tests {
         let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
         let result = collect_recent_sessions(&paths, 3);
         assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_recent_sessions_per_class_cap() {
+        // Regression: before partitioning the pipeline applied limit to the raw
+        // mtime-sorted file list, so many auto sessions (claude-mem observer)
+        // could crowd out all manual ones. Per-class cap keeps both populated.
+        let dir = tempfile::TempDir::new().unwrap();
+        let manual_dir = dir.path().join("projects").join("-Users-u-manual-proj");
+        let auto_dir = dir
+            .path()
+            .join("projects")
+            .join("-Users-u--claude-mem-observer-sessions");
+        std::fs::create_dir_all(&manual_dir).unwrap();
+        std::fs::create_dir_all(&auto_dir).unwrap();
+
+        for i in 0..3 {
+            write_test_session(
+                &manual_dir,
+                &format!("m{}.jsonl", i),
+                &format!("manual-{}", i),
+                &format!("manual question {}", i),
+            );
+        }
+        // Auto sessions written second → newer mtime → would crowd top-K before fix.
+        for i in 0..20 {
+            write_test_session(
+                &auto_dir,
+                &format!("a{}.jsonl", i),
+                &format!("auto-{}", i),
+                &format!("auto content {}", i),
+            );
+        }
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        let result = collect_recent_sessions(&paths, 3);
+
+        let manual_count = result.iter().filter(|s| s.automation.is_none()).count();
+        let auto_count = result.iter().filter(|s| s.automation.is_some()).count();
+        assert_eq!(
+            manual_count, 3,
+            "manual quota must survive even when auto dominates mtime"
+        );
+        assert_eq!(auto_count, 3, "auto class keeps its own cap");
     }
 
     #[test]
