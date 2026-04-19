@@ -86,15 +86,52 @@ fn find_project_dir_name(file_path: &str) -> Option<String> {
     path.parent()?.file_name()?.to_str().map(|s| s.to_string())
 }
 
+fn decode_dash_encoded_path(dir_name: &str) -> String {
+    let stripped = dir_name.strip_prefix('-').unwrap_or(dir_name);
+    let decoded = stripped
+        .replace("--", "\x00")
+        .replace('-', "/")
+        .replace('\x00', "/.");
+    format!("/{}", decoded)
+}
+
+fn decode_projects_marker_path(dir_name: &str) -> Option<String> {
+    let projects_idx = dir_name.rfind("-projects-")?;
+    let path_prefix = if dir_name.starts_with('-') {
+        &dir_name[1..projects_idx]
+    } else {
+        &dir_name[..projects_idx]
+    };
+    let path_prefix = path_prefix
+        .replace("--", "\x00")
+        .replace('-', "/")
+        .replace('\x00', "/.");
+    let project_name = &dir_name[projects_idx + 10..];
+    Some(format!("/{}/projects/{}", path_prefix, project_name))
+}
+
 /// Decode the original project path from the .claude/projects folder name.
-/// First tries walking the filesystem to find the exact directory (handles ambiguous
-/// encodings like spaces, parentheses, dots all becoming `-`).
-/// Falls back to naive string-based decoding.
+///
+/// A cheap deterministic decode is attempted first so normal resume paths do not
+/// trigger a full-filesystem walk. The expensive walk remains as a fallback for
+/// ambiguous encodings where multiple source characters collapse to `-`.
 pub fn decode_project_path(file_path: &str) -> Option<String> {
     let dir_name = find_project_dir_name(file_path)?;
     let dir_name = dir_name.as_str();
 
-    // Strategy 1: Walk the filesystem to find the exact matching path.
+    // Strategy 1: Try "-projects-" marker decode (cheap, deterministic)
+    let marker_candidate = decode_projects_marker_path(dir_name);
+    if let Some(ref candidate) = marker_candidate {
+        if Path::new(candidate).exists() {
+            return Some(candidate.clone());
+        }
+    }
+
+    // Strategy 2: Try naive dash-to-slash decode (cheap, deterministic)
+    let naive_candidate = decode_dash_encoded_path(dir_name);
+
+    // Strategy 3: Walk the filesystem to find the exact matching path for ambiguous
+    // encodings like spaces, parentheses, or dots that all collapse to '-'.
     let remaining = dir_name.strip_prefix('-').unwrap_or(dir_name);
     if !remaining.is_empty() {
         if let Some(found) = walk_fs_for_path("/", remaining) {
@@ -102,28 +139,7 @@ pub fn decode_project_path(file_path: &str) -> Option<String> {
         }
     }
 
-    // Strategy 2: If there's a "-projects-" marker, use it
-    if let Some(projects_idx) = dir_name.rfind("-projects-") {
-        let path_prefix = if dir_name.starts_with('-') {
-            &dir_name[1..projects_idx]
-        } else {
-            &dir_name[..projects_idx]
-        };
-        let path_prefix = path_prefix
-            .replace("--", "\x00")
-            .replace('-', "/")
-            .replace('\x00', "/.");
-        let project_name = &dir_name[projects_idx + 10..];
-        return Some(format!("/{}/projects/{}", path_prefix, project_name));
-    }
-
-    // Strategy 3: Just convert dashes to slashes (handle -- as /. for hidden dirs)
-    let stripped = dir_name.strip_prefix('-').unwrap_or(dir_name);
-    let decoded = stripped
-        .replace("--", "\x00")
-        .replace('-', "/")
-        .replace('\x00', "/.");
-    Some(format!("/{}", decoded))
+    marker_candidate.or(Some(naive_candidate))
 }
 
 /// Extract the actual project path from the .claude/projects path (test helper).
