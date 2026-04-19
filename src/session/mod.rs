@@ -111,9 +111,6 @@ fn matches_ralphex_marker(content: &str) -> bool {
 }
 
 fn matches_claude_mem_content_marker(content: &str) -> bool {
-    // Must appear at the very start of the message: the claude-mem observer
-    // prompt always begins with this XML block. A mid-text mention (e.g. someone
-    // discussing the marker in a regular conversation) must NOT match.
     content.trim_start().starts_with(CLAUDE_MEM_CONTENT_MARKER)
 }
 
