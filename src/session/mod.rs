@@ -105,86 +105,91 @@ fn matches_ralphex_marker(content: &str) -> bool {
     content.contains(RALPHEX_MARKER)
 }
 
-/// Check if `dir` contains `<session_id>.jsonl` or an `audit.jsonl` whose first
-/// 50 lines mention `session_id`. Returns the matching file path if found.
-fn check_dir_for_session(
-    dir: &std::path::Path,
-    target_filename: &str,
-    session_id: &str,
-) -> Option<String> {
-    use std::io::{BufRead, BufReader};
+/// Recursively collect session JSONL files from the given search roots.
+///
+/// Skips `subagents/` directories and `agent-*.jsonl` files because they either
+/// duplicate parent session data or are auxiliary files that should not appear
+/// in recent-session and session-list views.
+pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
 
-    let candidate = dir.join(target_filename);
-    if candidate.exists() {
-        return Some(candidate.to_string_lossy().to_string());
-    }
-    let audit = dir.join("audit.jsonl");
-    if audit.exists() {
-        if let Ok(file) = std::fs::File::open(&audit) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().take(50).flatten() {
-                if line.contains(session_id) {
-                    return Some(audit.to_string_lossy().to_string());
+        for entry in entries.flatten() {
+            let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
+            let path = entry.path();
+
+            if path.is_dir() {
+                if is_symlink {
+                    continue;
                 }
+                if path.file_name().and_then(|n| n.to_str()) == Some("subagents") {
+                    continue;
+                }
+                walk(&path, files);
+                continue;
+            }
+
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.ends_with(".jsonl") && !name.starts_with("agent-") {
+                files.push(path);
             }
         }
     }
-    None
+
+    let mut files = Vec::new();
+    for search_path in search_paths {
+        let root = std::path::Path::new(search_path);
+        if root.is_dir() {
+            walk(root, &mut files);
+        }
+    }
+    files
 }
 
 /// Search for a JSONL file by session ID across the given search paths.
-/// Checks CLI format (projects/<encoded>/<id>.jsonl) and Desktop format.
-/// Desktop paths can be up to 3 levels deep:
-///   local-agent-mode-sessions/<uuid>/<uuid>/local_xxx/audit.jsonl
+///
+/// Prefers an exact `<session_id>.jsonl` match, but also supports Claude Desktop
+/// `audit.jsonl` files whose content carries the session ID.
 pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> Option<String> {
-    use std::fs;
-    let target_filename = format!("{}.jsonl", session_id);
+    use std::io::{BufRead, BufReader};
 
-    for search_path in search_paths {
-        if let Ok(entries) = fs::read_dir(search_path) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                // Level 1: search_root/<dir>/
-                if let Some(found) = check_dir_for_session(&path, &target_filename, session_id) {
-                    return Some(found);
-                }
-                // Level 2: search_root/<dir>/<subdir>/
-                if let Ok(subentries) = fs::read_dir(&path) {
-                    for subentry in subentries.flatten() {
-                        let subpath = subentry.path();
-                        if !subpath.is_dir() {
-                            continue;
-                        }
-                        if let Some(found) =
-                            check_dir_for_session(&subpath, &target_filename, session_id)
-                        {
-                            return Some(found);
-                        }
-                        // Level 3: search_root/<dir>/<subdir>/<subsubdir>/
-                        // Desktop: <uuid>/<uuid>/local_xxx/audit.jsonl
-                        if let Ok(deep_entries) = fs::read_dir(&subpath) {
-                            for deep_entry in deep_entries.flatten() {
-                                let deep_path = deep_entry.path();
-                                if deep_path.is_dir() {
-                                    if let Some(found) = check_dir_for_session(
-                                        &deep_path,
-                                        &target_filename,
-                                        session_id,
-                                    ) {
-                                        return Some(found);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let target_filename = format!("{}.jsonl", session_id);
+    let mut audit_match: Option<String> = None;
+
+    for path in collect_session_jsonl_files(search_paths) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        if name == target_filename {
+            return Some(path.to_string_lossy().to_string());
+        }
+
+        if name != "audit.jsonl" {
+            continue;
+        }
+
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(file);
+        let found = reader
+            .lines()
+            .take(50)
+            .flatten()
+            .any(|line| line.contains(session_id));
+        if found {
+            audit_match = Some(path.to_string_lossy().to_string());
         }
     }
-    None
+
+    audit_match
 }
 
 /// Resolve the correct session ID and file path for `claude --resume`.
@@ -486,5 +491,88 @@ mod tests {
         let (sid, fpath) = resolve_parent_session("64cd6570-parent", aux_file.to_str().unwrap());
         assert_eq!(sid, "64cd6570-parent");
         assert_eq!(fpath, parent_jsonl.to_string_lossy());
+    }
+
+    #[test]
+    fn test_collect_session_jsonl_files_skips_subagents_and_agents() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("projects");
+        let project = root.join("-Users-user-demo");
+        let subagents = project.join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+
+        let main = project.join("session.jsonl");
+        let agent = project.join("agent-task.jsonl");
+        let subagent = subagents.join("agent-child.jsonl");
+        let audit = project.join("audit.jsonl");
+
+        fs::write(&main, "{}").unwrap();
+        fs::write(&agent, "{}").unwrap();
+        fs::write(&subagent, "{}").unwrap();
+        fs::write(&audit, "{}").unwrap();
+
+        let files = collect_session_jsonl_files(&[root.to_string_lossy().to_string()]);
+        let names: std::collections::HashSet<_> = files
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+
+        assert!(names.contains("session.jsonl"));
+        assert!(names.contains("audit.jsonl"));
+        assert!(!names.contains("agent-task.jsonl"));
+        assert!(!names.contains("agent-child.jsonl"));
+    }
+
+    #[test]
+    fn test_find_session_file_in_paths_finds_exact_match_recursively() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let nested = dir
+            .path()
+            .join("desktop")
+            .join("uuid-1")
+            .join("uuid-2")
+            .join("local_123");
+        fs::create_dir_all(&nested).unwrap();
+
+        let session = nested.join("sess-123.jsonl");
+        fs::write(&session, "{}").unwrap();
+
+        let found =
+            find_session_file_in_paths("sess-123", &[dir.path().to_string_lossy().to_string()]);
+
+        assert_eq!(found, Some(session.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_find_session_file_in_paths_finds_desktop_audit_by_content() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let nested = dir
+            .path()
+            .join("local-agent-mode-sessions")
+            .join("uuid-1")
+            .join("uuid-2")
+            .join("local_123");
+        fs::create_dir_all(&nested).unwrap();
+
+        let audit = nested.join("audit.jsonl");
+        fs::write(
+            &audit,
+            r#"{"type":"user","session_id":"desktop-123","_audit_timestamp":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let found =
+            find_session_file_in_paths("desktop-123", &[dir.path().to_string_lossy().to_string()]);
+
+        assert_eq!(found, Some(audit.to_string_lossy().to_string()));
     }
 }

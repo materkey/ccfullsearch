@@ -724,42 +724,10 @@ fn extract_session_id_from_head(path: &Path) -> Option<String> {
     scan_head(path, HEAD_SCAN_LINES, None).and_then(|scan| scan.session_id)
 }
 
-/// Walk directories and find `*.jsonl` files, skipping `agent-*` files.
+/// Walk directories and find `*.jsonl` session files, skipping agent files and
+/// `subagents/` directories via the shared session-layer walker.
 fn find_jsonl_files(search_paths: &[String]) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    for base in search_paths {
-        let base_path = Path::new(base);
-        if !base_path.is_dir() {
-            continue;
-        }
-        collect_jsonl_recursive(base_path, &mut files);
-    }
-    files
-}
-
-fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            // Skip symlinks to avoid infinite loops from cyclic directory structures
-            if path.is_symlink() {
-                continue;
-            }
-            // Skip subagents directories — they contain duplicate session data
-            if path.file_name().and_then(|n| n.to_str()) == Some("subagents") {
-                continue;
-            }
-            collect_jsonl_recursive(&path, files);
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.ends_with(".jsonl") && !name.starts_with("agent-") {
-                files.push(path);
-            }
-        }
-    }
+    session::collect_session_jsonl_files(search_paths)
 }
 
 /// Collect recent sessions from search paths.
@@ -1791,8 +1759,7 @@ mod tests {
         let subagent_path = subagents_dir.join("sub-session.jsonl");
         std::fs::write(&subagent_path, r#"{"type":"user","sessionId":"s2"}"#).unwrap();
 
-        let mut files = Vec::new();
-        collect_jsonl_recursive(base, &mut files);
+        let files = find_jsonl_files(&[base.to_string_lossy().to_string()]);
 
         // Should contain session.jsonl but NOT subagents/sub-session.jsonl
         assert_eq!(files.len(), 1);

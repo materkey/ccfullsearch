@@ -1,5 +1,5 @@
 use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths, Message};
-use crate::session::SessionSource;
+use crate::session::{collect_session_jsonl_files, SessionSource};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fs;
@@ -75,14 +75,10 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
 
 /// Run CLI list command — enumerate all sessions with metadata
 pub fn cli_list(search_paths: &[String], limit: usize) {
-    let mut sessions: Vec<ListResult> = Vec::new();
-
-    for search_path in search_paths {
-        if !Path::new(search_path).exists() {
-            continue;
-        }
-        collect_sessions(search_path, &mut sessions);
-    }
+    let mut sessions: Vec<ListResult> = collect_session_jsonl_files(search_paths)
+        .into_iter()
+        .filter_map(|path| extract_session_metadata(&path))
+        .collect();
 
     // Sort by last_active descending
     sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
@@ -94,34 +90,6 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
     for session in sessions.iter().take(limit) {
         if let Ok(json) = serde_json::to_string(session) {
             println!("{}", json);
-        }
-    }
-}
-
-/// Recursively find .jsonl files and extract session metadata.
-/// Skips `agent-*.jsonl` files and `subagents/` directories (duplicates of parent sessions).
-fn collect_sessions(dir: &str, results: &mut Vec<ListResult>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        if path.is_dir() {
-            if name == "subagents" {
-                continue;
-            }
-            collect_sessions(path.to_str().unwrap_or(""), results);
-        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
-            if name.starts_with("agent-") {
-                continue;
-            }
-            if let Some(session) = extract_session_metadata(&path) {
-                results.push(session);
-            }
         }
     }
 }
