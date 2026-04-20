@@ -14,6 +14,7 @@ Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep
 - **Session grouping** — results grouped by session with timestamps and project context
 - **Tree view** — visualize conversation branches, forks, and context compactions (`Ctrl+B`)
 - **Session resume** — press `Enter` to resume any session directly from search results or the recent sessions list
+- **AI session re-ranking** — press `Ctrl+G` to ask Claude to re-rank visible sessions by natural-language relevance (requires `claude` CLI in PATH)
 - **Truncation warning** — alerts when search results may be incomplete due to per-file match limits
 - **Async search** — non-blocking background search with debounce
 - **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
@@ -178,7 +179,19 @@ ccs --overlay
 | `Ctrl+C` | Clear input (or quit if input is empty) |
 | `Ctrl+R` | Toggle regex search mode |
 | `Ctrl+B` | Open tree view for selected session |
+| `Ctrl+G` | Enter AI re-ranking mode |
 | `Esc` | Quit |
+
+### AI mode (Ctrl+G)
+
+| Key | Action |
+|-----|--------|
+| Type | AI query input |
+| `Enter` | Rank visible sessions (before result) / Resume selected session (after result) |
+| `Up` / `Down` | Navigate ranked sessions |
+| `Esc` / `Ctrl+G` | Exit AI mode, restore original order |
+
+Editing the AI query after a rank invalidates the applied ranking, so the next `Enter` re-ranks instead of resuming.
 
 ### Tree mode
 

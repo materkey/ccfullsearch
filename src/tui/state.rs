@@ -858,26 +858,38 @@ impl App {
             match action {
                 KeyAction::InputChar(c) => {
                     self.ai.query.push_char(c);
+                    self.invalidate_ai_rank();
                     return;
                 }
                 KeyAction::Backspace => {
-                    self.ai.query.backspace();
+                    if self.ai.query.backspace() {
+                        self.invalidate_ai_rank();
+                    }
                     return;
                 }
                 KeyAction::Delete => {
-                    self.ai.query.delete_forward();
+                    if self.ai.query.delete_forward() {
+                        self.invalidate_ai_rank();
+                    }
                     return;
                 }
                 KeyAction::ClearInput => {
-                    self.ai.query.clear();
+                    if !self.ai.query.is_empty() {
+                        self.ai.query.clear();
+                        self.invalidate_ai_rank();
+                    }
                     return;
                 }
                 KeyAction::DeleteWordLeft => {
-                    self.ai.query.delete_word_left();
+                    if self.ai.query.delete_word_left() {
+                        self.invalidate_ai_rank();
+                    }
                     return;
                 }
                 KeyAction::DeleteWordRight => {
-                    self.ai.query.delete_word_right();
+                    if self.ai.query.delete_word_right() {
+                        self.invalidate_ai_rank();
+                    }
                     return;
                 }
                 KeyAction::MoveWordLeft => {
@@ -905,7 +917,11 @@ impl App {
                     return;
                 }
                 KeyAction::Enter => {
-                    self.submit_ai_query();
+                    if self.ai.ranked_count.is_some() {
+                        self.on_enter_inner();
+                    } else {
+                        self.submit_ai_query();
+                    }
                     return;
                 }
                 _ => {} // fall through for Up/Down navigation, Esc, Ctrl+G, etc.
@@ -1187,6 +1203,20 @@ impl App {
         self.ai.query.clear();
         self.ai.error = None;
         self.ai.ranked_count = None;
+        // Drop preview: otherwise on_enter_inner's preview-close branch
+        // swallows the first post-rank Enter instead of resuming.
+        self.preview_mode = false;
+    }
+
+    /// Drop any applied or in-flight AI rank state so the next Enter re-ranks.
+    /// `thinking` must be cleared too: if a rank was in flight, dropping
+    /// `result_rx` orphans the background thread (its send will fail), and
+    /// `tick()` will never observe a result to reset the flag — leaving
+    /// `submit_ai_query` stuck on its `thinking` guard.
+    fn invalidate_ai_rank(&mut self) {
+        self.ai.ranked_count = None;
+        self.ai.result_rx = None;
+        self.ai.thinking = false;
     }
 
     pub fn exit_ai_mode(&mut self) {
@@ -2371,5 +2401,206 @@ mod tests {
         assert!(!input.delete_word_right());
         assert_eq!(input.cursor_pos(), 0);
         assert!(input.is_empty());
+    }
+
+    // Sentinel test for the AI re-ranking Enter-resume flow (plan 2026-04-20).
+    //
+    // The AI-branch of `handle_action` currently routes `KeyAction::Enter`
+    // unconditionally to `submit_ai_query()`, which makes it impossible to
+    // fall through to a selected session once a rank has been applied. Even
+    // if Enter were routed to `on_enter()`, the `if self.ai.active { return; }`
+    // guard at the top of `on_enter` would swallow it.
+    //
+    // Task 2 extracts `on_enter_inner()` (no guard), and Task 3 routes the
+    // AI-branch Enter to `on_enter_inner()` when `ranked_count.is_some()`.
+    // Both have landed — the test is now an active regression.
+    #[test]
+    fn ai_mode_enter_with_ranked_count_triggers_resume() {
+        use crate::tui::dispatch::KeyAction;
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.recent.filtered = vec![make_recent_session("/sessions/sess.jsonl")];
+        app.ai.ranked_count = Some(1);
+
+        app.handle_action(KeyAction::Enter);
+
+        match app.outcome {
+            Some(AppOutcome::Resume(_)) => {}
+            other => panic!(
+                "Expected Resume outcome after Enter in AI mode with ranked_count=Some, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // Complement of the sentinel above: when AI mode is active but no rank has
+    // been applied yet and the query is empty, Enter must route to
+    // `submit_ai_query`, which itself no-ops (empty query guard). The outcome
+    // stays `None` and `ai.thinking` stays `false` — no AI spawn is triggered.
+    #[test]
+    fn ai_mode_enter_without_ranked_count_triggers_submit_with_empty_query_is_noop() {
+        use crate::tui::dispatch::KeyAction;
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.recent.filtered = vec![make_recent_session("/sessions/sess.jsonl")];
+        assert!(app.ai.ranked_count.is_none());
+        assert!(app.ai.query.is_empty());
+
+        app.handle_action(KeyAction::Enter);
+
+        assert!(
+            app.outcome.is_none(),
+            "Expected no outcome when Enter triggers submit on empty query, got {:?}",
+            app.outcome
+        );
+        assert!(
+            !app.ai.thinking,
+            "submit_ai_query must early-return on empty query — thinking should stay false"
+        );
+    }
+
+    // Task 4 (plan 2026-04-20): every query-mutation branch in the AI block of
+    // `handle_action` must clear `ranked_count` (so Enter routes back to
+    // `submit_ai_query`), drop `result_rx` (so a stale in-flight AI response
+    // cannot restore the "result applied" flag via `handle_ai_result`), and
+    // clear `thinking` (otherwise `submit_ai_query` would be wedged on its
+    // `thinking` guard since `tick()` can no longer observe a result).
+    #[test]
+    fn ai_query_mutation_clears_rank_and_receiver() {
+        use crate::tui::dispatch::KeyAction;
+
+        // For each mutation we pin (initial_text, cursor_pos, expected_text_after).
+        let mutations: Vec<(KeyAction, &str, usize, &str)> = vec![
+            (KeyAction::InputChar('x'), "hello", 5, "hellox"),
+            (KeyAction::Backspace, "hello", 5, "hell"),
+            (KeyAction::Delete, "hello", 0, "ello"),
+            (KeyAction::ClearInput, "hello", 5, ""),
+            (KeyAction::DeleteWordLeft, "one two", 7, "one "),
+            (KeyAction::DeleteWordRight, "one two", 0, "two"),
+        ];
+
+        for (action, initial, cursor, expected) in mutations {
+            let mut app = App::new(vec!["/test".to_string()]);
+            app.enter_ai_mode();
+            app.ai.query.set_text_and_cursor(initial, cursor);
+            app.ai.ranked_count = Some(3);
+            app.ai.thinking = true;
+            let (_tx, rx) = mpsc::channel::<crate::ai::AiRankResult>();
+            app.ai.result_rx = Some(rx);
+
+            app.handle_action(action.clone());
+
+            assert!(
+                app.ai.ranked_count.is_none(),
+                "ranked_count must be cleared after {:?}",
+                action
+            );
+            assert!(
+                app.ai.result_rx.is_none(),
+                "result_rx must be dropped after {:?}",
+                action
+            );
+            assert!(
+                !app.ai.thinking,
+                "thinking must be cleared after {:?} so submit_ai_query can run again",
+                action
+            );
+            assert_eq!(
+                app.ai.query.text(),
+                expected,
+                "query text must reflect mutation after {:?}",
+                action
+            );
+        }
+    }
+
+    // Cursor-only movements must NOT clear `ranked_count` — the user is merely
+    // navigating within the already-submitted query, not editing it, so the
+    // applied rank stays valid and Enter must still route to resume.
+    #[test]
+    fn ai_cursor_movement_does_not_clear_rank() {
+        use crate::tui::dispatch::KeyAction;
+
+        let movements = [
+            KeyAction::Left,
+            KeyAction::Right,
+            KeyAction::MoveHome,
+            KeyAction::MoveEnd,
+            KeyAction::MoveWordLeft,
+            KeyAction::MoveWordRight,
+        ];
+
+        for action in movements {
+            let mut app = App::new(vec!["/test".to_string()]);
+            app.enter_ai_mode();
+            app.ai.query.set_text("hello world");
+            app.ai.ranked_count = Some(3);
+
+            app.handle_action(action.clone());
+
+            assert_eq!(
+                app.ai.ranked_count,
+                Some(3),
+                "ranked_count must stay intact after cursor-only {:?}",
+                action
+            );
+        }
+    }
+
+    // No-op delete keys (cursor at edge, or empty query for ClearInput) must
+    // not clear ranked_count — otherwise a stray Backspace while cursor is at
+    // pos 0 silently demotes a valid rank back to "rank" mode.
+    #[test]
+    fn ai_query_noop_delete_keeps_rank() {
+        use crate::tui::dispatch::KeyAction;
+
+        // (action, initial_text, cursor_pos) tuples where the action is a no-op.
+        let noops: Vec<(KeyAction, &str, usize)> = vec![
+            (KeyAction::Backspace, "hello", 0),
+            (KeyAction::Delete, "hello", 5),
+            (KeyAction::ClearInput, "", 0),
+            (KeyAction::DeleteWordLeft, "hello", 0),
+            (KeyAction::DeleteWordRight, "hello", 5),
+        ];
+
+        for (action, initial, cursor) in noops {
+            let mut app = App::new(vec!["/test".to_string()]);
+            app.enter_ai_mode();
+            app.ai.query.set_text_and_cursor(initial, cursor);
+            app.ai.ranked_count = Some(3);
+
+            app.handle_action(action.clone());
+
+            assert_eq!(
+                app.ai.ranked_count,
+                Some(3),
+                "ranked_count must stay intact after no-op {:?}",
+                action
+            );
+            assert_eq!(
+                app.ai.query.text(),
+                initial,
+                "query text must be unchanged after no-op {:?}",
+                action
+            );
+        }
+    }
+
+    // Entering AI mode with an open preview must close it — otherwise the
+    // first post-rank Enter is consumed by on_enter_inner's preview-close
+    // branch instead of resuming the selected session.
+    #[test]
+    fn enter_ai_mode_closes_preview() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.preview_mode = true;
+
+        app.enter_ai_mode();
+
+        assert!(
+            !app.preview_mode,
+            "enter_ai_mode must clear preview_mode so post-rank Enter resumes instead of closing preview"
+        );
     }
 }

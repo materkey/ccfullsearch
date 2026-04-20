@@ -69,6 +69,29 @@ pub(crate) fn build_help_line<'a>(hints: &[HintItem<'a>], available_width: u16) 
     Line::from(result_spans)
 }
 
+pub(crate) fn build_ai_hints(ranked_count: Option<usize>) -> Vec<HintItem<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let enter_label = if ranked_count.is_some() {
+        "[Enter] Resume"
+    } else {
+        "[Enter] Rank"
+    };
+    vec![
+        HintItem {
+            spans: vec![Span::styled(enter_label, dim)],
+            min_width: 0,
+        },
+        HintItem {
+            spans: vec![Span::styled("[↑↓] Navigate", dim)],
+            min_width: 0,
+        },
+        HintItem {
+            spans: vec![Span::styled("[Esc/Ctrl+G] Cancel", dim)],
+            min_width: 0,
+        },
+    ]
+}
+
 fn kept_line_width(keep: &[bool], widths: &[usize], sep_len: usize) -> usize {
     let mut total = 0;
     let mut count = 0usize;
@@ -329,20 +352,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     let dim = Style::default().fg(Color::DarkGray);
 
     let hints: Vec<HintItem> = if app.ai.active {
-        vec![
-            HintItem {
-                spans: vec![Span::styled("[Enter] Rank", dim)],
-                min_width: 0,
-            },
-            HintItem {
-                spans: vec![Span::styled("[↑↓] Navigate", dim)],
-                min_width: 0,
-            },
-            HintItem {
-                spans: vec![Span::styled("[Esc/Ctrl+G] Cancel", dim)],
-                min_width: 0,
-            },
-        ]
+        build_ai_hints(app.ai.ranked_count)
     } else {
         let filter_hint = HintItem {
             spans: vec![
@@ -2412,5 +2422,66 @@ mod tests {
         let text = line_to_string(&line);
         assert!(text.contains("[A] X"));
         assert!(text.contains("[B] Y"));
+    }
+
+    fn hint_texts(hints: &[HintItem<'_>]) -> Vec<String> {
+        hints
+            .iter()
+            .map(|h| {
+                h.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_ai_hints_shows_rank_when_no_ranked_count() {
+        let texts = hint_texts(&build_ai_hints(None));
+        assert!(
+            texts.iter().any(|t| t == "[Enter] Rank"),
+            "expected [Enter] Rank when ranked_count is None, got {:?}",
+            texts
+        );
+        assert!(
+            !texts.iter().any(|t| t == "[Enter] Resume"),
+            "must not show [Enter] Resume when ranked_count is None, got {:?}",
+            texts
+        );
+    }
+
+    #[test]
+    fn render_ai_hints_shows_resume_when_ranked_count_set() {
+        let texts = hint_texts(&build_ai_hints(Some(3)));
+        assert!(
+            texts.iter().any(|t| t == "[Enter] Resume"),
+            "expected [Enter] Resume when ranked_count is Some, got {:?}",
+            texts
+        );
+        assert!(
+            !texts.iter().any(|t| t == "[Enter] Rank"),
+            "must not show [Enter] Rank when ranked_count is Some, got {:?}",
+            texts
+        );
+    }
+
+    #[test]
+    fn render_ai_hints_keeps_navigation_and_cancel_labels() {
+        for ranked in [None, Some(1), Some(42)] {
+            let texts = hint_texts(&build_ai_hints(ranked));
+            assert!(
+                texts.iter().any(|t| t == "[↑↓] Navigate"),
+                "navigation hint must be present for ranked={:?}, got {:?}",
+                ranked,
+                texts
+            );
+            assert!(
+                texts.iter().any(|t| t == "[Esc/Ctrl+G] Cancel"),
+                "cancel hint must be present for ranked={:?}, got {:?}",
+                ranked,
+                texts
+            );
+        }
     }
 }

@@ -174,6 +174,10 @@ impl App {
         if self.ai.active {
             return;
         }
+        self.on_enter_inner();
+    }
+
+    pub(crate) fn on_enter_inner(&mut self) {
         if self.preview_mode {
             self.preview_mode = false;
             return;
@@ -677,5 +681,26 @@ mod tests {
         app.clear_input();
 
         assert!(app.outcome.is_none());
+    }
+
+    // =========================================================================
+    // AI-mode guard tests
+    // =========================================================================
+
+    // Regression guard for the `on_enter` wrapper: while AI mode is active and no
+    // ranking result has arrived yet, a direct call to `on_enter()` must be a no-op.
+    // If a future refactor drops the guard, this test catches it.
+    #[test]
+    fn on_enter_guard_respected_in_ai_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.filtered = vec![make_recent_session("s1", "proj-a", "first")];
+        app.ai.active = true;
+        app.ai.ranked_count = None;
+
+        app.on_enter();
+
+        assert!(app.outcome.is_none());
+        assert!(!app.should_quit);
     }
 }
