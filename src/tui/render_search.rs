@@ -589,10 +589,16 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 let prefix_len = prefix.len();
                 let max_content = (area.width as usize).saturating_sub(prefix_len);
                 let truncated = truncate_to_width(&content, max_content);
-                let preview_item = ListItem::new(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-                    Span::styled(truncated, Style::default().fg(Color::DarkGray)),
-                ]));
+                let base = Style::default().fg(Color::DarkGray);
+                let mut spans = vec![Span::styled(prefix, base)];
+                // Highlight occurrences of the query so the collapsed preview
+                // pops matches the same way the Preview panel (Tab/Ctrl+V)
+                // does. Non-matched text keeps the DarkGray base so the row
+                // still reads as a preview, not primary content.
+                let highlighted =
+                    highlight_line_with_base(&truncated, &app.search.results_query, base);
+                spans.extend(highlighted.spans);
+                let preview_item = ListItem::new(Line::from(spans));
                 items.push(preview_item);
             }
         }
@@ -621,6 +627,43 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
+/// Row grammar used by `render_recent_sessions`: one header line followed by
+/// one dim preview line (`User:` / `Claude:` prefix + summary).
+/// Keep in sync with the search-results rendering in `render_groups` so the
+/// two screens read as one continuous surface.
+const RECENT_LINES_PER_SESSION: usize = 2;
+
+/// Build the header text for a recent-session row, mirroring
+/// `build_group_header_text` but with a message count instead of matches.
+///
+/// Format: `▶ [Source] date | project | branch | sha (N msgs) [A]`
+///
+/// Uses the same `▶` caret as collapsed search groups for visual continuity.
+/// Recent rows are never expandable so only the collapsed glyph is needed.
+pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSession) -> String {
+    let date_str = session.timestamp.format("%Y-%m-%d %H:%M").to_string();
+    let source = session.source.display_name();
+    let branch = session.branch.as_deref().unwrap_or("-");
+    let session_display = if session.session_id.len() > 8 {
+        &session.session_id[..8]
+    } else {
+        &session.session_id
+    };
+    let count_str = match session.message_count {
+        Some(n) => format!("{} msgs", n),
+        None => "-".to_string(),
+    };
+    let auto_tag = if session.automation.is_some() {
+        " [A]"
+    } else {
+        ""
+    };
+    format!(
+        "▶ [{}] {} | {} | {} | {} ({}){}",
+        source, date_str, session.project, branch, session_display, count_str, auto_tag
+    )
+}
+
 fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Loading and empty states are shown in the status bar only
     if app.recent.loading || app.recent.filtered.is_empty() {
@@ -631,71 +674,58 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
     let available_width = area.width as usize;
     let mut items: Vec<ListItem> = vec![];
 
-    // Use pre-computed scroll offset (adjusted in event handlers, not here)
+    // Use pre-computed scroll offset (adjusted in event handlers, not here).
+    // scroll_offset is a *session* index; each session consumes two list items.
     let scroll_offset = app.recent.scroll_offset;
+    let visible_items = (visible_height / RECENT_LINES_PER_SESSION).max(1);
+    let end = (scroll_offset + visible_items).min(app.recent.filtered.len());
 
-    let end = (scroll_offset + visible_height).min(app.recent.filtered.len());
+    let mut selected_item_idx: Option<usize> = None;
 
     for i in scroll_offset..end {
         let session = &app.recent.filtered[i];
         let is_selected = i == app.recent.cursor;
 
-        let date_str = session.timestamp.format("%Y-%m-%d %H:%M").to_string();
-        // Reserve space: "  " prefix + date (16) + "  " + project + "  " + summary
-        let project_max = 20;
-        let project_display = truncate_to_width(&session.project, project_max);
-        let is_automated = session.automation.is_some();
-        let auto_prefix = if is_automated { "[A] " } else { "" };
-        let prefix_len =
-            2 + date_str.len() + 2 + project_display.chars().count() + 2 + auto_prefix.len();
-        let summary_max = available_width.saturating_sub(prefix_len);
-        let summary_display = truncate_to_width(&session.summary, summary_max);
-
+        let header_text = build_recent_session_header_text(session);
         let prefix = if is_selected { "> " } else { "  " };
-
-        let mut spans = vec![
-            Span::raw(prefix.to_string()),
-            Span::styled(date_str, Style::default().fg(Color::DarkGray)),
-            Span::raw("  "),
-            Span::styled(project_display, Style::default().fg(Color::Cyan)),
-            Span::raw("  "),
-        ];
-
-        if is_automated {
-            spans.push(Span::styled("[A] ", Style::default().fg(Color::DarkGray)));
-        }
-
-        let summary_color = if is_automated {
-            Color::Gray
+        // Selected style intentionally omits `Modifier::BOLD`: in some
+        // monospace fonts (e.g. Iosevka) the bold variant of the `▶` glyph
+        // is narrower than the regular one, which makes the selected row's
+        // caret look visually clipped next to the solid purple background.
+        let header_style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Rgb(75, 0, 130))
         } else {
-            Color::White
+            Style::default().fg(Color::DarkGray)
         };
 
         if is_selected {
-            spans.push(Span::styled(
-                summary_display,
-                Style::default()
-                    .fg(summary_color)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled(
-                summary_display,
-                Style::default().fg(summary_color),
-            ));
+            selected_item_idx = Some(items.len());
         }
+        items.push(ListItem::new(format!("{}{}", prefix, header_text)).style(header_style));
 
-        let style = if is_selected {
-            Style::default().bg(Color::Rgb(75, 0, 130))
-        } else {
-            Style::default()
-        };
-
-        items.push(ListItem::new(Line::from(spans)).style(style));
+        // Preview line — same "     User:/Claude: <text>" grammar as the
+        // search-result preview, rendered in dim gray.
+        let role_label = session.preview_role.label();
+        let preview_prefix = format!("     {}: ", role_label);
+        let preview_prefix_len = preview_prefix.chars().count();
+        let max_content = available_width.saturating_sub(preview_prefix_len);
+        let preview_content = truncate_to_width(&session.summary, max_content);
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(preview_prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled(preview_content, Style::default().fg(Color::DarkGray)),
+        ])));
     }
 
-    let list = List::new(items).block(Block::default().borders(Borders::NONE));
-    frame.render_widget(list, area);
+    let mut list_state = ListState::default();
+    if let Some(idx) = selected_item_idx {
+        list_state.select(Some(idx));
+    }
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .highlight_style(Style::default());
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 /// Build the header text for a session group (testable function)
@@ -749,11 +779,15 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
 fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool) -> ListItem<'a> {
     let header_text = build_group_header_text(group, expanded);
 
+    // Selected style intentionally omits `Modifier::BOLD`: in some monospace
+    // fonts (e.g. Iosevka) the bold variant of the `▶` glyph is narrower than
+    // the regular one, which makes the caret look visually clipped next to
+    // the solid purple selection background. Keep this in sync with
+    // `render_recent_sessions` so both screens share the selection look.
     let style = if selected && !expanded {
         Style::default()
             .fg(Color::Yellow)
             .bg(Color::Rgb(75, 0, 130))
-            .add_modifier(Modifier::BOLD)
     } else if selected {
         Style::default().fg(Color::White)
     } else {
@@ -823,8 +857,14 @@ fn render_sub_match<'a>(
         ));
     }
     spans.push(Span::styled(role_str, role_style));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(format!("\"{}\"", content), style));
+    spans.push(Span::styled(" \"", style));
+    // Highlight query occurrences inside the quoted content. The highlight
+    // span's own style (yellow bg + black fg + bold) overrides the row's
+    // base style, so matches stay visible on both the unselected DarkGray
+    // and the selected yellow-on-purple rows.
+    let highlighted = highlight_line_with_base(&content, query, style);
+    spans.extend(highlighted.spans);
+    spans.push(Span::styled("\"", style));
 
     ListItem::new(Line::from(spans))
 }
@@ -892,9 +932,21 @@ fn truncate_around_query(content: &str, query: &str, max_chars: usize) -> String
 }
 
 /// Highlight query matches in a line, returning a Line with styled spans
-fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
+fn highlight_line(text: &str, query: &str) -> Line<'static> {
+    highlight_line_with_base(text, query, Style::default())
+}
+
+/// Same as `highlight_line` but paints non-matched spans with `base_style`.
+/// Use it when the surrounding context already has a colour (e.g. DarkGray
+/// for collapsed previews, or yellow-on-purple for the selected sub-match)
+/// and you still want matches of `query` to pop on their own yellow
+/// background.
+///
+/// Returns `Line<'static>` because every span owns its content via
+/// `.to_string()` — the result never borrows from `text`.
+fn highlight_line_with_base(text: &str, query: &str, base_style: Style) -> Line<'static> {
     if query.is_empty() {
-        return Line::raw(text.to_string());
+        return Line::from(Span::styled(text.to_string(), base_style));
     }
 
     let query_lower = query.to_lowercase();
@@ -920,7 +972,10 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
     ) {
         // Add text before the match
         if match_start > last_end {
-            spans.push(Span::raw(text[last_end..match_start].to_string()));
+            spans.push(Span::styled(
+                text[last_end..match_start].to_string(),
+                base_style,
+            ));
         }
 
         // Add highlighted match (preserving original case)
@@ -935,11 +990,11 @@ fn highlight_line<'a>(text: &'a str, query: &str) -> Line<'a> {
 
     // Add remaining text after last match
     if last_end < text.len() {
-        spans.push(Span::raw(text[last_end..].to_string()));
+        spans.push(Span::styled(text[last_end..].to_string(), base_style));
     }
 
     if spans.is_empty() {
-        Line::raw(text.to_string())
+        Line::from(Span::styled(text.to_string(), base_style))
     } else {
         Line::from(spans)
     }
@@ -1217,6 +1272,121 @@ mod tests {
         assert_eq!(line.spans.len(), 2);
         assert_eq!(line.spans[0].content.as_ref(), "İ");
         assert_eq!(line.spans[1].content.as_ref(), "stanbul");
+    }
+
+    #[test]
+    fn test_highlight_line_with_base_paints_non_matches() {
+        let base = Style::default().fg(Color::DarkGray);
+        let line = highlight_line_with_base("Hello world", "world", base);
+        assert_eq!(line.spans.len(), 2);
+        // Non-matched span must carry the base style so the preview row
+        // reads as dim rather than white.
+        assert_eq!(line.spans[0].content.as_ref(), "Hello ");
+        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+        // Matched span ignores the base and uses the fixed highlight style.
+        assert_eq!(line.spans[1].content.as_ref(), "world");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Black));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn test_highlight_line_with_base_styles_no_match() {
+        let base = Style::default().fg(Color::DarkGray);
+        let line = highlight_line_with_base("Hello world", "xyz", base);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    /// Regression test: collapsed-preview line ("     User: ..." under a
+    /// group header) must paint matched query substrings with the yellow
+    /// highlight background. Before the fix the whole line was one DarkGray
+    /// span and matches blended into the dim preview.
+    #[test]
+    fn test_render_groups_collapsed_preview_highlights_query() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let app = make_test_app_with_groups();
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        // Locate the collapsed preview line — the one that begins with the
+        // five-space indent + role label.
+        let mut preview_y: Option<u16> = None;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..120 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if line.starts_with("     User: ") {
+                preview_y = Some(y);
+                break;
+            }
+        }
+        let y = preview_y.expect("collapsed preview line not found");
+
+        // At least one cell on the preview line must have Yellow bg — the
+        // highlight painted over "Test" (case-insensitive match for "test").
+        let mut has_highlight_cell = false;
+        for x in 0..120 {
+            let cell = buffer.cell((x, y)).unwrap();
+            if cell.bg == Color::Yellow && cell.fg == Color::Black {
+                has_highlight_cell = true;
+                break;
+            }
+        }
+        assert!(
+            has_highlight_cell,
+            "collapsed preview line must contain at least one highlighted cell (yellow bg, black fg)"
+        );
+    }
+
+    /// Regression test: expanded sub-match content must also paint matched
+    /// query substrings. The expanded row opens with `→ Role: "<content>"`
+    /// and the highlight must land inside the quoted content.
+    #[test]
+    fn test_render_sub_match_highlights_query_in_content() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        app.search.group_cursor = 0;
+        app.search.expanded = true;
+        app.search.sub_cursor = 0;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        // Locate the expanded sub-match row — begins with the `→` arrow.
+        let mut match_y: Option<u16> = None;
+        for y in 0..24 {
+            let cell0 = buffer.cell((4, y)).unwrap().symbol().to_string();
+            if cell0 == "→" {
+                match_y = Some(y);
+                break;
+            }
+        }
+        let y = match_y.expect("expanded sub-match row not found");
+
+        let mut has_highlight_cell = false;
+        for x in 0..120 {
+            let cell = buffer.cell((x, y)).unwrap();
+            if cell.bg == Color::Yellow && cell.fg == Color::Black {
+                has_highlight_cell = true;
+                break;
+            }
+        }
+        assert!(
+            has_highlight_cell,
+            "expanded sub-match row must contain at least one highlighted cell (yellow bg, black fg)"
+        );
     }
 
     #[test]
@@ -1945,6 +2115,9 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 30, 0).unwrap(),
                 summary: "Fix the login bug".to_string(),
                 automation: None,
+                branch: Some("main".to_string()),
+                message_count: Some(42),
+                preview_role: crate::recent::PreviewRole::User,
             },
             RecentSession {
                 session_id: "sess-2".to_string(),
@@ -1954,6 +2127,9 @@ mod tests {
                 timestamp: Utc.with_ymd_and_hms(2025, 5, 31, 9, 0, 0).unwrap(),
                 summary: "Add new feature".to_string(),
                 automation: None,
+                branch: None,
+                message_count: Some(12),
+                preview_role: crate::recent::PreviewRole::Claude,
             },
         ];
 
@@ -1986,6 +2162,267 @@ mod tests {
     }
 
     #[test]
+    fn test_build_recent_session_header_text_cli_with_branch() {
+        use crate::recent::{PreviewRole, RecentSession};
+        use chrono::TimeZone;
+
+        let session = RecentSession {
+            session_id: "b701e752abcd1234".to_string(),
+            file_path: "/projects/avito/sess.jsonl".to_string(),
+            project: "avito-android".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 17, 19, 51, 0).unwrap(),
+            summary: "hello".to_string(),
+            automation: Some("ralphex".to_string()),
+            branch: Some("MBSA-2197".to_string()),
+            message_count: Some(3613),
+            preview_role: PreviewRole::User,
+        };
+        assert_eq!(
+            build_recent_session_header_text(&session),
+            "▶ [CLI] 2026-04-17 19:51 | avito-android | MBSA-2197 | b701e752 (3613 msgs) [A]"
+        );
+    }
+
+    #[test]
+    fn test_build_recent_session_header_text_desktop_without_branch() {
+        use crate::recent::{PreviewRole, RecentSession};
+        use chrono::TimeZone;
+
+        let session = RecentSession {
+            session_id: "short-id".to_string(),
+            file_path: "/sessions/desktop.jsonl".to_string(),
+            project: "~".to_string(),
+            source: SessionSource::ClaudeDesktop,
+            timestamp: Utc.with_ymd_and_hms(2026, 3, 18, 18, 20, 0).unwrap(),
+            summary: "hello".to_string(),
+            automation: None,
+            branch: None,
+            message_count: Some(42),
+            preview_role: PreviewRole::Claude,
+        };
+        assert_eq!(
+            build_recent_session_header_text(&session),
+            "▶ [Desktop] 2026-03-18 18:20 | ~ | - | short-id (42 msgs)"
+        );
+    }
+
+    #[test]
+    fn test_render_recent_sessions_unified_grammar() {
+        use crate::recent::{PreviewRole, RecentSession};
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: "b701e752abcd".to_string(),
+            file_path: "/projects/sess.jsonl".to_string(),
+            project: "avito-android".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 17, 19, 51, 0).unwrap(),
+            summary: "grep samsungapps across this week's sessions".to_string(),
+            automation: None,
+            branch: Some("main".to_string()),
+            message_count: Some(17),
+            preview_role: PreviewRole::User,
+        }];
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+        let mut header_line: Option<String> = None;
+        let mut preview_line: Option<String> = None;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..120 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            let trimmed = line.trim_end();
+            if trimmed.contains("▶ [CLI]") {
+                header_line = Some(trimmed.to_string());
+            } else if trimmed.contains("User: ") {
+                preview_line = Some(trimmed.to_string());
+            }
+        }
+        let header = header_line.expect("header line should render");
+        assert!(
+            header.contains("[CLI] 2026-04-17 19:51 | avito-android | main | b701e752 (17 msgs)"),
+            "unexpected header: {:?}",
+            header
+        );
+        let preview = preview_line.expect("preview line should render");
+        assert!(
+            preview.contains("User: grep samsungapps"),
+            "unexpected preview: {:?}",
+            preview
+        );
+    }
+
+    /// Contract test for the search-results selection style. Mirrors
+    /// `test_render_recent_sessions_selected_caret_layout` so both screens
+    /// share the same "no BOLD on caret" invariant. A bold `▶` in Iosevka
+    /// renders as a narrower glyph than the regular one, which visually
+    /// looks clipped on top of the solid purple selection background — users
+    /// flagged this on both the search and recent-sessions screens.
+    #[test]
+    fn test_render_search_selected_caret_layout() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        // Force the first group to be selected and collapsed (the style
+        // branch we're pinning down).
+        app.search.group_cursor = 0;
+        app.search.expanded = false;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        // Locate the row by its selection indicator `>`.
+        let mut header_y: Option<u16> = None;
+        for y in 0..24 {
+            if buffer.cell((0, y)).unwrap().symbol() == ">" {
+                header_y = Some(y);
+                break;
+            }
+        }
+        let y = header_y.expect("selected search group row not found");
+
+        // Expected leading sequence: "> ▶ [CLI]".
+        let expected: &[&str] = &[">", " ", "▶", " ", "[", "C", "L", "I", "]"];
+        for (i, &want) in expected.iter().enumerate() {
+            let got = buffer.cell((i as u16, y)).unwrap().symbol();
+            assert_eq!(
+                got, want,
+                "cell col {} on selected group row: expected {:?}, got {:?}",
+                i, want, got
+            );
+        }
+
+        let purple = Color::Rgb(75, 0, 130);
+        for x in 0..9u16 {
+            let cell = buffer.cell((x, y)).unwrap();
+            assert_eq!(
+                cell.bg, purple,
+                "cell col {} on selected group row must have purple bg, got {:?}",
+                x, cell.bg
+            );
+        }
+        let caret = buffer.cell((2, y)).unwrap();
+        assert_eq!(caret.fg, Color::Yellow);
+        assert!(
+            !caret.modifier.contains(Modifier::BOLD),
+            "▶ caret on selected search group row must not be bold"
+        );
+    }
+
+    /// UI regression test for the "▶ clipped on the selected row" visual bug.
+    /// Verifies the buffer layout ratatui produces for a selected recent
+    /// session: `▶` must sit at a known column, occupy exactly one cell
+    /// (unicode-width = 1), be surrounded by a plain-space cell, and share the
+    /// same purple selection background as the neighbouring cells. A terminal
+    /// font that renders `▶` wider than one column is the only remaining way
+    /// to see clipping; the test pins down the *logical* layout so any
+    /// regression in the ratatui side shows up immediately.
+    #[test]
+    fn test_render_recent_sessions_selected_caret_layout() {
+        use crate::recent::{PreviewRole, RecentSession};
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: "124e8bc6abcd".to_string(),
+            file_path: "/p/sess.jsonl".to_string(),
+            project: "claude-code-fullsearch-rust".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 21, 15, 50, 0).unwrap(),
+            summary: "triangle layout test".to_string(),
+            automation: None,
+            branch: Some("main".to_string()),
+            message_count: Some(360),
+            preview_role: PreviewRole::User,
+        }];
+        app.recent.cursor = 0;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        // Find the header row (starts with ">" selection indicator).
+        let mut header_y: Option<u16> = None;
+        for y in 0..24 {
+            if buffer.cell((0, y)).unwrap().symbol() == ">" {
+                header_y = Some(y);
+                break;
+            }
+        }
+        let y = header_y.expect("selected row not found in buffer");
+
+        // Expected leading sequence: "> ▶ [CLI]" → 9 cells.
+        let expected: &[&str] = &[">", " ", "▶", " ", "[", "C", "L", "I", "]"];
+        for (i, &want) in expected.iter().enumerate() {
+            let got = buffer.cell((i as u16, y)).unwrap().symbol();
+            assert_eq!(
+                got, want,
+                "cell col {} on selected row: expected {:?}, got {:?}",
+                i, want, got
+            );
+        }
+
+        // ▶ must occupy exactly one cell: its right neighbour must be a
+        // plain space, proving unicode-width lines up with placement.
+        assert_eq!(
+            buffer.cell((3, y)).unwrap().symbol(),
+            " ",
+            "cell right of ▶ must be a space"
+        );
+
+        // Every cell in the selection indicator, caret, separator, and the
+        // `[CLI]` suffix must carry the purple selection background so the
+        // highlight reads as one continuous bar across the caret.
+        let purple = Color::Rgb(75, 0, 130);
+        for x in 0..9u16 {
+            let cell = buffer.cell((x, y)).unwrap();
+            assert_eq!(
+                cell.bg, purple,
+                "cell col {} on selected row must have purple bg, got {:?}",
+                x, cell.bg
+            );
+        }
+
+        // Caret cell must carry the yellow foreground we picked for the
+        // selection style — reverts of that would silently change the look.
+        assert_eq!(buffer.cell((2, y)).unwrap().fg, Color::Yellow);
+
+        // Caret must NOT be bold: Iosevka renders the bold variant of `▶`
+        // narrower than the regular glyph, which visually looks clipped on a
+        // solid background. Keep this assertion in place to prevent a
+        // well-meaning "make the selected row bolder" change from regressing
+        // the visual alignment users already flagged.
+        let caret = buffer.cell((2, y)).unwrap();
+        assert!(
+            !caret.modifier.contains(Modifier::BOLD),
+            "▶ caret on selected row must not be bold"
+        );
+    }
+
+    #[test]
     fn test_render_recent_sessions_help_bar() {
         use crate::recent::RecentSession;
         use chrono::TimeZone;
@@ -2004,6 +2441,9 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
             summary: "hello".to_string(),
             automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::recent::PreviewRole::User,
         }];
 
         terminal
@@ -2173,6 +2613,9 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
             summary: "Automated session".to_string(),
             automation: Some("ralphex".to_string()),
+            branch: None,
+            message_count: None,
+            preview_role: crate::recent::PreviewRole::User,
         }];
         app.recent.filtered = vec![];
 

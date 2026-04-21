@@ -12,6 +12,28 @@ use crate::session::{self, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
 
+/// Which role the summary preview should be attributed to when the recent
+/// list renders the unified `User:` / `Claude:` preview line beneath each row.
+///
+/// Derived from the *source* that produced the summary field:
+/// - `first_user_message` / `last_prompt` → `User`
+/// - `type=summary` / `agentName` / `customTitle` / `aiTitle` → `Claude`
+///   (these are AI-generated / AI-titled)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewRole {
+    User,
+    Claude,
+}
+
+impl PreviewRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewRole::User => "User",
+            PreviewRole::Claude => "Claude",
+        }
+    }
+}
+
 /// A recently accessed Claude session with summary metadata.
 #[derive(Debug, Clone)]
 pub struct RecentSession {
@@ -22,6 +44,15 @@ pub struct RecentSession {
     pub timestamp: DateTime<Utc>,
     pub summary: String,
     pub automation: Option<String>,
+    /// Git branch extracted from the first message with a `branch` or
+    /// `gitBranch` field. CLI-only — `None` for Desktop sessions.
+    pub branch: Option<String>,
+    /// Number of messages on the latest chain of the session DAG. `None`
+    /// when the DAG could not be built (rare).
+    pub message_count: Option<usize>,
+    /// Whether the summary should be displayed with a `User:` or `Claude:`
+    /// prefix in the unified recent-row grammar.
+    pub preview_role: PreviewRole,
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
@@ -78,9 +109,19 @@ struct ScanResult {
     metadata_title: Option<String>,
     last_prompt: Option<String>,
     automation: Option<String>,
+    branch: Option<String>,
     lines_scanned: usize,
     saw_off_chain_summary: bool,
     last_timestamp: Option<DateTime<Utc>>,
+}
+
+fn extract_branch(json: &serde_json::Value) -> Option<String> {
+    json.get("branch")
+        .or_else(|| json.get("gitBranch"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 struct ScanNeeds {
@@ -88,6 +129,7 @@ struct ScanNeeds {
     user_message: bool,
     session_id: bool,
     automation: bool,
+    branch: bool,
 }
 
 fn summary_is_on_latest_chain(
@@ -138,6 +180,10 @@ fn scan_head(
 
         if scan.session_id.is_none() {
             scan.session_id = session::extract_session_id(&json);
+        }
+
+        if scan.branch.is_none() {
+            scan.branch = extract_branch(&json);
         }
 
         if session::extract_record_type(&json) == Some("summary") {
@@ -375,7 +421,10 @@ fn scan_middle(
         let still_need_user_msg = needs.user_message && result.first_user_message.is_none();
         let still_need_sid = needs.session_id && result.session_id.is_none();
         let still_need_auto = needs.automation && result.automation.is_none();
-        if in_tail_region && !(still_need_user_msg || still_need_sid || still_need_auto) {
+        let still_need_branch = needs.branch && result.branch.is_none();
+        if in_tail_region
+            && !(still_need_user_msg || still_need_sid || still_need_auto || still_need_branch)
+        {
             break;
         }
 
@@ -389,7 +438,8 @@ fn scan_middle(
         let have_user_msg = !needs.user_message || result.first_user_message.is_some();
         let have_sid = !needs.session_id || result.session_id.is_some();
         let have_auto = !needs.automation || result.automation.is_some();
-        let all_needs_met = have_summary && have_user_msg && have_sid && have_auto;
+        let have_branch = !needs.branch || result.branch.is_some();
+        let all_needs_met = have_summary && have_user_msg && have_sid && have_auto && have_branch;
 
         // Timestamp extraction needs to happen for ALL parseable lines, not just
         // those matching the could_be_* predicates below. Try a cheap string check
@@ -408,12 +458,15 @@ fn scan_middle(
             still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
         let could_have_sid =
             still_need_sid && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
+        let could_have_branch =
+            still_need_branch && (line.contains("\"branch\"") || line.contains("\"gitBranch\""));
 
         if !could_have_timestamp
             && !could_be_summary
             && !could_be_user
             && !could_have_sid
             && !could_be_msg
+            && !could_have_branch
         {
             continue;
         }
@@ -429,6 +482,12 @@ fn scan_middle(
 
         if result.session_id.is_none() {
             result.session_id = session::extract_session_id(&json);
+        }
+
+        if still_need_branch {
+            if let Some(branch) = extract_branch(&json) {
+                result.branch = Some(branch);
+            }
         }
 
         if could_be_summary && session::extract_record_type(&json) == Some("summary") {
@@ -601,6 +660,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let mut last_summary = head.last_summary.clone();
     let mut last_summary_sid = head.last_summary_sid.clone();
     let mut automation = head.automation.clone();
+    let mut branch = head.branch.clone();
     let mut saw_off_chain_summary = head.saw_off_chain_summary || tail.saw_off_chain_summary;
 
     if tail.last_summary.is_some() {
@@ -615,8 +675,12 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let need_user_msg = first_user_message.is_none();
     let need_sid = last_summary_sid.is_none() && session_id.is_none();
     let need_automation = automation.is_none();
-    let should_scan_middle =
-        (need_summary && tail_start > 0) || need_user_msg || need_sid || need_automation;
+    let need_branch = branch.is_none() && source == SessionSource::ClaudeCodeCLI;
+    let should_scan_middle = (need_summary && tail_start > 0)
+        || need_user_msg
+        || need_sid
+        || need_automation
+        || need_branch;
 
     let mut middle_timestamp = None;
     if should_scan_middle && head.lines_scanned >= HEAD_SCAN_LINES {
@@ -625,6 +689,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             user_message: need_user_msg,
             session_id: need_sid,
             automation: need_automation,
+            branch: need_branch,
         };
         let middle = scan_middle(
             path,
@@ -649,6 +714,9 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         if automation.is_none() {
             automation = middle.automation;
         }
+        if branch.is_none() {
+            branch = middle.branch;
+        }
         saw_off_chain_summary = saw_off_chain_summary || middle.saw_off_chain_summary;
         middle_timestamp = middle.last_timestamp;
     }
@@ -657,6 +725,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         .into_iter()
         .flatten()
         .max();
+    let message_count = latest_chain.as_ref().map(|c| c.len());
 
     // Apply title priority: metadata_title > summary > lastPrompt > firstUserMessage
     if let Some(title) = tail.metadata_title {
@@ -671,6 +740,9 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: title,
             automation,
+            branch,
+            message_count,
+            preview_role: PreviewRole::Claude,
         });
     }
 
@@ -684,6 +756,9 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: summary_text,
             automation,
+            branch,
+            message_count,
+            preview_role: PreviewRole::Claude,
         });
     }
 
@@ -697,6 +772,9 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             timestamp: content_timestamp.unwrap_or(mtime_timestamp),
             summary: prompt,
             automation,
+            branch,
+            message_count,
+            preview_role: PreviewRole::User,
         });
     }
 
@@ -723,6 +801,9 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         timestamp: content_timestamp.unwrap_or(mtime_timestamp),
         summary,
         automation,
+        branch,
+        message_count,
+        preview_role: PreviewRole::User,
     })
 }
 
@@ -911,12 +992,18 @@ mod tests {
             timestamp: ts,
             summary: "How do I sort a list in Python?".to_string(),
             automation: None,
+            branch: Some("main".to_string()),
+            message_count: Some(17),
+            preview_role: PreviewRole::User,
         };
         assert_eq!(session.session_id, "sess-linear-001");
         assert_eq!(session.project, "myproject");
         assert_eq!(session.source, SessionSource::ClaudeCodeCLI);
         assert_eq!(session.timestamp, ts);
         assert_eq!(session.summary, "How do I sort a list in Python?");
+        assert_eq!(session.branch.as_deref(), Some("main"));
+        assert_eq!(session.message_count, Some(17));
+        assert_eq!(session.preview_role, PreviewRole::User);
     }
 
     #[test]
@@ -930,9 +1017,13 @@ mod tests {
             timestamp: ts,
             summary: "Desktop session summary".to_string(),
             automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: PreviewRole::Claude,
         };
         assert_eq!(session.source, SessionSource::ClaudeDesktop);
         assert_eq!(session.project, "uuid1");
+        assert_eq!(session.preview_role, PreviewRole::Claude);
     }
 
     #[test]

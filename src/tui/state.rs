@@ -1371,6 +1371,9 @@ mod tests {
             timestamp: Utc::now(),
             summary: "summary".to_string(),
             automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::recent::PreviewRole::User,
         }
     }
 
@@ -1454,6 +1457,9 @@ mod tests {
             timestamp: Utc::now(),
             summary: "summary".to_string(),
             automation: Some("ralphex".to_string()),
+            branch: None,
+            message_count: None,
+            preview_role: crate::recent::PreviewRole::User,
         }];
 
         let result = RipgrepMatch {

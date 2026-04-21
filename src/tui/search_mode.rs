@@ -10,12 +10,19 @@ impl App {
         self.input.is_empty() && self.search.groups.is_empty()
     }
 
+    /// Number of recent-session rows that fit in the list area. Each session
+    /// takes two visible lines (header + preview) under the unified grammar.
+    pub(crate) fn recent_sessions_visible_items(&self) -> usize {
+        (self.last_tree_visible_height / 2).max(1)
+    }
+
     pub fn on_up(&mut self) {
         // Recent sessions navigation
         if self.in_recent_sessions_mode() {
             if !self.recent.filtered.is_empty() && self.recent.cursor > 0 {
                 self.recent.cursor -= 1;
-                self.recent.adjust_scroll(self.last_tree_visible_height);
+                self.recent
+                    .adjust_scroll(self.recent_sessions_visible_items());
             }
             return;
         }
@@ -47,7 +54,8 @@ impl App {
                 && self.recent.cursor < self.recent.filtered.len().saturating_sub(1)
             {
                 self.recent.cursor += 1;
-                self.recent.adjust_scroll(self.last_tree_visible_height);
+                self.recent
+                    .adjust_scroll(self.recent_sessions_visible_items());
             }
             return;
         }
@@ -282,6 +290,9 @@ mod tests {
             timestamp: Utc::now(),
             summary: summary.to_string(),
             automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::recent::PreviewRole::User,
         }
     }
 
