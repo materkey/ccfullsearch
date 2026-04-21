@@ -229,7 +229,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
         }
 
         let item_style = if is_selected {
-            Style::default().bg(Color::Rgb(75, 0, 130))
+            Style::default().bg(crate::tui::render_search::SELECTION_BG)
         } else {
             Style::default()
         };

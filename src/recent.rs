@@ -7,32 +7,10 @@ use std::path::{Path, PathBuf};
 
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::search::extract_project_from_path;
-use crate::session::record::{render_text_content, SessionRecord};
+use crate::session::record::{render_text_content, MessageRole, SessionRecord};
 use crate::session::{self, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
-
-/// Which role the summary preview should be attributed to when the recent
-/// list renders the unified `User:` / `Claude:` preview line beneath each row.
-///
-/// Derived from the *source* that produced the summary field:
-/// - `first_user_message` / `last_prompt` → `User`
-/// - `type=summary` / `agentName` / `customTitle` / `aiTitle` → `Claude`
-///   (these are AI-generated / AI-titled)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreviewRole {
-    User,
-    Claude,
-}
-
-impl PreviewRole {
-    pub fn label(self) -> &'static str {
-        match self {
-            PreviewRole::User => "User",
-            PreviewRole::Claude => "Claude",
-        }
-    }
-}
 
 /// A recently accessed Claude session with summary metadata.
 #[derive(Debug, Clone)]
@@ -50,9 +28,10 @@ pub struct RecentSession {
     /// Number of messages on the latest chain of the session DAG. `None`
     /// when the DAG could not be built (rare).
     pub message_count: Option<usize>,
-    /// Whether the summary should be displayed with a `User:` or `Claude:`
-    /// prefix in the unified recent-row grammar.
-    pub preview_role: PreviewRole,
+    /// Role the summary should be attributed to in the unified preview line:
+    /// `User` for first-user-message / last-prompt sources, `Assistant` for
+    /// summary records and AI-generated titles.
+    pub preview_role: MessageRole,
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
@@ -115,15 +94,6 @@ struct ScanResult {
     last_timestamp: Option<DateTime<Utc>>,
 }
 
-fn extract_branch(json: &serde_json::Value) -> Option<String> {
-    json.get("branch")
-        .or_else(|| json.get("gitBranch"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
 struct ScanNeeds {
     summary: bool,
     user_message: bool,
@@ -183,7 +153,7 @@ fn scan_head(
         }
 
         if scan.branch.is_none() {
-            scan.branch = extract_branch(&json);
+            scan.branch = session::extract_branch(&json);
         }
 
         if session::extract_record_type(&json) == Some("summary") {
@@ -485,7 +455,7 @@ fn scan_middle(
         }
 
         if still_need_branch {
-            if let Some(branch) = extract_branch(&json) {
+            if let Some(branch) = session::extract_branch(&json) {
                 result.branch = Some(branch);
             }
         }
@@ -742,7 +712,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             automation,
             branch,
             message_count,
-            preview_role: PreviewRole::Claude,
+            preview_role: MessageRole::Assistant,
         });
     }
 
@@ -758,7 +728,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             automation,
             branch,
             message_count,
-            preview_role: PreviewRole::Claude,
+            preview_role: MessageRole::Assistant,
         });
     }
 
@@ -774,7 +744,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             automation,
             branch,
             message_count,
-            preview_role: PreviewRole::User,
+            preview_role: MessageRole::User,
         });
     }
 
@@ -803,7 +773,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         automation,
         branch,
         message_count,
-        preview_role: PreviewRole::User,
+        preview_role: MessageRole::User,
     })
 }
 
@@ -994,7 +964,7 @@ mod tests {
             automation: None,
             branch: Some("main".to_string()),
             message_count: Some(17),
-            preview_role: PreviewRole::User,
+            preview_role: MessageRole::User,
         };
         assert_eq!(session.session_id, "sess-linear-001");
         assert_eq!(session.project, "myproject");
@@ -1003,7 +973,7 @@ mod tests {
         assert_eq!(session.summary, "How do I sort a list in Python?");
         assert_eq!(session.branch.as_deref(), Some("main"));
         assert_eq!(session.message_count, Some(17));
-        assert_eq!(session.preview_role, PreviewRole::User);
+        assert_eq!(session.preview_role, MessageRole::User);
     }
 
     #[test]
@@ -1019,11 +989,11 @@ mod tests {
             automation: None,
             branch: None,
             message_count: None,
-            preview_role: PreviewRole::Claude,
+            preview_role: MessageRole::Assistant,
         };
         assert_eq!(session.source, SessionSource::ClaudeDesktop);
         assert_eq!(session.project, "uuid1");
-        assert_eq!(session.preview_role, PreviewRole::Claude);
+        assert_eq!(session.preview_role, MessageRole::Assistant);
     }
 
     #[test]

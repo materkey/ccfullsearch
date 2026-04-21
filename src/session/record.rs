@@ -7,6 +7,17 @@ pub enum MessageRole {
     Assistant,
 }
 
+impl MessageRole {
+    /// UI-facing label (`"User"` / `"Claude"`), distinct from the wire-level
+    /// `"user"` / `"assistant"` strings found in JSONL records.
+    pub fn display_label(self) -> &'static str {
+        match self {
+            MessageRole::User => "User",
+            MessageRole::Assistant => "Claude",
+        }
+    }
+}
+
 /// A single content block within a message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentBlock {

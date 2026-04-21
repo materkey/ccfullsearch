@@ -55,12 +55,7 @@ impl Message {
         let timestamp = session::extract_timestamp(&json)?;
 
         // Branch is CLI-only, Desktop doesn't have it
-        let branch = json
-            .get("branch")
-            .or_else(|| json.get("gitBranch"))
-            .and_then(|b| b.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
+        let branch = session::extract_branch(&json);
 
         let uuid = session::extract_uuid(&json);
         let parent_uuid = session::extract_parent_uuid(&json);

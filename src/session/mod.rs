@@ -87,6 +87,17 @@ pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
     json.get("type").and_then(|v| v.as_str())
 }
 
+/// Extract the git branch from a JSON record. CLI sessions use `branch`; some
+/// older recordings also use `gitBranch`. Desktop records carry neither.
+pub fn extract_branch(json: &serde_json::Value) -> Option<String> {
+    json.get("branch")
+        .or_else(|| json.get("gitBranch"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 /// Returns true if the JSON record has `isSidechain: true`.
 /// Sidechain messages are subagent messages that should not participate in the main chain.
 pub fn is_sidechain(json: &serde_json::Value) -> bool {

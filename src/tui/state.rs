@@ -1373,7 +1373,7 @@ mod tests {
             automation: None,
             branch: None,
             message_count: None,
-            preview_role: crate::recent::PreviewRole::User,
+            preview_role: crate::session::record::MessageRole::User,
         }
     }
 
@@ -1459,7 +1459,7 @@ mod tests {
             automation: Some("ralphex".to_string()),
             branch: None,
             message_count: None,
-            preview_role: crate::recent::PreviewRole::User,
+            preview_role: crate::session::record::MessageRole::User,
         }];
 
         let result = RipgrepMatch {
