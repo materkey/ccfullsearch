@@ -596,7 +596,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 } else {
                     &msg.text_content
                 };
-                let content = sanitize_content(preview_text);
+                let content = sanitize_single_line(preview_text);
                 let prefix = format!("     {}: ", role_label);
                 let prefix_len = prefix.len();
                 let max_content = (area.width as usize).saturating_sub(prefix_len);
@@ -832,8 +832,10 @@ fn render_sub_match<'a>(
         } else {
             "Claude:"
         };
-        // Sanitize content before extracting context to remove ANSI codes
-        let sanitized = sanitize_content(&msg.content);
+        // Strip ANSI + collapse newlines: sub-match rows are single-line
+        // ListItems, so any embedded newline would wrap and shift every
+        // subsequent row off by one.
+        let sanitized = sanitize_single_line(&msg.content);
         let content = extract_context(&sanitized, query, 30);
         (role_str.to_string(), role_style, content)
     } else {
@@ -878,6 +880,24 @@ fn render_sub_match<'a>(
     spans.push(Span::styled("\"", style));
 
     ListItem::new(Line::from(spans))
+}
+
+/// Sanitize for display inside a single-line `ListItem`. On top of
+/// `sanitize_content` (strips ANSI), collapse every `\n` / `\t` / `\r` into a
+/// single space so the resulting `Span` cannot make the list row wrap and
+/// push every subsequent header down by one visual row.
+fn sanitize_single_line(content: &str) -> String {
+    let sanitized = sanitize_content(content);
+    sanitized
+        .chars()
+        .map(|c| {
+            if matches!(c, '\n' | '\t' | '\r') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Truncate a string to fit within max_width display columns.
@@ -1341,6 +1361,86 @@ mod tests {
             }),
             "collapsed preview line must contain at least one highlighted cell"
         );
+    }
+
+    /// Red-test for the "rendering goes wonky when scrolling below the
+    /// visible area" bug. A preview whose content contains a `\n` turns the
+    /// corresponding Line into a multi-row ListItem, which shifts every
+    /// subsequent header by one visual row; with many groups + a cursor
+    /// near the end the user sees leaked preview text at the start of a
+    /// later header row (e.g. `"ension6I-...26-04-11 20:27 | …"` — the
+    /// wrapped tail of the previous preview overwriting the `  ▶ [CLI] ` of
+    /// the next header).
+    ///
+    /// Expectation: every header row in the rendered buffer starts cleanly
+    /// with `  ▶ [` or `> ▶ [`, regardless of newlines / tabs / carriage
+    /// returns inside preview content.
+    #[test]
+    fn test_render_groups_preview_newlines_do_not_shift_next_header() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.results_query = "needle".to_string();
+
+        // Build many groups, each with a preview that contains \n / \t / \r.
+        // Scrolling the cursor through the list must not leak the tails of
+        // previous previews into the next header row.
+        let make_group = |idx: usize, content: String| SessionGroup {
+            session_id: format!("sess-{:08}", idx),
+            file_path: format!("/p/grp-{:02}.jsonl", idx),
+            matches: vec![RipgrepMatch {
+                file_path: format!("/p/grp-{:02}.jsonl", idx),
+                message: Some(Message {
+                    session_id: format!("sess-{:08}", idx),
+                    role: "user".to_string(),
+                    content: content.clone(),
+                    text_content: content,
+                    timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+                    line_number: 1,
+                    ..Default::default()
+                }),
+                source: SessionSource::ClaudeCodeCLI,
+            }],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        };
+        app.search.groups = (0..20)
+            .map(|i| {
+                make_group(
+                    i,
+                    format!("needle-{i}\npart-two\ttabbed\rreturned part-three more text"),
+                )
+            })
+            .collect();
+        app.search.group_cursor = 0;
+        app.search.expanded = false;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        // No cell in the list area may carry a `\n`, `\r`, or `\t` as its
+        // symbol. Those bytes make the real terminal jump the cursor (tab
+        // stop / CR) when ratatui flushes the buffer, which is how the
+        // preview tail ends up overwriting the next header row. TestBackend
+        // stores the raw symbols without interpreting them, so we have to
+        // assert on the stored cells directly.
+        for y in 0..24 {
+            for x in 0..120 {
+                let sym = buffer.cell((x, y)).unwrap().symbol();
+                assert!(
+                    !sym.contains('\n') && !sym.contains('\r') && !sym.contains('\t'),
+                    "cell at ({},{}) carries a control char that will break terminal rendering: {:?}",
+                    x,
+                    y,
+                    sym
+                );
+            }
+        }
     }
 
     #[test]
