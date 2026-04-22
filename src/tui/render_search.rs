@@ -19,6 +19,14 @@ use std::collections::HashSet;
 /// tree rows). Keep all selection styles pointing at this constant.
 pub(crate) const SELECTION_BG: Color = Color::Rgb(75, 0, 130);
 
+/// Secondary / dim foreground (theme.dim in the TUI-redesign `slate` theme,
+/// `#6b7180`). Used for every unselected row, status-bar text, help hints,
+/// and preview prefixes so the whole UI renders at a consistent brightness.
+/// Replaces ad-hoc `Color::DarkGray` usage, whose actual shade in most
+/// terminals (ANSI bright-black ≈ `#555`) is too muddy against the dark
+/// panel and mis-matched the design handoff.
+pub(crate) const DIM_FG: Color = Color::Rgb(107, 113, 128);
+
 /// Pre-built preview prefixes used by `render_recent_sessions`. Hoisted out
 /// of the per-frame render loop so the TUI does not allocate or walk these
 /// fixed strings on every draw.
@@ -82,7 +90,7 @@ pub(crate) fn build_help_line<'a>(hints: &[HintItem<'a>], available_width: u16) 
 }
 
 pub(crate) fn build_ai_hints(ranked_count: Option<usize>) -> Vec<HintItem<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(DIM_FG);
     let enter_label = if ranked_count.is_some() {
         "[Enter] Resume"
     } else {
@@ -324,14 +332,14 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     } else if let Some(ref err) = app.search.error {
         Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))
     } else if let Some(text) = search_results_status_text(app) {
-        Span::styled(text, Style::default().fg(Color::DarkGray))
+        Span::styled(text, Style::default().fg(DIM_FG))
     } else if let Some(text) = recent_sessions_status_text(app) {
         let style = if app.recent.loading {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(DIM_FG)
         };
         Span::styled(text, style)
     } else {
@@ -355,13 +363,13 @@ pub fn render(frame: &mut Frame, view: &AppView) {
         AF::Auto => "Auto",
     };
     let filter_style = match app.automation_filter {
-        AF::All | AF::Manual => Style::default().fg(Color::DarkGray),
+        AF::All | AF::Manual => Style::default().fg(DIM_FG),
         AF::Auto => Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
     };
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(DIM_FG);
 
     let hints: Vec<HintItem> = if app.ai.active {
         build_ai_hints(app.ai.ranked_count)
@@ -625,7 +633,17 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 let prefix_len = prefix.len();
                 let max_content = (area.width as usize).saturating_sub(prefix_len);
                 let truncated = truncate_to_width(&content, max_content);
-                let base = Style::default().fg(Color::DarkGray);
+                // When the group is selected, the preview row inherits the
+                // purple selection backdrop but keeps `theme.dim` as its fg —
+                // the design's inner preview `<div>` overrides `color: dim`
+                // on top of the outer row's `color: selFg`, so the selected
+                // element visually reads as "yellow header + dim preview on
+                // purple", not two yellow lines.
+                let base = if is_selected {
+                    Style::default().fg(DIM_FG).bg(SELECTION_BG)
+                } else {
+                    Style::default().fg(DIM_FG)
+                };
                 let mut spans = vec![Span::styled(prefix, base)];
                 // Highlight occurrences of the query so the collapsed preview
                 // pops matches the same way the Preview panel (Tab/Ctrl+V)
@@ -634,7 +652,11 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 let highlighted =
                     highlight_line_with_base(&truncated, &app.search.results_query, base);
                 spans.extend(highlighted.spans);
-                let preview_item = ListItem::new(Line::from(spans));
+                let preview_item = if is_selected {
+                    ListItem::new(Line::from(spans)).style(Style::default().bg(SELECTION_BG))
+                } else {
+                    ListItem::new(Line::from(spans))
+                };
                 items.push(preview_item);
             }
         }
@@ -744,7 +766,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         let header_style = if is_selected {
             Style::default().fg(Color::Yellow).bg(SELECTION_BG)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(DIM_FG)
         };
 
         if is_selected {
@@ -761,10 +783,27 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         };
         let max_content = available_width.saturating_sub(preview_prefix.chars().count());
         let preview_content = truncate_to_width(&session.summary, max_content);
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(preview_prefix, Style::default().fg(Color::DarkGray)),
-            Span::styled(preview_content, Style::default().fg(Color::DarkGray)),
-        ])));
+        // When the session is selected, the preview row inherits the purple
+        // selection backdrop but keeps `theme.dim` as its fg (the design's
+        // inner preview `<div>` overrides `color: dim` on top of the outer
+        // row's `color: selFg`). The search-results `render_groups` path
+        // uses the same style — one yellow header + one dim preview on
+        // purple.
+        let preview_style = if is_selected {
+            Style::default().fg(DIM_FG).bg(SELECTION_BG)
+        } else {
+            Style::default().fg(DIM_FG)
+        };
+        let preview_item = ListItem::new(Line::from(vec![
+            Span::styled(preview_prefix, preview_style),
+            Span::styled(preview_content, preview_style),
+        ]));
+        let preview_item = if is_selected {
+            preview_item.style(Style::default().bg(SELECTION_BG))
+        } else {
+            preview_item
+        };
+        items.push(preview_item);
     }
 
     let mut list_state = ListState::default();
@@ -828,7 +867,7 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
     } else if selected {
         Style::default().fg(Color::White)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(DIM_FG)
     };
 
     let prefix = if selected { "> " } else { "  " };
@@ -880,7 +919,7 @@ fn render_sub_match<'a>(
     let style = if selected {
         Style::default().fg(Color::Yellow).bg(SELECTION_BG)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(DIM_FG)
     };
 
     let prefix = if selected { "    → " } else { "      " };
@@ -1331,13 +1370,13 @@ mod tests {
 
     #[test]
     fn test_highlight_line_with_base_paints_non_matches() {
-        let base = Style::default().fg(Color::DarkGray);
+        let base = Style::default().fg(DIM_FG);
         let line = highlight_line_with_base("Hello world", "world", base);
         assert_eq!(line.spans.len(), 2);
         // Non-matched span must carry the base style so the preview row
         // reads as dim rather than white.
         assert_eq!(line.spans[0].content.as_ref(), "Hello ");
-        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[0].style.fg, Some(DIM_FG));
         // Matched span ignores the base and uses the fixed highlight style.
         assert_eq!(line.spans[1].content.as_ref(), "world");
         assert_eq!(line.spans[1].style.fg, Some(Color::Black));
@@ -1346,10 +1385,10 @@ mod tests {
 
     #[test]
     fn test_highlight_line_with_base_styles_no_match() {
-        let base = Style::default().fg(Color::DarkGray);
+        let base = Style::default().fg(DIM_FG);
         let line = highlight_line_with_base("Hello world", "xyz", base);
         assert_eq!(line.spans.len(), 1);
-        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[0].style.fg, Some(DIM_FG));
     }
 
     #[test]
@@ -2551,6 +2590,113 @@ mod tests {
         assert_selected_caret_layout(terminal.backend().buffer(), "recent session");
     }
 
+    /// Design handoff (Artboard A/D in `ccs TUI Redesign`): the purple
+    /// selection background extends across BOTH lines of the selected row —
+    /// header AND the `     User: …` / `     Claude: …` preview. In the JSX
+    /// mock the outer row `<div>` owns `background: selBg`, and the inner
+    /// preview `<div>` only overrides `color: dim` + `fontWeight: 400`, so
+    /// the preview inherits the purple backdrop. Our implementation splits
+    /// those into two `ListItem`s, so the preview row has to set the bg
+    /// explicitly.
+    fn assert_selected_preview_row_has_selection_bg(buffer: &ratatui::buffer::Buffer, label: &str) {
+        let mut header_y: Option<u16> = None;
+        for y in 0..24 {
+            if buffer.cell((0, y)).unwrap().symbol() == ">" {
+                header_y = Some(y);
+                break;
+            }
+        }
+        let header_y = header_y.unwrap_or_else(|| panic!("selected {} row not found", label));
+        let preview_y = header_y + 1;
+
+        // The preview text is `     User: …` (5-space indent). Those five
+        // leading spaces must still paint the purple backdrop — otherwise the
+        // selected row visually splits into "purple header + black preview".
+        for x in 0..5u16 {
+            let cell = buffer.cell((x, preview_y)).unwrap();
+            assert_eq!(
+                cell.bg, SELECTION_BG,
+                "{} preview prefix col {} must have purple bg, got {:?}",
+                label, x, cell.bg
+            );
+        }
+
+        // Also check a cell inside the role label (e.g. `User:` at cols 5..9)
+        // to make sure the bg carries through the styled spans, not just the
+        // implicit empty cells.
+        for x in 5..10u16 {
+            let cell = buffer.cell((x, preview_y)).unwrap();
+            assert_eq!(
+                cell.bg, SELECTION_BG,
+                "{} preview role col {} must have purple bg, got {:?}",
+                label, x, cell.bg
+            );
+        }
+
+        // Foreground on the selected preview must stay at `theme.dim`
+        // (DIM_FG), NOT selFg/yellow. In the design handoff the inner
+        // preview `<div>` explicitly overrides `color: dim` on top of the
+        // outer row's `color: selFg`, so the selected element reads as
+        // "yellow header + dim preview on purple" — two different colours
+        // on purple, not a single monochrome block.
+        for x in 5..10u16 {
+            let cell = buffer.cell((x, preview_y)).unwrap();
+            assert_eq!(
+                cell.fg, DIM_FG,
+                "{} preview role col {} must use DIM_FG (theme.dim), got {:?}",
+                label, x, cell.fg
+            );
+        }
+    }
+
+    #[test]
+    fn test_render_search_selected_preview_row_has_selection_bg() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        app.search.group_cursor = 0;
+        app.search.expanded = false;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        assert_selected_preview_row_has_selection_bg(terminal.backend().buffer(), "search group");
+    }
+
+    #[test]
+    fn test_render_recent_sessions_selected_preview_row_has_selection_bg() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: "124e8bc6abcd".to_string(),
+            file_path: "/p/sess.jsonl".to_string(),
+            project: "claude-code-fullsearch-rust".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 21, 15, 50, 0).unwrap(),
+            summary: "triangle layout test".to_string(),
+            automation: None,
+            branch: Some("main".to_string()),
+            message_count: Some(360),
+            preview_role: MessageRole::User,
+        }];
+        app.recent.cursor = 0;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        assert_selected_preview_row_has_selection_bg(terminal.backend().buffer(), "recent session");
+    }
+
     #[test]
     fn test_render_recent_sessions_help_bar() {
         use crate::recent::RecentSession;
@@ -2801,7 +2947,7 @@ mod tests {
     }
 
     fn make_test_hints() -> Vec<HintItem<'static>> {
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(DIM_FG);
         vec![
             HintItem {
                 spans: vec![Span::styled("[Enter] Resume", dim)],
@@ -2887,7 +3033,7 @@ mod tests {
 
     #[test]
     fn test_build_help_line_all_hints_filtered() {
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(DIM_FG);
         let hints = vec![
             HintItem {
                 spans: vec![Span::styled("[A] First", dim)],
@@ -2907,7 +3053,7 @@ mod tests {
 
     #[test]
     fn test_build_help_line_multi_span_hint() {
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(DIM_FG);
         let bold = Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD);
@@ -2936,7 +3082,7 @@ mod tests {
 
     #[test]
     fn test_build_help_line_overflow_drops_optional_highest_first() {
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(DIM_FG);
         // Total if all shown: 14 + 2 + 16 + 2 + 17 + 2 + 10 = 63 chars
         // At width 50, min_width filter passes all (all <= 50 or 0),
         // but total overflows — optional hints should be dropped highest-first.
@@ -2978,7 +3124,7 @@ mod tests {
 
     #[test]
     fn test_build_help_line_no_overflow_when_fits() {
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(DIM_FG);
         let hints = vec![
             HintItem {
                 spans: vec![Span::styled("[A] X", dim)],

@@ -1,5 +1,5 @@
 use crate::search::{extract_project_from_path, sanitize_content};
-use crate::tui::render_search::{build_help_line, truncate_to_width, HintItem};
+use crate::tui::render_search::{build_help_line, truncate_to_width, HintItem, DIM_FG};
 use crate::tui::view::AppView;
 use ratatui::{
     layout::{Constraint, Layout},
@@ -53,7 +53,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
     }
 
     // Help bar
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(DIM_FG);
     let hints: Vec<HintItem> = if app.preview_mode {
         vec![
             HintItem {
@@ -117,7 +117,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
 
     if tree.rows.is_empty() {
         let empty = Paragraph::new("  No displayable messages in this session")
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(DIM_FG));
         frame.render_widget(empty, area);
         return;
     }
@@ -141,7 +141,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
         let graph_style = if row.is_on_latest_chain {
             Style::default().fg(Color::Green)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(DIM_FG)
         };
         spans.push(Span::styled(&row.graph_symbols, graph_style));
 
@@ -164,7 +164,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
             spans.push(Span::raw(" "));
 
             let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
-            spans.push(Span::styled(time_str, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
             spans.push(Span::raw("  "));
 
             spans.push(Span::styled("[COMPACT] ", compact_style));
@@ -197,7 +197,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
 
             // Timestamp (compact)
             let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
-            spans.push(Span::styled(time_str, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
             spans.push(Span::raw("  "));
 
             // Branch indicator
@@ -221,7 +221,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
             let content_style = if is_selected {
                 Style::default().fg(Color::Yellow)
             } else if !row.is_on_latest_chain {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(DIM_FG)
             } else {
                 Style::default().fg(Color::White)
             };
