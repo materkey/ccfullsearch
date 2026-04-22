@@ -58,9 +58,9 @@ Publish a new version of ccfullsearch (`ccs`). Handles version bump, changelog, 
 ### 5. Push and verify CI
 
 - Push: `git push origin main`
-- Wait for CI: `gh run list --limit 1 --repo materkey/ccfullsearch`
-- Poll until CI completes (check every 30s, max 5 min)
-- If CI fails, report and abort — do NOT tag
+- Get run ID: `gh run list --limit 1 --repo materkey/ccfullsearch --json databaseId --jq '.[0].databaseId'`
+- Block until CI finishes: `gh run watch <run-id> --repo materkey/ccfullsearch --exit-status` (timeout 420s; typical run ~1 min)
+- If CI fails (non-zero exit), report and abort — do NOT tag
 
 ### 6. Tag and release
 
@@ -69,20 +69,24 @@ Publish a new version of ccfullsearch (`ccs`). Handles version bump, changelog, 
 - Push tag: `git push origin vX.Y.Z`
 - This triggers cargo-dist Release workflow automatically
 
-### 7. Verify release
+### 7. Wait for Release workflow to finish, then verify
 
-- Check Release workflow started: `gh run list --limit 1 --repo materkey/ccfullsearch`
-- Report:
+- **Do NOT report "published" until cargo-dist actually publishes the release.** Tag push only *starts* the Release workflow — build, host, publish-homebrew-formula, announce jobs take ~3 min. Reporting success prematurely caused user confusion in a past run (they still saw the old release as Latest).
+- Get run ID of the tag-triggered Release workflow: `gh run list --limit 5 --repo materkey/ccfullsearch --json databaseId,headBranch,name --jq '.[] | select(.headBranch=="v{version}" and .name=="Release") | .databaseId' | head -1` (may need a few seconds after tag push for the workflow to appear — if empty, wait 10s and retry)
+- Block until it finishes: `gh run watch <run-id> --repo materkey/ccfullsearch --exit-status` (timeout 600s)
+- Confirm the release actually exists: `gh release view v{version} --repo materkey/ccfullsearch --json tagName,isLatest --jq '{tag:.tagName,latest:.isLatest}'` — `latest` must be `true`
+- Only after both checks pass, report:
   ```
   Release v{version} published.
-  
+
   CI: ✅ green
-  Release workflow: started (cargo-dist builds for all platforms)
-  Tag: v{version}
-  
+  Release workflow: ✅ completed (build → host → publish-homebrew-formula → announce)
+  Tag: v{version} (marked as Latest)
+
   Release page: https://github.com/materkey/ccfullsearch/releases/tag/v{version}
-  Homebrew: `brew upgrade ccs` (updates automatically via tap materkey/homebrew-ccs)
+  Homebrew: `brew upgrade ccs` (tap materkey/homebrew-ccs formula updated automatically)
   ```
+- If Release workflow fails, report the failing job and which stage — do NOT delete the tag; failures are usually re-runnable via `gh run rerun <run-id> --repo materkey/ccfullsearch`
 
 ## Important notes
 
