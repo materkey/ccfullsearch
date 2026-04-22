@@ -632,7 +632,24 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 let prefix = format!("     {}: ", role_label);
                 let prefix_len = prefix.len();
                 let max_content = (area.width as usize).saturating_sub(prefix_len);
-                let truncated = truncate_to_width(&content, max_content);
+                // Centre the preview on the first query occurrence (same
+                // approach as `render_sub_match` for expanded rows) so the
+                // matched substring is always in view. Without this, a long
+                // message whose match lives past column 120 would render
+                // with the leading content and no visible match, which the
+                // user would perceive as broken highlighting.
+                let query = &app.search.results_query;
+                let centered = if !query.is_empty() {
+                    let query_chars = query.chars().count();
+                    let context_chars = max_content
+                        .saturating_sub(query_chars)
+                        .saturating_sub(6) // reserve room for two "..." markers
+                        / 2;
+                    extract_context(&content, query, context_chars.max(1))
+                } else {
+                    content
+                };
+                let truncated = truncate_to_width(&centered, max_content);
                 // When the group is selected, the preview row inherits the
                 // purple selection backdrop but keeps `theme.dim` as its fg —
                 // the design's inner preview `<div>` overrides `color: dim`
@@ -1423,6 +1440,78 @@ mod tests {
                 cell.bg == Color::Yellow && cell.fg == Color::Black
             }),
             "collapsed preview line must contain at least one highlighted cell"
+        );
+    }
+
+    /// Red-test for the "preview doesn't center on the query match" bug.
+    /// When the match is deep inside the message (past the visible window),
+    /// today's `truncate_to_width` cuts the content from the start and the
+    /// user sees 100+ columns of padding with no match in sight. The
+    /// collapsed preview must behave like `render_sub_match` and centre on
+    /// the first occurrence of the query.
+    #[test]
+    fn test_render_groups_collapsed_preview_centers_on_deep_match() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.results_query = "NEEDLE".to_string();
+
+        // Place the match 500 characters into the content — well past any
+        // reasonable terminal width.
+        let prefix = "x".repeat(500);
+        let suffix = "y".repeat(500);
+        let content = format!("{}NEEDLE{}", prefix, suffix);
+
+        let msg = Message {
+            session_id: "deep-match".to_string(),
+            role: "user".to_string(),
+            content: content.clone(),
+            text_content: content,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 22, 10, 0, 0).unwrap(),
+            branch: Some("main".to_string()),
+            line_number: 1,
+            ..Default::default()
+        };
+        app.search.groups = vec![SessionGroup {
+            session_id: "deep-match".to_string(),
+            file_path: "/path/to/projects/-Users-test-projects-deep/session.jsonl".to_string(),
+            matches: vec![RipgrepMatch {
+                file_path: "/path/to/projects/-Users-test-projects-deep/session.jsonl".to_string(),
+                message: Some(msg),
+                source: SessionSource::ClaudeCodeCLI,
+            }],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        }];
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let buffer = terminal.backend().buffer();
+
+        let mut preview_y: Option<u16> = None;
+        for y in 0..24 {
+            let mut line = String::new();
+            for x in 0..120 {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if line.starts_with("     User: ") {
+                preview_y = Some(y);
+                break;
+            }
+        }
+        let y = preview_y.expect("collapsed preview line not found");
+
+        assert!(
+            (0..120).any(|x| {
+                let cell = buffer.cell((x, y)).unwrap();
+                cell.bg == Color::Yellow && cell.fg == Color::Black
+            }),
+            "collapsed preview must centre on the NEEDLE match and render it \
+             highlighted, even when the match sits deep inside the content"
         );
     }
 
