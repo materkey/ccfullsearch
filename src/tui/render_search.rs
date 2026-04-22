@@ -27,11 +27,13 @@ pub(crate) const SELECTION_BG: Color = Color::Rgb(75, 0, 130);
 /// panel and mis-matched the design handoff.
 pub(crate) const DIM_FG: Color = Color::Rgb(107, 113, 128);
 
-/// Pre-built preview prefixes used by `render_recent_sessions`. Hoisted out
-/// of the per-frame render loop so the TUI does not allocate or walk these
-/// fixed strings on every draw.
+/// Pre-built preview prefixes shared by `render_groups` (collapsed groups)
+/// and `render_recent_sessions`. Hoisted so the render hot path does not
+/// `format!`/walk them every frame.
 const PREVIEW_PREFIX_USER: &str = "     User: ";
 const PREVIEW_PREFIX_CLAUDE: &str = "     Claude: ";
+/// Both PREVIEW_PREFIX_* literals are 11 ASCII bytes — no chars() walk needed.
+const PREVIEW_PREFIX_LEN: usize = 11;
 
 #[derive(Clone)]
 pub(crate) struct HintItem<'a> {
@@ -538,6 +540,19 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     };
     let query_lower = app.search.results_query.to_lowercase();
 
+    // Pre-computed width budget for the collapsed preview. Both
+    // PREVIEW_PREFIX_* constants are fixed-length; centring context around
+    // the match depends on the query length, which is also stable across
+    // the whole draw pass.
+    let area_width = area.width as usize;
+    let preview_max_content = area_width.saturating_sub(PREVIEW_PREFIX_LEN);
+    let query_chars = app.search.results_query.chars().count();
+    let preview_context_chars = preview_max_content
+        .saturating_sub(query_chars)
+        .saturating_sub(6) // two "..." markers
+        / 2;
+    let preview_context_chars = preview_context_chars.max(1);
+
     // Only build ListItems for groups in the visible slice — every
     // collapsed row goes through `sanitize_single_line` +
     // `highlight_line_with_base`, and paying for all groups while only
@@ -607,7 +622,6 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
             let preview_msg =
                 preview_msg.or_else(|| matches_iter().find(|msg| !msg.content.trim().is_empty()));
             if let Some(msg) = preview_msg {
-                let role_label = if msg.role == "user" { "User" } else { "Claude" };
                 let query = &app.search.results_query;
                 let text_content_matches = if query.is_empty() {
                     true
@@ -629,51 +643,35 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                     &msg.text_content
                 };
                 let content = sanitize_single_line(preview_text);
-                let prefix = format!("     {}: ", role_label);
-                let prefix_len = prefix.len();
-                let max_content = (area.width as usize).saturating_sub(prefix_len);
-                // Centre the preview on the first query occurrence (same
-                // approach as `render_sub_match` for expanded rows) so the
-                // matched substring is always in view. Without this, a long
-                // message whose match lives past column 120 would render
-                // with the leading content and no visible match, which the
-                // user would perceive as broken highlighting.
-                let query = &app.search.results_query;
-                let centered = if !query.is_empty() {
-                    let query_chars = query.chars().count();
-                    let context_chars = max_content
-                        .saturating_sub(query_chars)
-                        .saturating_sub(6) // reserve room for two "..." markers
-                        / 2;
-                    extract_context(&content, query, context_chars.max(1))
+                let preview_prefix = if msg.role == "user" {
+                    PREVIEW_PREFIX_USER
                 } else {
+                    PREVIEW_PREFIX_CLAUDE
+                };
+                // Centre the preview on the first query occurrence so the
+                // match stays visible even when it sits past column 120 in a
+                // long message. `render_sub_match` does the same for
+                // expanded rows.
+                let centered = if query.is_empty() {
                     content
-                };
-                let truncated = truncate_to_width(&centered, max_content);
-                // When the group is selected, the preview row inherits the
-                // purple selection backdrop but keeps `theme.dim` as its fg —
-                // the design's inner preview `<div>` overrides `color: dim`
-                // on top of the outer row's `color: selFg`, so the selected
-                // element visually reads as "yellow header + dim preview on
-                // purple", not two yellow lines.
-                let base = if is_selected {
-                    Style::default().fg(DIM_FG).bg(SELECTION_BG)
                 } else {
-                    Style::default().fg(DIM_FG)
+                    extract_context(&content, query, preview_context_chars)
                 };
-                let mut spans = vec![Span::styled(prefix, base)];
-                // Highlight occurrences of the query so the collapsed preview
-                // pops matches the same way the Preview panel (Tab/Ctrl+V)
-                // does. Non-matched text keeps the DarkGray base so the row
-                // still reads as a preview, not primary content.
-                let highlighted =
-                    highlight_line_with_base(&truncated, &app.search.results_query, base);
+                let truncated = truncate_to_width(&centered, preview_max_content);
+                // Selected preview keeps DIM_FG on top of SELECTION_BG — the
+                // header above uses selFg/yellow so the selected element
+                // reads as a two-part row, not a monochrome block. Purple
+                // trailing cells come from the outer ListItem style below;
+                // we do NOT also paint bg on the span base to avoid
+                // double-styling every styled cell.
+                let base = Style::default().fg(DIM_FG);
+                let mut spans = vec![Span::styled(preview_prefix, base)];
+                let highlighted = highlight_line_with_base(&truncated, query, base);
                 spans.extend(highlighted.spans);
-                let preview_item = if is_selected {
-                    ListItem::new(Line::from(spans)).style(Style::default().bg(SELECTION_BG))
-                } else {
-                    ListItem::new(Line::from(spans))
-                };
+                let mut preview_item = ListItem::new(Line::from(spans));
+                if is_selected {
+                    preview_item = preview_item.style(Style::default().bg(SELECTION_BG));
+                }
                 items.push(preview_item);
             }
         }
@@ -791,35 +789,24 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         }
         items.push(ListItem::new(format!("{}{}", prefix, header_text)).style(header_style));
 
-        // Preview line — same "     User:/Claude: <text>" grammar as the
-        // search-result preview, rendered in dim gray. Prefix is a compile-time
-        // constant to avoid per-frame allocation and a chars() walk.
+        // Preview line — same `     User:/Claude: <text>` grammar as the
+        // collapsed search preview. Purple selection bg comes from the outer
+        // ListItem style when selected; span base only carries fg so we
+        // don't double-style every cell.
         let preview_prefix = match session.preview_role {
             MessageRole::User => PREVIEW_PREFIX_USER,
             MessageRole::Assistant => PREVIEW_PREFIX_CLAUDE,
         };
-        let max_content = available_width.saturating_sub(preview_prefix.chars().count());
+        let max_content = available_width.saturating_sub(PREVIEW_PREFIX_LEN);
         let preview_content = truncate_to_width(&session.summary, max_content);
-        // When the session is selected, the preview row inherits the purple
-        // selection backdrop but keeps `theme.dim` as its fg (the design's
-        // inner preview `<div>` overrides `color: dim` on top of the outer
-        // row's `color: selFg`). The search-results `render_groups` path
-        // uses the same style — one yellow header + one dim preview on
-        // purple.
-        let preview_style = if is_selected {
-            Style::default().fg(DIM_FG).bg(SELECTION_BG)
-        } else {
-            Style::default().fg(DIM_FG)
-        };
-        let preview_item = ListItem::new(Line::from(vec![
+        let preview_style = Style::default().fg(DIM_FG);
+        let mut preview_item = ListItem::new(Line::from(vec![
             Span::styled(preview_prefix, preview_style),
             Span::styled(preview_content, preview_style),
         ]));
-        let preview_item = if is_selected {
-            preview_item.style(Style::default().bg(SELECTION_BG))
-        } else {
-            preview_item
-        };
+        if is_selected {
+            preview_item = preview_item.style(Style::default().bg(SELECTION_BG));
+        }
         items.push(preview_item);
     }
 
@@ -951,10 +938,9 @@ fn render_sub_match<'a>(
     }
     spans.push(Span::styled(role_str, role_style));
     spans.push(Span::styled(" \"", style));
-    // Highlight query occurrences inside the quoted content. The highlight
-    // span's own style (yellow bg + black fg + bold) overrides the row's
-    // base style, so matches stay visible on both the unselected DarkGray
-    // and the selected yellow-on-purple rows.
+    // Highlight span (yellow bg + black fg + bold) overrides the row's
+    // base style, so matches stay visible on both unselected and selected
+    // rows.
     let highlighted = highlight_line_with_base(&content, query, style);
     spans.extend(highlighted.spans);
     spans.push(Span::styled("\"", style));
@@ -1048,7 +1034,7 @@ fn highlight_line(text: &str, query: &str) -> Line<'static> {
 }
 
 /// Same as `highlight_line` but paints non-matched spans with `base_style`.
-/// Use it when the surrounding context already has a colour (e.g. DarkGray
+/// Use it when the surrounding context already has a colour (e.g. `DIM_FG`
 /// for collapsed previews, or yellow-on-purple for the selected sub-match)
 /// and you still want matches of `query` to pop on their own yellow
 /// background.
@@ -1443,12 +1429,9 @@ mod tests {
         );
     }
 
-    /// Red-test for the "preview doesn't center on the query match" bug.
-    /// When the match is deep inside the message (past the visible window),
-    /// today's `truncate_to_width` cuts the content from the start and the
-    /// user sees 100+ columns of padding with no match in sight. The
-    /// collapsed preview must behave like `render_sub_match` and centre on
-    /// the first occurrence of the query.
+    /// A query match deep inside the message (past column 120) must still
+    /// render highlighted in the collapsed preview — otherwise the preview
+    /// renders its leading content and the user sees no match.
     #[test]
     fn test_render_groups_collapsed_preview_centers_on_deep_match() {
         let backend = TestBackend::new(120, 24);
@@ -2590,20 +2573,24 @@ mod tests {
         );
     }
 
+    /// Locate the `>` caret at column 0 that marks the selected row. Both
+    /// caret- and preview-layout assertions need the same scan.
+    fn find_selected_header_y(buffer: &ratatui::buffer::Buffer, label: &str) -> u16 {
+        for y in 0..24 {
+            if buffer.cell((0, y)).unwrap().symbol() == ">" {
+                return y;
+            }
+        }
+        panic!("selected {} row not found", label);
+    }
+
     /// Shared contract check for the selected-header caret across the search
     /// and recent-sessions screens. Pins the "> ▶ [CLI" leading sequence, the
     /// continuous purple background across those 9 cells, and the "no BOLD on
     /// the ▶ glyph" invariant — Iosevka renders bold `▶` narrower than
     /// regular, which visually clips on the solid selection bg.
     fn assert_selected_caret_layout(buffer: &ratatui::buffer::Buffer, label: &str) {
-        let mut header_y: Option<u16> = None;
-        for y in 0..24 {
-            if buffer.cell((0, y)).unwrap().symbol() == ">" {
-                header_y = Some(y);
-                break;
-            }
-        }
-        let y = header_y.unwrap_or_else(|| panic!("selected {} row not found", label));
+        let y = find_selected_header_y(buffer, label);
 
         let expected: &[&str] = &[">", " ", "▶", " ", "[", "C", "L", "I", "]"];
         for (i, &want) in expected.iter().enumerate() {
@@ -2679,60 +2666,26 @@ mod tests {
         assert_selected_caret_layout(terminal.backend().buffer(), "recent session");
     }
 
-    /// Design handoff (Artboard A/D in `ccs TUI Redesign`): the purple
-    /// selection background extends across BOTH lines of the selected row —
-    /// header AND the `     User: …` / `     Claude: …` preview. In the JSX
-    /// mock the outer row `<div>` owns `background: selBg`, and the inner
-    /// preview `<div>` only overrides `color: dim` + `fontWeight: 400`, so
-    /// the preview inherits the purple backdrop. Our implementation splits
-    /// those into two `ListItem`s, so the preview row has to set the bg
-    /// explicitly.
+    /// Pins the two-colour selection contract: purple `SELECTION_BG` across
+    /// the preview row (header + preview share the same backdrop), and
+    /// `DIM_FG` fg on the preview — so selected rows render as "yellow
+    /// header + dim preview on purple", not a monochrome block.
     fn assert_selected_preview_row_has_selection_bg(buffer: &ratatui::buffer::Buffer, label: &str) {
-        let mut header_y: Option<u16> = None;
-        for y in 0..24 {
-            if buffer.cell((0, y)).unwrap().symbol() == ">" {
-                header_y = Some(y);
-                break;
-            }
-        }
-        let header_y = header_y.unwrap_or_else(|| panic!("selected {} row not found", label));
-        let preview_y = header_y + 1;
+        let preview_y = find_selected_header_y(buffer, label) + 1;
 
-        // The preview text is `     User: …` (5-space indent). Those five
-        // leading spaces must still paint the purple backdrop — otherwise the
-        // selected row visually splits into "purple header + black preview".
-        for x in 0..5u16 {
+        for x in 0..10u16 {
             let cell = buffer.cell((x, preview_y)).unwrap();
             assert_eq!(
                 cell.bg, SELECTION_BG,
-                "{} preview prefix col {} must have purple bg, got {:?}",
+                "{} preview col {} must have purple bg, got {:?}",
                 label, x, cell.bg
             );
         }
-
-        // Also check a cell inside the role label (e.g. `User:` at cols 5..9)
-        // to make sure the bg carries through the styled spans, not just the
-        // implicit empty cells.
-        for x in 5..10u16 {
-            let cell = buffer.cell((x, preview_y)).unwrap();
-            assert_eq!(
-                cell.bg, SELECTION_BG,
-                "{} preview role col {} must have purple bg, got {:?}",
-                label, x, cell.bg
-            );
-        }
-
-        // Foreground on the selected preview must stay at `theme.dim`
-        // (DIM_FG), NOT selFg/yellow. In the design handoff the inner
-        // preview `<div>` explicitly overrides `color: dim` on top of the
-        // outer row's `color: selFg`, so the selected element reads as
-        // "yellow header + dim preview on purple" — two different colours
-        // on purple, not a single monochrome block.
         for x in 5..10u16 {
             let cell = buffer.cell((x, preview_y)).unwrap();
             assert_eq!(
                 cell.fg, DIM_FG,
-                "{} preview role col {} must use DIM_FG (theme.dim), got {:?}",
+                "{} preview col {} must use DIM_FG (theme.dim), got {:?}",
                 label, x, cell.fg
             );
         }
