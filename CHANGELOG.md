@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.11.0 - 2026-04-22
+
+### New Features
+- TUI redesign — unified recent-sessions and search-result grammar (`▶ [src] date | project | branch | sid (count)` + role-prefixed preview line)
+- Inline query highlighting in collapsed previews and expanded sub-matches
+
+### Fixed
+- Resume selected session on Enter after AI re-rank instead of re-submitting the query
+- Strip `\n`/`\t`/`\r` from single-line list previews so wrapped text no longer overwrites the next header
+- Centre collapsed preview around the first query match instead of always front-aligning
+- Invalidate AI rank when toggling regex / project / automation filters (Ctrl+R, Ctrl+A, Ctrl+H) so Enter resumes the visible list, not the stale ranking
+- Caret glyph clipping on selected rows (drop `Modifier::BOLD` so Iosevka renders `▶` at full width)
+
+### Changed
+- Scale list rendering with visible rows on scroll — drops 30-event scroll burst from ~970 ms to ~88 ms in debug builds
+- Skip filter rebuild on background `message_count` updates (no `SessionGroup` cloning per tick)
+- Align selection colours with design handoff (purple selection extends to preview row, dim text uses `#6b7180` instead of `Color::DarkGray`)
+
 ## v0.10.0 - 2026-04-19
 
 ### New Features

@@ -1,6 +1,6 @@
 [package]
 name = "ccfullsearch"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "A TUI and CLI tool for searching and browsing Claude Code and Claude Desktop session history"
 license = "MIT"
