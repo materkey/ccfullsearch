@@ -191,7 +191,7 @@ ccs --overlay
 | `Up` / `Down` | Navigate ranked sessions |
 | `Esc` / `Ctrl+G` | Exit AI mode, restore original order |
 
-Editing the AI query after a rank invalidates the applied ranking, so the next `Enter` re-ranks instead of resuming.
+Editing the AI query, or toggling a filter/scope (`Ctrl+R`, `Ctrl+A`, `Ctrl+H`) after a rank invalidates the applied ranking, so the next `Enter` re-ranks instead of resuming.
 
 ### Tree mode
 

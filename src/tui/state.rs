@@ -991,14 +991,21 @@ impl App {
                 &self.recent.all,
                 &mut self.automation_cache,
             );
-            // Skip rebuilding filtered lists while AI re-ranking is active;
-            // exit_ai_mode() will re-apply filters from the latest data.
-            if !self.ai.active {
+            // Freeze the filtered lists while an AI rank is applied or
+            // in flight. Rebuilding an applied rank destroys its order;
+            // rebuilding while a rank is in flight makes `handle_ai_result`
+            // sort a different list than the one `submit_ai_query`
+            // snapshotted, so the delivered rank lands on a mismatched
+            // candidate set. After `invalidate_ai_rank` clears both
+            // `ranked_count` and `thinking`, the refreshed data can reach
+            // `filtered` / `groups` so the next `submit_ai_query` snapshot
+            // reflects the new candidate set.
+            if self.ai.ranked_count.is_none() && !self.ai.thinking {
                 self.apply_groups_filter();
                 self.apply_recent_sessions_filter();
             }
         }
-        if project_loaded && !self.ai.active {
+        if project_loaded && self.ai.ranked_count.is_none() && !self.ai.thinking {
             self.apply_recent_sessions_filter();
         }
 
@@ -1112,7 +1119,14 @@ impl App {
                     &mut self.automation_cache,
                 );
                 self.search.all_groups = groups;
-                if !self.ai.active {
+                // Freeze `groups` while an AI rank is applied or in
+                // flight. Rebuilding an applied rank destroys its order;
+                // rebuilding while a rank is in flight makes
+                // `handle_ai_result` sort a different list than the one
+                // `submit_ai_query` snapshotted. `invalidate_ai_rank`
+                // clears both flags, after which the new search results
+                // can land in `groups` for the next submit.
+                if self.ai.ranked_count.is_none() && !self.ai.thinking {
                     self.apply_groups_filter();
                 }
                 self.search.results_count = count;
@@ -1220,7 +1234,7 @@ impl App {
     /// `result_rx` orphans the background thread (its send will fail), and
     /// `tick()` will never observe a result to reset the flag — leaving
     /// `submit_ai_query` stuck on its `thinking` guard.
-    fn invalidate_ai_rank(&mut self) {
+    pub(crate) fn invalidate_ai_rank(&mut self) {
         self.ai.ranked_count = None;
         self.ai.result_rx = None;
         self.ai.thinking = false;
@@ -2601,6 +2615,135 @@ mod tests {
         }
     }
 
+    // Filter/scope toggles (Ctrl+R, Ctrl+H, Ctrl+A) rebuild the candidate list
+    // via `apply_recent_sessions_filter` / `apply_groups_filter`, so any rank
+    // applied to the prior list is stale against the new one. Without
+    // invalidation, Enter would route to `on_enter_inner` (resume) using the
+    // freshly-filtered selection's index against a rank tied to a different
+    // set — surprising the user by resuming rather than re-ranking.
+    #[test]
+    fn ai_toggle_regex_clears_rank() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        let initial_regex = app.regex_mode;
+        app.enter_ai_mode();
+        app.ai.query.set_text("preserve me");
+        app.ai.ranked_count = Some(5);
+        app.ai.thinking = true;
+        let (_tx, rx) = mpsc::channel::<crate::ai::AiRankResult>();
+        app.ai.result_rx = Some(rx);
+
+        app.on_toggle_regex();
+
+        assert!(
+            app.ai.ranked_count.is_none(),
+            "ranked_count must be cleared after on_toggle_regex"
+        );
+        assert!(
+            app.ai.result_rx.is_none(),
+            "result_rx must be dropped after on_toggle_regex"
+        );
+        assert!(
+            !app.ai.thinking,
+            "thinking must be cleared after on_toggle_regex"
+        );
+        assert_ne!(
+            app.regex_mode, initial_regex,
+            "on_toggle_regex must still flip regex_mode — invalidation must not short-circuit the toggle"
+        );
+        assert!(
+            app.ai.active,
+            "ai.active must stay true — invalidate_ai_rank must not exit AI mode"
+        );
+        assert_eq!(
+            app.ai.query.text(),
+            "preserve me",
+            "ai.query text must survive a toggle so the next Enter re-submits the same query"
+        );
+    }
+
+    #[test]
+    fn ai_toggle_automation_filter_clears_rank() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        let initial_filter = app.automation_filter;
+        app.enter_ai_mode();
+        app.ai.query.set_text("preserve me");
+        app.ai.ranked_count = Some(5);
+        app.ai.thinking = true;
+        let (_tx, rx) = mpsc::channel::<crate::ai::AiRankResult>();
+        app.ai.result_rx = Some(rx);
+
+        app.toggle_automation_filter();
+
+        assert!(
+            app.ai.ranked_count.is_none(),
+            "ranked_count must be cleared after toggle_automation_filter"
+        );
+        assert!(
+            app.ai.result_rx.is_none(),
+            "result_rx must be dropped after toggle_automation_filter"
+        );
+        assert!(
+            !app.ai.thinking,
+            "thinking must be cleared after toggle_automation_filter"
+        );
+        assert_ne!(
+            app.automation_filter, initial_filter,
+            "toggle_automation_filter must still advance the cycle — invalidation must not short-circuit it"
+        );
+        assert!(
+            app.ai.active,
+            "ai.active must stay true — invalidate_ai_rank must not exit AI mode"
+        );
+        assert_eq!(
+            app.ai.query.text(),
+            "preserve me",
+            "ai.query text must survive a toggle so the next Enter re-submits the same query"
+        );
+    }
+
+    #[test]
+    fn ai_toggle_project_filter_clears_rank() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        // Must be non-empty, else `toggle_project_filter` early-returns before
+        // reaching the invalidation guard.
+        app.current_project_paths = vec!["/test/project".to_string()];
+        let initial_project = app.project_filter;
+        app.enter_ai_mode();
+        app.ai.query.set_text("preserve me");
+        app.ai.ranked_count = Some(5);
+        app.ai.thinking = true;
+        let (_tx, rx) = mpsc::channel::<crate::ai::AiRankResult>();
+        app.ai.result_rx = Some(rx);
+
+        app.toggle_project_filter();
+
+        assert!(
+            app.ai.ranked_count.is_none(),
+            "ranked_count must be cleared after toggle_project_filter"
+        );
+        assert!(
+            app.ai.result_rx.is_none(),
+            "result_rx must be dropped after toggle_project_filter"
+        );
+        assert!(
+            !app.ai.thinking,
+            "thinking must be cleared after toggle_project_filter"
+        );
+        assert_ne!(
+            app.project_filter, initial_project,
+            "toggle_project_filter must still flip project_filter — invalidation must not short-circuit the toggle"
+        );
+        assert!(
+            app.ai.active,
+            "ai.active must stay true — invalidate_ai_rank must not exit AI mode"
+        );
+        assert_eq!(
+            app.ai.query.text(),
+            "preserve me",
+            "ai.query text must survive a toggle so the next Enter re-submits the same query"
+        );
+    }
+
     // Entering AI mode with an open preview must close it — otherwise the
     // first post-rank Enter is consumed by on_enter_inner's preview-close
     // branch instead of resuming the selected session.
@@ -2614,6 +2757,295 @@ mod tests {
         assert!(
             !app.preview_mode,
             "enter_ai_mode must clear preview_mode so post-rank Enter resumes instead of closing preview"
+        );
+    }
+
+    // After a toggle invalidates the rank in AI mode, a subsequent async
+    // search result must refresh `search.groups`. Otherwise the next
+    // `submit_ai_query` re-ranks the old AI-ordered list instead of the
+    // newly-filtered candidates. Guards the invariant behind the fix for
+    // Codex's follow-up finding on the async refresh skip.
+    #[test]
+    fn ai_handle_search_result_refreshes_groups_after_invalidation() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        // Simulate a post-invalidation state: rank was dropped by a Ctrl+R
+        // toggle, but `ai.active` stays true.
+        app.ai.ranked_count = None;
+        app.input.set_text("query");
+        app.search.search_seq = 1;
+        // Pre-populate `search.groups` to emulate the stale AI-ranked list
+        // that was visible when the user pressed Ctrl+R.
+        app.search.groups = vec![SessionGroup {
+            session_id: "stale".to_string(),
+            file_path: "/sessions/stale.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        }];
+
+        let fresh = RipgrepMatch {
+            file_path: "/sessions/fresh.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "fresh".to_string(),
+                role: "user".to_string(),
+                content: "query".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "query".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![fresh],
+                truncated: false,
+            }),
+        });
+
+        assert_eq!(
+            app.search.groups.len(),
+            1,
+            "groups must be rebuilt from fresh `all_groups` after invalidation"
+        );
+        assert_eq!(
+            app.search.groups[0].session_id, "fresh",
+            "visible groups must show the new search results, not the stale AI-ranked list"
+        );
+    }
+
+    // Complement: while an AI rank is applied (`ranked_count=Some`), an
+    // async search result must NOT rebuild `search.groups`, because doing
+    // so would destroy the AI-ranked ordering the user is looking at.
+    #[test]
+    fn ai_handle_search_result_preserves_groups_when_rank_applied() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.ranked_count = Some(1);
+        app.input.set_text("query");
+        app.search.search_seq = 1;
+        let ranked = SessionGroup {
+            session_id: "ranked".to_string(),
+            file_path: "/sessions/ranked.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        };
+        app.search.groups = vec![ranked.clone()];
+
+        let fresh = RipgrepMatch {
+            file_path: "/sessions/fresh.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "fresh".to_string(),
+                role: "user".to_string(),
+                content: "query".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "query".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![fresh],
+                truncated: false,
+            }),
+        });
+
+        assert_eq!(
+            app.search.groups.len(),
+            1,
+            "groups must keep the AI-ranked list while `ranked_count` is Some"
+        );
+        assert_eq!(
+            app.search.groups[0].session_id, "ranked",
+            "AI-ranked group must not be replaced by the fresh search result"
+        );
+    }
+
+    // While a submitted AI rank is still in flight (`thinking=true`,
+    // `ranked_count=None`), an async search result must NOT rebuild
+    // `search.groups`. `submit_ai_query` snapshotted session IDs from the
+    // pre-refresh `groups`; if the list rebuilds now, the eventual
+    // `handle_ai_result` sorts a different list than the one the model saw.
+    #[test]
+    fn ai_handle_search_result_preserves_groups_while_rank_in_flight() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        // Simulate submitted query waiting on the model: rank not yet
+        // applied, result channel attached, thinking flag raised.
+        app.ai.ranked_count = None;
+        app.ai.thinking = true;
+        let (_tx, rx) = mpsc::channel::<crate::ai::AiRankResult>();
+        app.ai.result_rx = Some(rx);
+        app.input.set_text("query");
+        app.search.search_seq = 1;
+        let snapshotted = SessionGroup {
+            session_id: "snapshotted".to_string(),
+            file_path: "/sessions/snapshotted.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        };
+        app.search.groups = vec![snapshotted.clone()];
+
+        let fresh = RipgrepMatch {
+            file_path: "/sessions/fresh.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "fresh".to_string(),
+                role: "user".to_string(),
+                content: "query".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "query".to_string(),
+            paths: app.search_paths.clone(),
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![fresh],
+                truncated: false,
+            }),
+        });
+
+        assert_eq!(
+            app.search.groups.len(),
+            1,
+            "groups must keep the snapshotted list while an AI rank is in flight"
+        );
+        assert_eq!(
+            app.search.groups[0].session_id, "snapshotted",
+            "in-flight snapshot must not be replaced by the fresh search result"
+        );
+        assert_eq!(
+            app.search.all_groups.len(),
+            1,
+            "all_groups must still absorb the fresh search result"
+        );
+        assert_eq!(
+            app.search.all_groups[0].session_id, "fresh",
+            "all_groups stores the fresh data for post-invalidation refresh"
+        );
+    }
+
+    // Complement for the tick path: while a rank is in flight, a
+    // completing project load must NOT rebuild `recent.filtered` — doing so
+    // would swap the snapshot out from under the in-flight `handle_ai_result`.
+    #[test]
+    fn ai_tick_preserves_recent_filtered_while_rank_in_flight() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.ranked_count = None;
+        app.ai.thinking = true;
+        let (_result_tx, result_rx) = mpsc::channel::<crate::ai::AiRankResult>();
+        app.ai.result_rx = Some(result_rx);
+        app.project_filter = true;
+        app.current_project_paths = vec!["/proj".to_string()];
+        let snapshotted = RecentSession {
+            session_id: "snapshotted".to_string(),
+            file_path: "/proj/snapshotted.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "snapshotted".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+        };
+        app.recent.filtered = vec![snapshotted.clone()];
+
+        let fresh_session = RecentSession {
+            session_id: "fresh".to_string(),
+            file_path: "/proj/fresh.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "fresh project session".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+        };
+        let (tx, rx) = mpsc::channel::<Vec<RecentSession>>();
+        tx.send(vec![fresh_session]).unwrap();
+        app.recent.project_load_rx = Some(rx);
+
+        app.tick();
+
+        assert_eq!(
+            app.recent.filtered.len(),
+            1,
+            "recent.filtered must keep the snapshotted list while an AI rank is in flight"
+        );
+        assert_eq!(
+            app.recent.filtered[0].session_id, "snapshotted",
+            "in-flight snapshot must not be replaced by the freshly-loaded project data"
+        );
+        assert!(
+            app.recent.project.is_some(),
+            "project data must still be stored so a post-result refresh can use it"
+        );
+    }
+
+    // After a Ctrl+A toggle invalidates the rank in AI mode, an async
+    // project load completion must refresh `recent.filtered`, so the next
+    // `submit_ai_query` uses the project-scoped candidate set instead of
+    // the fallback-from-`recent.all` snapshot computed before the load.
+    #[test]
+    fn ai_tick_refreshes_recent_filtered_on_project_load_after_invalidation() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.ranked_count = None;
+        app.project_filter = true;
+        app.current_project_paths = vec!["/proj".to_string()];
+
+        // Simulate the project loader having produced a fresh list, ready
+        // to be drained by the next `poll()` call.
+        let fresh_session = RecentSession {
+            session_id: "fresh".to_string(),
+            file_path: "/proj/fresh.jsonl".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "fresh project session".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+        };
+        let (tx, rx) = mpsc::channel::<Vec<RecentSession>>();
+        tx.send(vec![fresh_session]).unwrap();
+        app.recent.project_load_rx = Some(rx);
+
+        app.tick();
+
+        assert_eq!(
+            app.recent.filtered.len(),
+            1,
+            "recent.filtered must be rebuilt from the freshly-loaded project data"
+        );
+        assert_eq!(
+            app.recent.filtered[0].session_id, "fresh",
+            "filtered list must show the project-loaded session after invalidation"
         );
     }
 }

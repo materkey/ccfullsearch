@@ -133,6 +133,9 @@ impl App {
     }
 
     pub fn on_toggle_regex(&mut self) {
+        if self.ai.active {
+            self.invalidate_ai_rank();
+        }
         self.regex_mode = !self.regex_mode;
         // Trigger re-search if we have a query
         if !self.input.is_empty() {
@@ -142,6 +145,9 @@ impl App {
     }
 
     pub fn toggle_automation_filter(&mut self) {
+        if self.ai.active {
+            self.invalidate_ai_rank();
+        }
         use crate::tui::state::AutomationFilter;
         self.automation_filter = match self.automation_filter {
             AutomationFilter::All => AutomationFilter::Manual,
@@ -160,6 +166,9 @@ impl App {
     pub fn toggle_project_filter(&mut self) {
         if self.current_project_paths.is_empty() {
             return;
+        }
+        if self.ai.active {
+            self.invalidate_ai_rank();
         }
         self.project_filter = !self.project_filter;
         self.search_paths = if self.project_filter {
