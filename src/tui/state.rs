@@ -1022,20 +1022,27 @@ impl App {
             }
         }
 
-        // Poll background message counts
+        // Poll background message counts. Update the count in both the
+        // `all_groups` store and the currently-filtered `groups` view in
+        // place — a `message_count` update never changes which groups pass
+        // the automation filter, so cloning `all_groups` via
+        // `apply_groups_filter` on every trickled update is pure waste. In
+        // debug builds that clone was dominating per-keystroke latency when
+        // scrolling while background count workers were still finishing.
         if let Some(ref rx) = self.search.message_count_rx {
-            let mut any_updated = false;
             while let Ok((file_path, count, compacted)) = rx.try_recv() {
                 for group in &mut self.search.all_groups {
                     if group.file_path == file_path {
                         group.message_count = Some(count);
                         group.message_count_compacted = compacted;
-                        any_updated = true;
                     }
                 }
-            }
-            if any_updated && !self.ai.active {
-                self.apply_groups_filter();
+                for group in &mut self.search.groups {
+                    if group.file_path == file_path {
+                        group.message_count = Some(count);
+                        group.message_count_compacted = compacted;
+                    }
+                }
             }
         }
 

@@ -530,8 +530,32 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     };
     let query_lower = app.search.results_query.to_lowercase();
 
-    for (i, group) in app.search.groups.iter().enumerate() {
-        let is_selected = i == app.search.group_cursor;
+    // Only build ListItems for groups in the visible slice — every
+    // collapsed row goes through `sanitize_single_line` +
+    // `highlight_line_with_base`, and paying for all groups while only
+    // ~10 fit on screen made touchpad-scroll flicks visibly laggy on
+    // large result sets. Centre the window on the cursor so scrolling
+    // feels symmetric in both directions.
+    let visible_height = area.height as usize;
+    let rows_per_collapsed = 2usize;
+    let max_visible = (visible_height / rows_per_collapsed).max(1);
+    let cursor_group = app.search.group_cursor;
+    let total_groups = app.search.groups.len();
+    let window_cap = max_visible.min(total_groups);
+    let window_start = cursor_group
+        .saturating_sub(max_visible / 2)
+        .min(total_groups.saturating_sub(window_cap));
+    let window_end = (window_start + max_visible).min(total_groups);
+
+    for (i, group) in app
+        .search
+        .groups
+        .iter()
+        .enumerate()
+        .skip(window_start)
+        .take(window_end - window_start)
+    {
+        let is_selected = i == cursor_group;
         let is_expanded = is_selected && app.search.expanded;
 
         // Track selected item index: for expanded group, header + 1 + sub_cursor;
@@ -1441,6 +1465,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Red-test for touchpad-scroll latency. Simulates the full per-event
+    /// work path (handle scroll key → `tick()` → render) and asserts that a
+    /// burst of 30 rapid scroll events (the order of magnitude a fast
+    /// touchpad flick dispatches) completes within the wall-clock budget
+    /// the user perceives as "not laggy".
+    ///
+    /// On the loaded path `tick()` currently drains the background
+    /// message-count channel on every iteration and, if anything arrived,
+    /// rebuilds `app.search.groups` via `apply_groups_filter` — which
+    /// `clones` every `SessionGroup` (including all `Message` strings). With
+    /// 500 groups × 5 matches × ~500-char content each event ends up
+    /// cloning tens of MB, turning a scroll flick into a visible wait.
+    #[test]
+    fn test_scroll_burst_under_background_updates_is_snappy() {
+        use std::sync::mpsc;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.results_query = "needle".to_string();
+        let long_body = "filler text needle ".repeat(50);
+        let mut groups = Vec::with_capacity(500);
+        for gi in 0..500 {
+            let mut matches = Vec::with_capacity(5);
+            for mi in 0..5 {
+                matches.push(RipgrepMatch {
+                    file_path: format!("/p/g{:04}.jsonl", gi),
+                    message: Some(Message {
+                        session_id: format!("sess-{:04}", gi),
+                        role: if mi % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                        content: long_body.clone(),
+                        text_content: long_body.clone(),
+                        timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
+                        line_number: mi + 1,
+                        ..Default::default()
+                    }),
+                    source: SessionSource::ClaudeCodeCLI,
+                });
+            }
+            groups.push(SessionGroup {
+                session_id: format!("sess-{:04}", gi),
+                file_path: format!("/p/g{:04}.jsonl", gi),
+                matches,
+                automation: None,
+                message_count: None,
+                message_count_compacted: false,
+            });
+        }
+        app.search.all_groups = groups.clone();
+        app.search.groups = groups;
+        app.search.group_cursor = 0;
+        app.search.expanded = false;
+
+        // Attach a channel that delivers a *trickle* of background message
+        // counts — one update right before each scroll tick, matching the
+        // real-world pattern where per-file counts arrive one by one.
+        let (tx, rx) = mpsc::channel();
+        app.search.message_count_rx = Some(rx);
+
+        // Warm up.
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("warm-up render should not panic");
+
+        const ITERS: u32 = 30;
+        let start = std::time::Instant::now();
+        for i in 0..ITERS {
+            tx.send((format!("/p/g{:04}.jsonl", i), (i as usize + 1) * 100, false))
+                .unwrap();
+            app.on_down();
+            app.tick();
+            terminal
+                .draw(|frame| render(frame, &app.view()))
+                .expect("render should not panic");
+        }
+        let elapsed = start.elapsed();
+
+        let budget = std::time::Duration::from_millis(500);
+        assert!(
+            elapsed < budget,
+            "{} scroll events with trickling background updates took {:?}, expected < {:?} — tick()/render path is doing too much work per event",
+            ITERS, elapsed, budget
+        );
     }
 
     #[test]
