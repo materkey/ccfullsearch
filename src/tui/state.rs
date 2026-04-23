@@ -848,6 +848,7 @@ impl App {
             has_recent_sessions: !self.recent.filtered.is_empty(),
             has_groups: !self.search.groups.is_empty(),
             ai_mode: self.ai.active,
+            ai_input_empty: self.ai.query.is_empty(),
         }
     }
 
@@ -1786,6 +1787,76 @@ mod tests {
 
         assert!(app.input.is_empty());
         assert!(!app.should_quit);
+    }
+
+    // In AI mode with an empty AI query, Ctrl+C must exit AI mode (return to
+    // search) — NOT quit the TUI. The regression being guarded: the Ctrl+C
+    // classifier used to consult `self.input.is_empty()` (main search input)
+    // even while AI mode was active, so a user who entered AI mode from a
+    // blank search screen and then pressed Ctrl+C would have the TUI killed.
+    #[test]
+    fn test_ctrl_c_in_ai_mode_empty_query_exits_ai_not_quit() {
+        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        assert!(app.ai.active);
+        assert!(app.ai.query.is_empty());
+
+        let ctx = app.key_context();
+        let key = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = classify_key(key, &ctx);
+        assert_eq!(action, KeyAction::ExitAiMode);
+        app.handle_action(action);
+
+        assert!(!app.should_quit, "TUI must stay alive on Ctrl+C in AI mode");
+        assert!(
+            !app.ai.active,
+            "Ctrl+C on empty AI query must leave AI mode"
+        );
+    }
+
+    // In AI mode with a non-empty AI query, Ctrl+C clears the AI query and
+    // stays in AI mode — mirroring how Ctrl+C clears the search input in
+    // regular search mode. `invalidate_ai_rank` is reached via the existing
+    // ClearInput branch, dropping any applied rank.
+    #[test]
+    fn test_ctrl_c_in_ai_mode_nonempty_query_clears_stays_in_ai() {
+        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.query.set_text("hello");
+        app.ai.ranked_count = Some(3);
+
+        let ctx = app.key_context();
+        let key = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = classify_key(key, &ctx);
+        assert_eq!(action, KeyAction::ClearInput);
+        app.handle_action(action);
+
+        assert!(!app.should_quit);
+        assert!(
+            app.ai.active,
+            "Ctrl+C on non-empty AI query must keep AI mode"
+        );
+        assert!(app.ai.query.is_empty(), "AI query must be cleared");
+        assert!(
+            app.ai.ranked_count.is_none(),
+            "invalidate_ai_rank must drop the rank when clearing AI query"
+        );
     }
 
     #[test]

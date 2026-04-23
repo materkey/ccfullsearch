@@ -67,6 +67,7 @@ pub struct KeyContext {
     pub has_recent_sessions: bool,
     pub has_groups: bool,
     pub ai_mode: bool,
+    pub ai_input_empty: bool,
 }
 
 /// Returns true if the key event is Ctrl+H (sent as Ctrl+Backspace on some terminals).
@@ -110,6 +111,13 @@ fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
     // --- Ctrl combinations (checked first, before plain keys) ---
 
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if ctx.ai_mode {
+            return if ctx.ai_input_empty {
+                KeyAction::ExitAiMode
+            } else {
+                KeyAction::ClearInput
+            };
+        }
         return if ctx.input_empty {
             KeyAction::Quit
         } else {
@@ -258,6 +266,7 @@ mod tests {
             has_recent_sessions: false,
             has_groups: false,
             ai_mode: false,
+            ai_input_empty: true,
         }
     }
 
@@ -772,5 +781,49 @@ mod tests {
             ..search_ctx()
         };
         assert_eq!(classify_key(key(KeyCode::Esc), &ctx), KeyAction::ExitAiMode,);
+    }
+
+    #[test]
+    fn search_ctrl_c_in_ai_mode_empty_query_exits_ai() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_input_empty: true,
+            input_empty: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::ExitAiMode,
+        );
+    }
+
+    #[test]
+    fn search_ctrl_c_in_ai_mode_nonempty_query_clears() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_input_empty: false,
+            input_empty: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::ClearInput,
+        );
+    }
+
+    #[test]
+    fn search_ctrl_c_in_ai_mode_ignores_main_input_empty() {
+        // Even when the main search input is non-empty, Ctrl+C must act on the
+        // AI query buffer while AI mode is active.
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_input_empty: true,
+            input_empty: false,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::ExitAiMode,
+        );
     }
 }
