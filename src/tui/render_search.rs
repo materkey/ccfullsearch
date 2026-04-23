@@ -96,7 +96,7 @@ pub(crate) fn build_ai_hints(ranked_count: Option<usize>) -> Vec<HintItem<'stati
     let enter_label = if ranked_count.is_some() {
         "[Enter] Resume"
     } else {
-        "[Enter] Rank"
+        "[Enter] AI Rank"
     };
     vec![
         HintItem {
@@ -570,6 +570,10 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         .min(total_groups.saturating_sub(window_cap));
     let window_end = (window_start + max_visible).min(total_groups);
 
+    // `sort_by_key` in `handle_ai_result` puts ranked IDs first, so
+    // `ranked_count` is the boundary. Skip when it's 0 or all groups (no split).
+    let ai_separator_at = app.ai.ranked_count.filter(|&n| n > 0 && n < total_groups);
+
     for (i, group) in app
         .search
         .groups
@@ -578,6 +582,13 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         .skip(window_start)
         .take(window_end - window_start)
     {
+        if ai_separator_at == Some(i) {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "── Unranked below ──",
+                Style::default().fg(DIM_FG),
+            ))));
+        }
+
         let is_selected = i == cursor_group;
         let is_expanded = is_selected && app.search.expanded;
 
@@ -1288,6 +1299,67 @@ mod tests {
         app.search.results_query = "test".to_string();
 
         app
+    }
+
+    fn make_test_app_with_n_groups(n: usize) -> App {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.groups = (0..n)
+            .map(|i| {
+                let file_path =
+                    format!("/path/to/projects/-Users-test-projects-myapp/session-{i}.jsonl");
+                let msg = Message {
+                    session_id: format!("s{i}"),
+                    role: "user".to_string(),
+                    content: format!("Content {i}"),
+                    text_content: format!("Content {i}"),
+                    timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
+                    line_number: 1,
+                    ..Default::default()
+                };
+                SessionGroup {
+                    session_id: format!("s{i}"),
+                    file_path: file_path.clone(),
+                    matches: vec![RipgrepMatch {
+                        file_path,
+                        message: Some(msg),
+                        source: SessionSource::ClaudeCodeCLI,
+                    }],
+                    automation: None,
+                    message_count: None,
+                    message_count_compacted: false,
+                }
+            })
+            .collect();
+        app.search.results_query = String::new();
+        app
+    }
+
+    #[test]
+    fn render_groups_shows_unranked_separator_only_on_partial_rank() {
+        const NEEDLE: &str = "Unranked below";
+
+        for (ranked, expect) in [
+            (None, false),
+            (Some(0), false),
+            (Some(3), false), // Some(total_groups)
+            (Some(1), true),
+            (Some(2), true),
+        ] {
+            let mut app = make_test_app_with_n_groups(3);
+            app.ai.ranked_count = ranked;
+
+            let backend = TestBackend::new(120, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, &app.view()))
+                .expect("render must not panic");
+
+            assert_eq!(
+                buffer_contains(terminal.backend().buffer(), 120, 24, NEEDLE),
+                expect,
+                "ranked_count = {ranked:?}: separator presence mismatch",
+            );
+        }
     }
 
     #[test]
@@ -3200,8 +3272,8 @@ mod tests {
     fn render_ai_hints_shows_rank_when_no_ranked_count() {
         let texts = hint_texts(&build_ai_hints(None));
         assert!(
-            texts.iter().any(|t| t == "[Enter] Rank"),
-            "expected [Enter] Rank when ranked_count is None, got {:?}",
+            texts.iter().any(|t| t == "[Enter] AI Rank"),
+            "expected [Enter] AI Rank when ranked_count is None, got {:?}",
             texts
         );
         assert!(
@@ -3220,8 +3292,8 @@ mod tests {
             texts
         );
         assert!(
-            !texts.iter().any(|t| t == "[Enter] Rank"),
-            "must not show [Enter] Rank when ranked_count is Some, got {:?}",
+            !texts.iter().any(|t| t == "[Enter] AI Rank"),
+            "must not show [Enter] AI Rank when ranked_count is Some, got {:?}",
             texts
         );
     }
