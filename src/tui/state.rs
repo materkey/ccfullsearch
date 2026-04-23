@@ -3048,4 +3048,52 @@ mod tests {
             "filtered list must show the project-loaded session after invalidation"
         );
     }
+
+    // A well-formed empty `[]` from the AI is a successful "no relevant
+    // sessions" answer, not an error. `handle_ai_result` must route it to
+    // `ranked_count = Some(0)` so the status bar renders green "0 sessions
+    // ranked" via `render_search.rs:307-313`, not a red error.
+    #[test]
+    fn test_handle_ai_result_empty_rank_sets_zero_count() {
+        fn sg(id: &str) -> SessionGroup {
+            SessionGroup {
+                session_id: id.to_string(),
+                file_path: format!("/sessions/{id}.jsonl"),
+                matches: vec![],
+                automation: None,
+                message_count: None,
+                message_count_compacted: false,
+            }
+        }
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        let original = vec![sg("a"), sg("b")];
+        app.search.groups = original.clone();
+
+        app.handle_ai_result(crate::ai::AiRankResult {
+            ranked_ids: vec![],
+            error: None,
+        });
+
+        assert_eq!(
+            app.ai.ranked_count,
+            Some(0),
+            "empty ranking is a success — render_search.rs:307 should hit Some(0) → green \"0 sessions ranked\""
+        );
+        assert!(
+            app.ai.error.is_none(),
+            "empty ranking must not populate error — that's the bug this fix removes"
+        );
+        let snapshot = app
+            .ai
+            .original_groups_order
+            .as_ref()
+            .expect("original_groups_order must be saved for Esc/exit restoration");
+        assert_eq!(
+            snapshot.iter().map(|g| &g.session_id).collect::<Vec<_>>(),
+            original.iter().map(|g| &g.session_id).collect::<Vec<_>>(),
+            "original ordering must be preserved verbatim so exit_ai_mode can restore it"
+        );
+    }
 }

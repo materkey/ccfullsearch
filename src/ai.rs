@@ -65,6 +65,8 @@ pub fn build_prompt(query: &str, sessions: &[SessionContext]) -> String {
     );
     prompt.push_str("return a JSON array of session IDs ranked by relevance to the query (most relevant first). ");
     prompt.push_str("Only include sessions that are at least somewhat relevant. ");
+    prompt.push_str("If no session is relevant, return []. ");
+    prompt.push_str("Do NOT wrap in code fences, do NOT add prose. ");
     prompt.push_str("Return ONLY a JSON array of strings, no other text.\n\n");
     let _ = writeln!(prompt, "Query: {}\n\nSessions:", query);
 
@@ -86,13 +88,32 @@ pub fn build_prompt(query: &str, sessions: &[SessionContext]) -> String {
     prompt
 }
 
+#[derive(Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+enum ParseError {
+    NoJsonArray,
+    UnterminatedArray,
+    NotStringArray,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ParseError::NoJsonArray => "no JSON array",
+            ParseError::UnterminatedArray => "unterminated array",
+            ParseError::NotStringArray => "not a string array",
+        };
+        f.write_str(s)
+    }
+}
+
+const EMPTY_STDOUT_MARKER: &str = "<empty stdout>";
+const SAMPLE_LIMIT: usize = 100;
+
 /// Parse AI response to extract a JSON array of session IDs.
 /// Finds the first `[` and its matching `]`, then tries to parse as Vec<String>.
-pub fn parse_ai_response(output: &str) -> Vec<String> {
-    let start = match output.find('[') {
-        Some(i) => i,
-        None => return Vec::new(),
-    };
+fn parse_ai_response(output: &str) -> Result<Vec<String>, ParseError> {
+    let start = output.find('[').ok_or(ParseError::NoJsonArray)?;
 
     let mut depth = 0;
     let mut end = None;
@@ -110,12 +131,27 @@ pub fn parse_ai_response(output: &str) -> Vec<String> {
         }
     }
 
-    let end = match end {
-        Some(e) => e,
-        None => return Vec::new(),
+    let end = end.ok_or(ParseError::UnterminatedArray)?;
+
+    serde_json::from_str::<Vec<String>>(&output[start..end]).map_err(|_| ParseError::NotStringArray)
+}
+
+/// Format a parse error with a normalized, truncated sample of the raw stdout so
+/// users can diagnose why Claude's response couldn't be parsed straight from the
+/// status bar. Uses char-based (not byte-based) truncation to stay UTF-8 safe.
+fn format_parse_error(err: ParseError, stdout: &str) -> String {
+    let normalized: String = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    let sample = if normalized.is_empty() {
+        EMPTY_STDOUT_MARKER.to_string()
+    } else if normalized.chars().count() > SAMPLE_LIMIT {
+        let mut truncated: String = normalized.chars().take(SAMPLE_LIMIT).collect();
+        truncated.push('…');
+        truncated
+    } else {
+        normalized
     };
 
-    serde_json::from_str::<Vec<String>>(&output[start..end]).unwrap_or_default()
+    format!("{}: {}", err, sample)
 }
 
 /// Lightweight session descriptor for passing to the background thread.
@@ -156,17 +192,15 @@ pub fn spawn_ai_rank(
             Ok(output) => {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    let ranked_ids = parse_ai_response(&stdout);
-                    if ranked_ids.is_empty() {
-                        AiRankResult {
-                            ranked_ids: Vec::new(),
-                            error: Some("AI returned no rankings".to_string()),
-                        }
-                    } else {
-                        AiRankResult {
+                    match parse_ai_response(&stdout) {
+                        Ok(ranked_ids) => AiRankResult {
                             ranked_ids,
                             error: None,
-                        }
+                        },
+                        Err(kind) => AiRankResult {
+                            ranked_ids: Vec::new(),
+                            error: Some(format_parse_error(kind, &stdout)),
+                        },
                     }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -314,7 +348,7 @@ mod tests {
     #[test]
     fn test_parse_ai_response_clean_json() {
         let output = r#"["id-001", "id-003", "id-002"]"#;
-        let result = parse_ai_response(output);
+        let result = parse_ai_response(output).unwrap();
         assert_eq!(result, vec!["id-001", "id-003", "id-002"]);
     }
 
@@ -325,15 +359,73 @@ mod tests {
 ["sess-abc", "sess-def"]
 
 These sessions are most relevant because..."#;
-        let result = parse_ai_response(output);
+        let result = parse_ai_response(output).unwrap();
         assert_eq!(result, vec!["sess-abc", "sess-def"]);
     }
 
     #[test]
     fn test_parse_ai_response_invalid() {
-        assert!(parse_ai_response("no json here").is_empty());
-        assert!(parse_ai_response("[unclosed").is_empty());
-        assert!(parse_ai_response("").is_empty());
-        assert!(parse_ai_response("[1, 2, 3]").is_empty()); // not strings
+        assert_eq!(
+            parse_ai_response("no json here"),
+            Err(ParseError::NoJsonArray)
+        );
+        assert_eq!(parse_ai_response(""), Err(ParseError::NoJsonArray));
+        assert_eq!(
+            parse_ai_response("[unclosed"),
+            Err(ParseError::UnterminatedArray)
+        );
+        assert_eq!(
+            parse_ai_response("[1, 2, 3]"),
+            Err(ParseError::NotStringArray)
+        );
+    }
+
+    #[test]
+    fn test_parse_ai_response_empty_array() {
+        assert_eq!(parse_ai_response("[]"), Ok(Vec::<String>::new()));
+        assert_eq!(
+            parse_ai_response("prose before []\nthen prose after"),
+            Ok(Vec::<String>::new())
+        );
+    }
+
+    #[test]
+    fn test_parse_ai_response_slice_wrapped() {
+        // Observed behaviour: `claude -p` sometimes wraps the array in JS-like
+        // `.slice(0,0)` prose. Parser should catch the first valid array.
+        let output = "[\"x\",\"y\"].slice(0,0)\n\n[]";
+        assert_eq!(parse_ai_response(output), Ok(vec!["x".into(), "y".into()]));
+    }
+
+    #[test]
+    fn test_format_parse_error_truncates() {
+        // Longest category "not a string array" (18) + ": " + 100 + "…" = 121, leave headroom.
+        fn assert_truncated(err: ParseError, stdout: &str, prefix: &str) {
+            let msg = format_parse_error(err, stdout);
+            assert!(msg.starts_with(prefix), "missing prefix in {msg:?}");
+            assert!(msg.ends_with('…'), "missing ellipsis in {msg:?}");
+            assert!(
+                msg.chars().count() <= 125,
+                "msg too long ({} chars): {msg:?}",
+                msg.chars().count()
+            );
+        }
+
+        let ascii = format!("preamble\n\n{}", "a".repeat(300));
+        assert_truncated(ParseError::NoJsonArray, &ascii, "no JSON array: ");
+
+        // Multi-byte UTF-8 on the char-100 boundary must not panic on byte-slicing.
+        let utf8 = "я".repeat(200);
+        assert_truncated(ParseError::NotStringArray, &utf8, "not a string array: ");
+    }
+
+    #[test]
+    fn test_format_parse_error_empty_stdout() {
+        let msg = format_parse_error(ParseError::NoJsonArray, "");
+        assert_eq!(msg, "no JSON array: <empty stdout>");
+
+        // Whitespace-only stdout also collapses to empty.
+        let msg = format_parse_error(ParseError::UnterminatedArray, "  \n\t  ");
+        assert_eq!(msg, "unterminated array: <empty stdout>");
     }
 }
