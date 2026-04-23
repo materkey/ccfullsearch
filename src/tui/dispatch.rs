@@ -813,8 +813,6 @@ mod tests {
 
     #[test]
     fn search_ctrl_c_in_ai_mode_ignores_main_input_empty() {
-        // Even when the main search input is non-empty, Ctrl+C must act on the
-        // AI query buffer while AI mode is active.
         let ctx = KeyContext {
             ai_mode: true,
             ai_input_empty: true,
