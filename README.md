@@ -192,6 +192,7 @@ ccs --overlay
 | `Esc` / `Ctrl+G` | Exit AI mode, restore original order |
 
 Editing the AI query, or toggling a filter/scope (`Ctrl+R`, `Ctrl+A`, `Ctrl+H`) after a rank invalidates the applied ranking, so the next `Enter` re-ranks instead of resuming.
+If Claude returns no relevant sessions, AI mode stays in rank mode so you can refine the query and press `Enter` again.
 
 ### Tree mode
 

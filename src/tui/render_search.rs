@@ -34,6 +34,7 @@ const PREVIEW_PREFIX_USER: &str = "     User: ";
 const PREVIEW_PREFIX_CLAUDE: &str = "     Claude: ";
 /// Both PREVIEW_PREFIX_* literals are 11 ASCII bytes — no chars() walk needed.
 const PREVIEW_PREFIX_LEN: usize = 11;
+const AI_UNRANKED_SEPARATOR_LABEL: &str = "── Unranked below ──";
 
 #[derive(Clone)]
 pub(crate) struct HintItem<'a> {
@@ -112,6 +113,17 @@ pub(crate) fn build_ai_hints(ranked_count: Option<usize>) -> Vec<HintItem<'stati
             min_width: 0,
         },
     ]
+}
+
+fn ai_unranked_separator_at(ranked_count: Option<usize>, total_items: usize) -> Option<usize> {
+    ranked_count.filter(|&n| n > 0 && n < total_items)
+}
+
+fn build_ai_unranked_separator() -> ListItem<'static> {
+    ListItem::new(Line::from(Span::styled(
+        AI_UNRANKED_SEPARATOR_LABEL,
+        Style::default().fg(DIM_FG),
+    )))
 }
 
 fn kept_line_width(keep: &[bool], widths: &[usize], sep_len: usize) -> usize {
@@ -571,8 +583,8 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     let window_end = (window_start + max_visible).min(total_groups);
 
     // `sort_by_key` in `handle_ai_result` puts ranked IDs first, so
-    // `ranked_count` is the boundary. Skip when it's 0 or all groups (no split).
-    let ai_separator_at = app.ai.ranked_count.filter(|&n| n > 0 && n < total_groups);
+    // `ranked_count` is the boundary between ranked and untouched results.
+    let ai_separator_at = ai_unranked_separator_at(app.ai.ranked_count, total_groups);
 
     for (i, group) in app
         .search
@@ -583,10 +595,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         .take(window_end - window_start)
     {
         if ai_separator_at == Some(i) {
-            items.push(ListItem::new(Line::from(Span::styled(
-                "── Unranked below ──",
-                Style::default().fg(DIM_FG),
-            ))));
+            items.push(build_ai_unranked_separator());
         }
 
         let is_selected = i == cursor_group;
@@ -776,10 +785,15 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
     let scroll_offset = app.recent.scroll_offset;
     let visible_items = (visible_height / RECENT_LINES_PER_SESSION).max(1);
     let end = (scroll_offset + visible_items).min(app.recent.filtered.len());
+    let ai_separator_at = ai_unranked_separator_at(app.ai.ranked_count, app.recent.filtered.len());
 
     let mut selected_item_idx: Option<usize> = None;
 
     for i in scroll_offset..end {
+        if ai_separator_at == Some(i) {
+            items.push(build_ai_unranked_separator());
+        }
+
         let session = &app.recent.filtered[i];
         let is_selected = i == app.recent.cursor;
 
@@ -1334,10 +1348,29 @@ mod tests {
         app
     }
 
+    fn make_test_app_with_n_recent_sessions(n: usize) -> App {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = (0..n)
+            .map(|i| crate::recent::RecentSession {
+                session_id: format!("recent-{i}"),
+                file_path: format!("/test/recent-{i}.jsonl"),
+                project: "proj".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
+                summary: format!("Recent summary {i}"),
+                automation: None,
+                branch: Some("main".to_string()),
+                message_count: Some(i + 1),
+                preview_role: MessageRole::User,
+            })
+            .collect();
+        app
+    }
+
     #[test]
     fn render_groups_shows_unranked_separator_only_on_partial_rank() {
-        const NEEDLE: &str = "Unranked below";
-
         for (ranked, expect) in [
             (None, false),
             (Some(0), false),
@@ -1355,9 +1388,45 @@ mod tests {
                 .expect("render must not panic");
 
             assert_eq!(
-                buffer_contains(terminal.backend().buffer(), 120, 24, NEEDLE),
+                buffer_contains(
+                    terminal.backend().buffer(),
+                    120,
+                    24,
+                    AI_UNRANKED_SEPARATOR_LABEL
+                ),
                 expect,
                 "ranked_count = {ranked:?}: separator presence mismatch",
+            );
+        }
+    }
+
+    #[test]
+    fn render_recent_sessions_shows_unranked_separator_only_on_partial_rank() {
+        for (ranked, expect) in [
+            (None, false),
+            (Some(0), false),
+            (Some(3), false), // Some(total_sessions)
+            (Some(1), true),
+            (Some(2), true),
+        ] {
+            let mut app = make_test_app_with_n_recent_sessions(3);
+            app.ai.ranked_count = ranked;
+
+            let backend = TestBackend::new(120, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, &app.view()))
+                .expect("render must not panic");
+
+            assert_eq!(
+                buffer_contains(
+                    terminal.backend().buffer(),
+                    120,
+                    24,
+                    AI_UNRANKED_SEPARATOR_LABEL
+                ),
+                expect,
+                "recent ranked_count = {ranked:?}: separator presence mismatch",
             );
         }
     }

@@ -1235,6 +1235,7 @@ impl App {
     /// `tick()` will never observe a result to reset the flag — leaving
     /// `submit_ai_query` stuck on its `thinking` guard.
     pub(crate) fn invalidate_ai_rank(&mut self) {
+        self.ai.error = None;
         self.ai.ranked_count = None;
         self.ai.result_rx = None;
         self.ai.thinking = false;
@@ -1311,6 +1312,13 @@ impl App {
             self.ai.error = Some(err);
             return;
         }
+        if result.ranked_ids.is_empty() {
+            self.ai.error = Some(crate::ai::AI_NO_RELEVANT_SESSIONS_MSG.to_string());
+            self.ai.ranked_count = None;
+            return;
+        }
+
+        self.ai.error = None;
 
         let rank: std::collections::HashMap<&str, usize> = result
             .ranked_ids
@@ -3049,12 +3057,11 @@ mod tests {
         );
     }
 
-    // A well-formed empty `[]` from the AI is a successful "no relevant
-    // sessions" answer, not an error. `handle_ai_result` must route it to
-    // `ranked_count = Some(0)` so the status bar renders green "0 sessions
-    // ranked" via `render_search.rs:307-313`, not a red error.
+    // A well-formed empty `[]` from the AI means "nothing matched", so AI
+    // mode must stay retryable: no `ranked_count`, no resume-on-Enter, and
+    // no saved original order snapshot.
     #[test]
-    fn test_handle_ai_result_empty_rank_sets_zero_count() {
+    fn test_handle_ai_result_empty_rank_stays_retryable() {
         fn sg(id: &str) -> SessionGroup {
             SessionGroup {
                 session_id: id.to_string(),
@@ -3077,23 +3084,25 @@ mod tests {
         });
 
         assert_eq!(
-            app.ai.ranked_count,
-            Some(0),
-            "empty ranking is a success — render_search.rs:307 should hit Some(0) → green \"0 sessions ranked\""
+            app.ai.ranked_count, None,
+            "empty ranking must stay retryable so Enter re-ranks instead of resuming"
         );
         assert!(
-            app.ai.error.is_none(),
-            "empty ranking must not populate error — that's the bug this fix removes"
+            app.ai.error == Some(crate::ai::AI_NO_RELEVANT_SESSIONS_MSG.to_string()),
+            "empty ranking must surface a retryable no-match message"
         );
-        let snapshot = app
-            .ai
-            .original_groups_order
-            .as_ref()
-            .expect("original_groups_order must be saved for Esc/exit restoration");
+        assert!(
+            app.ai.original_groups_order.is_none(),
+            "no-match result must not capture a restorable ranked snapshot"
+        );
         assert_eq!(
-            snapshot.iter().map(|g| &g.session_id).collect::<Vec<_>>(),
+            app.search
+                .groups
+                .iter()
+                .map(|g| &g.session_id)
+                .collect::<Vec<_>>(),
             original.iter().map(|g| &g.session_id).collect::<Vec<_>>(),
-            "original ordering must be preserved verbatim so exit_ai_mode can restore it"
+            "no-match result must leave visible ordering untouched"
         );
     }
 }

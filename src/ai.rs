@@ -20,6 +20,9 @@ pub struct AiRankResult {
     pub error: Option<String>,
 }
 
+pub(crate) const AI_NO_RELEVANT_SESSIONS_MSG: &str =
+    "no relevant sessions found; press Enter to retry or refine query";
+
 /// Extract up to 3 real user messages from first 50 lines of a session JSONL file.
 pub fn collect_session_context(
     file_path: &str,
@@ -193,6 +196,10 @@ pub fn spawn_ai_rank(
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     match parse_ai_response(&stdout) {
+                        Ok(ranked_ids) if ranked_ids.is_empty() => AiRankResult {
+                            ranked_ids: Vec::new(),
+                            error: Some(AI_NO_RELEVANT_SESSIONS_MSG.to_string()),
+                        },
                         Ok(ranked_ids) => AiRankResult {
                             ranked_ids,
                             error: None,
