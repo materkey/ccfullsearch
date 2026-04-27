@@ -1,6 +1,7 @@
 use crate::search::{extract_project_from_path, sanitize_content};
 use crate::tui::render_search::{build_help_line, truncate_to_width, HintItem, DIM_FG};
 use crate::tui::view::AppView;
+use chrono::Local;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -163,7 +164,11 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
             spans.push(Span::styled("~", compact_style));
             spans.push(Span::raw(" "));
 
-            let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
+            let time_str = row
+                .timestamp
+                .with_timezone(&Local)
+                .format("%m/%d %H:%M")
+                .to_string();
             spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
             spans.push(Span::raw("  "));
 
@@ -196,7 +201,11 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
             spans.push(Span::raw(" "));
 
             // Timestamp (compact)
-            let time_str = row.timestamp.format("%m/%d %H:%M").to_string();
+            let time_str = row
+                .timestamp
+                .with_timezone(&Local)
+                .format("%m/%d %H:%M")
+                .to_string();
             spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
             spans.push(Span::raw("  "));
 
@@ -266,7 +275,11 @@ fn render_tree_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::
         .unwrap_or_else(|| row.content_preview.clone());
     let sanitized = sanitize_content(&full_content);
 
-    let date_str = row.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+    let date_str = row
+        .timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     let chain_status = if row.is_on_latest_chain {
         "latest chain"
     } else {

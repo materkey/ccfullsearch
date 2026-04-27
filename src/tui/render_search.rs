@@ -1003,7 +1003,11 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
     let (date_str, branch, source) = if let Some(m) = first_match {
         let source = m.source.display_name();
         if let Some(ref msg) = m.message {
-            let date = msg.timestamp.format("%Y-%m-%d %H:%M").to_string();
+            let date = msg
+                .timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
             let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
             (date, branch, source)
         } else {
@@ -1420,7 +1424,11 @@ fn render_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect)
     };
 
     let project = extract_project_from_path(&m.file_path);
-    let date_str = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+    let date_str = msg
+        .timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
     let query = &app.search.results_query;
 
