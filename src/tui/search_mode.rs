@@ -288,6 +288,8 @@ mod tests {
     use crate::tui::state::{AppOutcome, DEBOUNCE_MS};
     use crate::tui::App;
     use chrono::Utc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     fn make_recent_session(id: &str, project: &str, summary: &str) -> RecentSession {
@@ -432,9 +434,6 @@ mod tests {
     // silently dropped and the in-flight handle is preserved.
     #[test]
     fn test_stale_search_result_ignored_on_seq_mismatch() {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-
         let mut app = App::new(vec!["/all".to_string()]);
         app.input.set_text("query");
         app.search.search_seq = 2;

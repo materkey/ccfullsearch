@@ -1390,14 +1390,8 @@ impl App {
     /// `search.result_tx`; `tick()` polls `search.search_rx` and routes
     /// matching-`seq` results through `handle_search_result`.
     ///
-    /// **Threading invariant**: must be called from the UI thread. The
-    /// straggler-via-load-vs-send race (a worker that observes `cancel ==
-    /// false`, then loses the race to the cancel-store, then sends anyway)
-    /// is closed by the seq discriminator in `handle_search_result`, but
-    /// only because `current` is guaranteed to be populated (with the new
-    /// handle, line below) by the time `tick()` runs. If `start_search`
-    /// were ever called from a non-UI thread, a stray send could land while
-    /// `current` is `None` and silently disappear.
+    /// Must be called from the UI thread; concurrent calls would race on
+    /// `search.current`.
     pub(crate) fn start_search(&mut self) {
         self.search.search_seq += 1;
         let seq = self.search.search_seq;

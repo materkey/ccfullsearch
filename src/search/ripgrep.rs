@@ -239,22 +239,22 @@ fn search_single_path(
         .ok_or_else(|| "ripgrep stderr was not captured".to_string())?;
     let stderr_handle = thread::spawn(move || {
         let mut keep: Vec<u8> = Vec::new();
-        let mut discard = [0u8; 8 * 1024];
+        let mut buf = [0u8; 8 * 1024];
         let mut reader = BufReader::new(stderr);
         let mut truncated = false;
         // First, fill `keep` up to the cap.
         while keep.len() < STDERR_KEEP_BYTES {
             let remaining = STDERR_KEEP_BYTES - keep.len();
-            let buf_len = discard.len().min(remaining);
-            match reader.read(&mut discard[..buf_len]) {
+            let buf_len = buf.len().min(remaining);
+            match reader.read(&mut buf[..buf_len]) {
                 Ok(0) => return (keep, false),
-                Ok(n) => keep.extend_from_slice(&discard[..n]),
+                Ok(n) => keep.extend_from_slice(&buf[..n]),
                 Err(_) => return (keep, false),
             }
         }
         // Then, drain (and discard) anything else so the pipe never blocks.
         loop {
-            match reader.read(&mut discard) {
+            match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(_) => truncated = true,
                 Err(_) => break,

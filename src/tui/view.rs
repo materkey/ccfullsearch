@@ -4,7 +4,7 @@ use crate::tui::App;
 ///
 /// Ensures render functions cannot mutate application state.
 /// Created via `App::view()` and provides transparent access
-/// to all `App` fields through `Deref` (incl. `is_searching`).
+/// to all `App` fields through `Deref`.
 pub struct AppView<'a>(pub(crate) &'a App);
 
 impl<'a> std::ops::Deref for AppView<'a> {
