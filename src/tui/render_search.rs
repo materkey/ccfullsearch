@@ -29,6 +29,12 @@ pub(crate) const SELECTION_BG: Color = Color::Rgb(75, 0, 130);
 /// panel and mis-matched the design handoff.
 pub(crate) const DIM_FG: Color = Color::Rgb(107, 113, 128);
 
+/// Preview content foreground. Brighter than `DIM_FG` so summaries stay
+/// readable while preserving a lower hierarchy than headers.
+const PREVIEW_CONTENT_FG: Color = Color::Rgb(156, 163, 175);
+/// Preview content foreground on the selected purple row.
+const SELECTED_PREVIEW_CONTENT_FG: Color = Color::Rgb(229, 231, 235);
+
 /// Project chip foreground from the slate handoff accent (`#6262ff`).
 const PROJECT_FG: Color = Color::Rgb(98, 98, 255);
 /// Subtle project chip background. Dark enough to preserve contrast on the
@@ -690,15 +696,14 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                     extract_context(&content, query, preview_context_chars)
                 };
                 let truncated = truncate_to_width(&centered, preview_max_content);
-                // Selected preview keeps DIM_FG on top of SELECTION_BG — the
-                // header above uses selFg/yellow so the selected element
-                // reads as a two-part row, not a monochrome block. Purple
-                // trailing cells come from the outer ListItem style below;
-                // we do NOT also paint bg on the span base to avoid
-                // double-styling every styled cell.
-                let base = Style::default().fg(DIM_FG);
-                let mut spans = vec![Span::styled(preview_prefix, base)];
-                let highlighted = highlight_line_with_base(&truncated, query, base);
+                // Keep the role prefix dim, but render summary text brighter
+                // than scaffolding. Purple trailing cells come from the outer
+                // ListItem style below; we do NOT also paint bg on the span
+                // base to avoid double-styling every styled cell.
+                let prefix_style = Style::default().fg(DIM_FG);
+                let content_style = preview_content_style(is_selected);
+                let mut spans = vec![Span::styled(preview_prefix, prefix_style)];
+                let highlighted = highlight_line_with_base(&truncated, query, content_style);
                 spans.extend(highlighted.spans);
                 let mut preview_item = ListItem::new(Line::from(spans));
                 if is_selected {
@@ -779,6 +784,15 @@ fn style_with_bg(style: Style, bg: Option<Color>) -> Style {
         Some(bg) => style.bg(bg),
         None => style,
     }
+}
+
+fn preview_content_style(selected: bool) -> Style {
+    let fg = if selected {
+        SELECTED_PREVIEW_CONTENT_FG
+    } else {
+        PREVIEW_CONTENT_FG
+    };
+    Style::default().fg(fg)
 }
 
 /// Styled header line used by search results and recent sessions. It keeps
@@ -974,10 +988,11 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         };
         let max_content = available_width.saturating_sub(PREVIEW_PREFIX_LEN);
         let preview_content = truncate_to_width(&session.summary, max_content);
-        let preview_style = Style::default().fg(DIM_FG);
+        let prefix_style = Style::default().fg(DIM_FG);
+        let content_style = preview_content_style(is_selected);
         let mut preview_item = ListItem::new(Line::from(vec![
-            Span::styled(preview_prefix, preview_style),
-            Span::styled(preview_content, preview_style),
+            Span::styled(preview_prefix, prefix_style),
+            Span::styled(preview_content, content_style),
         ]));
         if is_selected {
             preview_item = preview_item.style(Style::default().bg(SELECTION_BG));
@@ -3241,10 +3256,9 @@ mod tests {
         assert_selected_caret_layout(terminal.backend().buffer(), "recent session");
     }
 
-    /// Pins the two-colour selection contract: purple `SELECTION_BG` across
-    /// the preview row (header + preview share the same backdrop), and
-    /// `DIM_FG` fg on the preview — so selected rows render as "yellow
-    /// header + dim preview on purple", not a monochrome block.
+    /// Pins the selection contract: purple `SELECTION_BG` across the preview
+    /// row (header + preview share the same backdrop), while the role prefix
+    /// stays `DIM_FG` so selected rows keep a two-part hierarchy.
     fn assert_selected_preview_row_has_selection_bg(buffer: &ratatui::buffer::Buffer, label: &str) {
         let preview_y = find_selected_header_y(buffer, label) + 1;
 
@@ -3260,7 +3274,7 @@ mod tests {
             let cell = buffer.cell((x, preview_y)).unwrap();
             assert_eq!(
                 cell.fg, DIM_FG,
-                "{} preview col {} must use DIM_FG (theme.dim), got {:?}",
+                "{} preview prefix col {} must use DIM_FG (theme.dim), got {:?}",
                 label, x, cell.fg
             );
         }
@@ -3312,6 +3326,13 @@ mod tests {
             .expect("Render should not panic");
 
         assert_selected_preview_row_has_selection_bg(terminal.backend().buffer(), "recent session");
+
+        let buffer = terminal.backend().buffer();
+        let (content_x, content_y) = find_cell_for_text(buffer, 120, 24, "triangle layout test")
+            .expect("recent preview content should render");
+        let content_cell = buffer.cell((content_x, content_y)).unwrap();
+        assert_eq!(content_cell.fg, SELECTED_PREVIEW_CONTENT_FG);
+        assert_eq!(content_cell.bg, SELECTION_BG);
     }
 
     #[test]
