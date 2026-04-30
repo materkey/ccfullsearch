@@ -1,4 +1,5 @@
 use crate::session;
+use std::borrow::Cow;
 
 /// Role of a message in the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,19 +347,19 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
 
 /// Full mode: all block types, newline-joined (matches extract_message_content behavior).
 fn render_full(blocks: &[ContentBlock]) -> String {
-    let parts: Vec<&str> = blocks
+    let parts: Vec<String> = blocks
         .iter()
         .map(|b| match b {
-            ContentBlock::Text(t) => t.as_str(),
+            ContentBlock::Text(t) => normalize_command_markup(t).into_owned(),
             ContentBlock::ToolUse { name, input } => {
                 if input.is_empty() {
-                    name.as_str()
+                    name.clone()
                 } else {
-                    input.as_str()
+                    input.clone()
                 }
             }
-            ContentBlock::ToolResult(c) => c.as_str(),
-            ContentBlock::Thinking(t) => t.as_str(),
+            ContentBlock::ToolResult(c) => c.clone(),
+            ContentBlock::Thinking(t) => t.clone(),
         })
         .collect();
     parts.join("\n")
@@ -366,20 +367,17 @@ fn render_full(blocks: &[ContentBlock]) -> String {
 
 /// TextOnly mode: text blocks only, space-joined (matches extract_text_content behavior).
 fn render_text_only(blocks: &[ContentBlock]) -> String {
-    let parts: Vec<&str> = blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text(t) => {
-                let trimmed = t.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            }
-            _ => None,
-        })
-        .collect();
+    let mut parts = Vec::new();
+    for block in blocks {
+        let ContentBlock::Text(text) = block else {
+            continue;
+        };
+        let normalized = normalize_command_markup(text);
+        let trimmed = normalized.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
     parts.join(" ")
 }
 
@@ -389,7 +387,7 @@ fn render_preview(blocks: &[ContentBlock], max_chars: usize) -> String {
     let parts: Vec<String> = blocks
         .iter()
         .map(|b| match b {
-            ContentBlock::Text(t) => t.clone(),
+            ContentBlock::Text(t) => normalize_command_markup(t).into_owned(),
             ContentBlock::ToolUse { name, .. } => format!("[tool: {}]", name),
             ContentBlock::ToolResult(_) => "[tool_result]".to_string(),
             ContentBlock::Thinking(t) => t.clone(),
@@ -428,6 +426,85 @@ fn strip_xml_tags(text: &str) -> String {
         }
     }
     result
+}
+
+const COMMAND_NAME_OPEN: &str = "<command-name>";
+const COMMAND_NAME_CLOSE: &str = "</command-name>";
+const COMMAND_MESSAGE_OPEN: &str = "<command-message>";
+const COMMAND_MESSAGE_CLOSE: &str = "</command-message>";
+
+fn normalize_command_markup(text: &str) -> Cow<'_, str> {
+    if !text.contains("<command-") {
+        return Cow::Borrowed(text);
+    }
+
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some((tag_start, tag_kind)) = next_command_tag(rest) {
+        output.push_str(&rest[..tag_start]);
+        rest = &rest[tag_start..];
+
+        match tag_kind {
+            CommandTag::Message => {
+                let Some(close_start) = rest.find(COMMAND_MESSAGE_CLOSE) else {
+                    output.push_str(rest);
+                    return Cow::Owned(output);
+                };
+                let value = &rest[COMMAND_MESSAGE_OPEN.len()..close_start];
+                output.push_str(&slash_command(value));
+                rest = &rest[close_start + COMMAND_MESSAGE_CLOSE.len()..];
+            }
+            CommandTag::Name => {
+                let Some(close_start) = rest.find(COMMAND_NAME_CLOSE) else {
+                    output.push_str(rest);
+                    return Cow::Owned(output);
+                };
+                let after_name_start = close_start + COMMAND_NAME_CLOSE.len();
+                let after_name = &rest[after_name_start..];
+
+                if after_name.trim_start().starts_with(COMMAND_MESSAGE_OPEN) {
+                    rest = after_name.trim_start();
+                    continue;
+                }
+
+                let value = &rest[COMMAND_NAME_OPEN.len()..close_start];
+                output.push_str(&slash_command(value));
+                rest = after_name;
+            }
+        }
+    }
+
+    output.push_str(rest);
+    Cow::Owned(output)
+}
+
+#[derive(Clone, Copy)]
+enum CommandTag {
+    Name,
+    Message,
+}
+
+fn next_command_tag(text: &str) -> Option<(usize, CommandTag)> {
+    match (
+        text.find(COMMAND_NAME_OPEN),
+        text.find(COMMAND_MESSAGE_OPEN),
+    ) {
+        (Some(name), Some(message)) if name <= message => Some((name, CommandTag::Name)),
+        (Some(_), Some(message)) => Some((message, CommandTag::Message)),
+        (Some(name), None) => Some((name, CommandTag::Name)),
+        (None, Some(message)) => Some((message, CommandTag::Message)),
+        (None, None) => None,
+    }
+}
+
+fn slash_command(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
 }
 
 /// Parse a raw JSON content value and render it as text-only (TextOnly mode).
@@ -710,6 +787,73 @@ mod tests {
         ];
         let result = SessionRecord::render_content(&blocks, &ContentMode::TextOnly);
         assert_eq!(result, "spaced end");
+    }
+
+    #[test]
+    fn test_render_command_message_as_slash_command() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>revdiff:revdiff</command-message>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Full),
+            "/revdiff:revdiff"
+        );
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/revdiff:revdiff"
+        );
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 200 }),
+            "/revdiff:revdiff"
+        );
+    }
+
+    #[test]
+    fn test_render_command_message_preserves_existing_slash() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>/login</command-message>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/login"
+        );
+    }
+
+    #[test]
+    fn test_render_command_name_suppressed_when_message_follows() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-name>revdiff</command-name><command-message>revdiff:revdiff</command-message>"
+                .into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/revdiff:revdiff"
+        );
+    }
+
+    #[test]
+    fn test_render_command_name_only_as_slash_command() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-name>status</command-name>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/status"
+        );
+    }
+
+    #[test]
+    fn test_render_malformed_command_tag_unchanged() {
+        let blocks = vec![ContentBlock::Text("<command-message>revdiff".into())];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Full),
+            "<command-message>revdiff"
+        );
     }
 
     #[test]

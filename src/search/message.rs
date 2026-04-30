@@ -237,6 +237,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_command_message_as_slash_command() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>revdiff</command-name><command-message>revdiff:revdiff</command-message>"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        let msg = Message::from_jsonl(jsonl, 1).expect("Should parse command message");
+
+        assert_eq!(msg.content, "/revdiff:revdiff");
+        assert_eq!(msg.text_content, "/revdiff:revdiff");
+    }
+
+    #[test]
     fn test_parse_uuid_and_parent_uuid() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z","uuid":"uuid-111","parentUuid":"uuid-000"}"#;
 
