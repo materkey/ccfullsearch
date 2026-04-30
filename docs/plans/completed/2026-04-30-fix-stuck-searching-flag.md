@@ -286,10 +286,10 @@ The `thread::spawn(move || while let Ok(...) = query_rx.recv() { ... })` block i
 **Files:**
 - Modify: `CLAUDE.md`
 
-- [ ] update the "Key data flow" section #1 (Search) to describe spawn-per-request + cancellation instead of debounced async search via shared worker
-- [ ] note `SearchHandle` and the derived `is_searching()` predicate
-- [ ] move this plan to `docs/plans/completed/` (`mkdir -p docs/plans/completed && git mv docs/plans/2026-04-30-fix-stuck-searching-flag.md docs/plans/completed/`)
-- [ ] run tests — `cargo test` (no Rust code changed, but a final clean run guards against accidental edits) and `cargo fmt --check`
+- [x] update the "Key data flow" section #1 (Search) to describe spawn-per-request + cancellation instead of debounced async search via shared worker
+- [x] note `SearchHandle` and the derived `is_searching()` predicate
+- [x] move this plan to `docs/plans/completed/` (`mkdir -p docs/plans/completed && git mv docs/plans/2026-04-30-fix-stuck-searching-flag.md docs/plans/completed/`)
+- [x] run tests — `cargo test` (no Rust code changed, but a final clean run guards against accidental edits) and `cargo fmt --check`
 
 ## Post-Completion
 
