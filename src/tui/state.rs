@@ -3569,4 +3569,117 @@ mod tests {
             "is_searching() must be false after the latest result lands"
         );
     }
+
+    // Regression for the original stuck-`searching` bug, expressed as a
+    // synthetic channel-injection test. Two `start_search` calls produce
+    // seq=1 (cancelled) and seq=2 (current). When both BackgroundSearchResults
+    // arrive on the channel — even with the stale seq=1 first — `tick()` must
+    // drain both, keep only seq=2's data, and converge on
+    // `is_searching() == false`. The earlier code's secondary filter could
+    // discard seq=2 (the matching one) on a query/paths/use_regex mismatch
+    // and never clear the stored `searching: bool`; this test pins the
+    // contract that seq is the only discriminator and `current` is the
+    // single source of truth.
+    #[test]
+    fn back_to_back_start_search_stale_then_fresh_clears_is_searching() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = App::new(vec![dir.path().to_str().unwrap().to_string()]);
+        app.input.set_text("query");
+
+        // Two requests: the first is cancelled by the second; `current.seq`
+        // is now 2. `start_search` also spawns real worker threads; with an
+        // empty corpus they produce empty `Ok` results that may land on the
+        // channel ahead of our injected ones. Drain those first so the
+        // assertions below observe only the synthetic results we control.
+        app.start_search();
+        app.start_search();
+        let current_seq = app
+            .search
+            .current
+            .as_ref()
+            .expect("second start_search installs a fresh handle")
+            .seq;
+        assert_eq!(current_seq, 2);
+        let drain_deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < drain_deadline {
+            if app.search.search_rx.try_recv().is_err() {
+                break;
+            }
+        }
+
+        // Inject the stale seq=1 result first (must be silently dropped),
+        // then the fresh seq=2 result that carries the only data we expect
+        // to see materialise in `groups`.
+        let stale_match = RipgrepMatch {
+            file_path: "/sessions/stale.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "stale".to_string(),
+                role: "user".to_string(),
+                content: "query".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+        let fresh_match = RipgrepMatch {
+            file_path: "/sessions/fresh.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "fresh".to_string(),
+                role: "user".to_string(),
+                content: "query".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.search
+            .result_tx
+            .send(BackgroundSearchResult {
+                seq: 1,
+                query: "query".to_string(),
+                paths: app.search_paths.clone(),
+                use_regex: false,
+                result: Ok(crate::search::SearchResult {
+                    matches: vec![stale_match],
+                    truncated: false,
+                }),
+            })
+            .expect("send stale seq=1 result");
+        app.search
+            .result_tx
+            .send(BackgroundSearchResult {
+                seq: 2,
+                query: "query".to_string(),
+                paths: app.search_paths.clone(),
+                use_regex: false,
+                result: Ok(crate::search::SearchResult {
+                    matches: vec![fresh_match],
+                    truncated: false,
+                }),
+            })
+            .expect("send fresh seq=2 result");
+
+        app.tick();
+
+        assert!(
+            !app.is_searching(),
+            "is_searching() must be false after the matching seq=2 result lands"
+        );
+        assert!(
+            app.search.current.is_none(),
+            "current must be cleared when seq matches"
+        );
+        assert_eq!(
+            app.search.groups.len(),
+            1,
+            "only the seq=2 result must populate groups"
+        );
+        assert_eq!(
+            app.search.groups[0].session_id, "fresh",
+            "groups must contain only the fresh seq=2 data, not the stale seq=1 data"
+        );
+    }
 }

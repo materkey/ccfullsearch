@@ -257,19 +257,19 @@ The `thread::spawn(move || while let Ok(...) = query_rx.recv() { ... })` block i
 - Modify: `src/tui/state.rs` (test module)
 - Modify: `src/tui/search_mode.rs` (test module)
 
-- [ ] replace direct mutations of `app.search.searching = true` with `app.search.current = Some(SearchHandle { seq: <appropriate>, cancel: Arc::new(AtomicBool::new(false)) })` at:
-  - `src/tui/state.rs:1701` (test setup)
-  - `src/tui/state.rs:2058` (test setup)
-  - `src/tui/search_mode.rs:412` (test setup)
-  - `src/tui/search_mode.rs:434` (test setup)
-  - `src/tui/search_mode.rs:455` (test setup)
-- [ ] replace assertions on `app.search.searching` with `app.is_searching()` (or `app.search.current.is_some()` inside the same module) at:
-  - `src/tui/state.rs:1718`
-  - `src/tui/state.rs:2091`
-  - `src/tui/search_mode.rs:412` (post-condition assertion paired with the setup line above)
-- [ ] write a concrete regression test reproducing the original stuck-flag failure mode against the new model: in a unit test, override the result channel to a test channel, call `app.start_search()` twice (the second cancels the first via `prev.cancel.store(true)`), inject two `BackgroundSearchResult`s onto the channel — one with `seq=1`, one with `seq=2` — call `app.tick()` once, then assert `app.is_searching() == false` *and* that only the seq=2 result's data populated `app.search.groups`
-- [ ] grep across the codebase: `rg 'app\.search\.searching|search_tx\b|\bsearching:\s*bool'` should return zero non-test hits and zero references in renderer/state code
-- [ ] run tests — `cargo test` must pass
+- [x] replace direct mutations of `app.search.searching = true` with `app.search.current = Some(SearchHandle { seq: <appropriate>, cancel: Arc::new(AtomicBool::new(false)) })` at:
+  - `src/tui/state.rs:1701` (test setup) — already migrated in Task 2
+  - `src/tui/state.rs:2058` (test setup) — verified zero remaining hits at this site (cursor-only test, no `searching` mutation needed)
+  - `src/tui/search_mode.rs:412` (test setup) — already migrated in Task 2 (now reads `assert!(app.is_searching())`)
+  - `src/tui/search_mode.rs:434` (test setup) — already migrated in Task 2 (`test_stale_search_result_ignored_on_seq_mismatch` installs `SearchHandle`)
+  - `src/tui/search_mode.rs:455` (test setup) — already migrated in Task 2 (covered by the rewritten stale-result test above)
+- [x] replace assertions on `app.search.searching` with `app.is_searching()` (or `app.search.current.is_some()` inside the same module) at:
+  - `src/tui/state.rs:1718` — already migrated in Task 2 (asserts `search_truncated`, not `searching`; no change needed)
+  - `src/tui/state.rs:2091` — already migrated in Task 2 (cursor-only test, no `searching` assertion)
+  - `src/tui/search_mode.rs:412` (post-condition assertion paired with the setup line above) — already migrated in Task 2 (now `assert!(app.is_searching())`)
+- [x] write a concrete regression test reproducing the original stuck-flag failure mode against the new model: in a unit test, override the result channel to a test channel, call `app.start_search()` twice (the second cancels the first via `prev.cancel.store(true)`), inject two `BackgroundSearchResult`s onto the channel — one with `seq=1`, one with `seq=2` — call `app.tick()` once, then assert `app.is_searching() == false` *and* that only the seq=2 result's data populated `app.search.groups`
+- [x] grep across the codebase: `rg 'app\.search\.searching|search_tx\b|\bsearching:\s*bool'` should return zero non-test hits and zero references in renderer/state code — verified: only doc-comment mentions and the `set_searching_for_test` helper (which takes `searching: bool` as an argument name) remain
+- [x] run tests — `cargo test` must pass
 
 ### Task 5: Verify acceptance criteria
 
