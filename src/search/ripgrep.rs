@@ -240,7 +240,7 @@ fn search_single_path(
     let stderr_handle = thread::spawn(move || {
         let mut keep: Vec<u8> = Vec::new();
         let mut discard = [0u8; 8 * 1024];
-        let mut reader = std::io::BufReader::new(stderr);
+        let mut reader = BufReader::new(stderr);
         let mut truncated = false;
         // First, fill `keep` up to the cap.
         while keep.len() < STDERR_KEEP_BYTES {
