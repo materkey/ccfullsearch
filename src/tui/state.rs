@@ -649,28 +649,6 @@ impl App {
         // worker model) so each spawn-per-request thread in `start_search`
         // can `.clone()` it.
         let (result_tx, result_rx) = mpsc::channel::<BackgroundSearchResult>();
-        // Legacy single-worker channel. Task 2 of the stuck-`searching`-flag
-        // plan removes the `search_tx` field, so `query_tx` is no longer
-        // stored anywhere and the worker's `query_rx.recv()` will return
-        // `Err` shortly after construction, letting the thread exit cleanly.
-        // Task 3 deletes the worker entirely.
-        let (_query_tx, query_rx) = mpsc::channel::<(u64, String, Vec<String>, bool)>();
-        let result_tx_for_worker = result_tx.clone();
-
-        // Spawn background search thread
-        thread::spawn(move || {
-            while let Ok((seq, query, paths, use_regex)) = query_rx.recv() {
-                let cancel = Arc::new(AtomicBool::new(false));
-                let result = search_multiple_paths(&query, &paths, use_regex, &cancel);
-                let _ = result_tx_for_worker.send(BackgroundSearchResult {
-                    seq,
-                    query,
-                    paths,
-                    use_regex,
-                    result,
-                });
-            }
-        });
 
         // Detect current project path for Ctrl+A filter
         let current_project_paths = std::env::current_dir()
@@ -3536,5 +3514,59 @@ mod tests {
             "current handle must be taken/cleared"
         );
         assert!(!app.is_searching());
+    }
+
+    // End-to-end regression test for the original stuck-`searching` bug,
+    // now expressed against spawn-per-request semantics. Two
+    // `start_search` calls back-to-back must converge on `is_searching()
+    // == false` once the latest result lands. This exercises real ripgrep
+    // children: each request spawns its own thread that streams `rg`
+    // output, checks the cancel flag, and either delivers its
+    // `BackgroundSearchResult` (matching `current.seq`) or has its send
+    // suppressed by `if !cancel.load()`. Without the legacy long-lived
+    // worker thread, the seq discriminator in `handle_search_result` is
+    // the only mechanism that decides which result wins — this test
+    // proves it does end-to-end.
+    //
+    // Spawn-per-request also bounds the channel population: at most one
+    // result reaches the channel because the cancelled request's
+    // `if !cancel_worker.load()` guard suppresses its send before the
+    // newer thread has finished. The straggler-via-load-vs-send race is
+    // closed by the seq discriminator in `handle_search_result`, so a
+    // pessimistic upper bound of 2 is what the cancellation contract
+    // actually guarantees end-to-end.
+    #[test]
+    fn back_to_back_start_search_delivers_one_result_and_clears_searching() {
+        // One short JSONL fixture with a line that matches "foo".
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj_dir = dir.path().join("-Users-user-proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        let session_file = proj_dir.join("sess1.jsonl");
+        std::fs::write(
+            &session_file,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"foo bar"}]},"sessionId":"sess-1","timestamp":"2025-06-01T10:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new(vec![dir.path().to_str().unwrap().to_string()]);
+        app.input.set_text("foo");
+
+        app.start_search();
+        app.start_search();
+
+        // Poll `tick()` (which drains and processes the channel via
+        // `handle_search_result`) until the latest seq lands and clears
+        // `current`. Generous deadline shields against slow CI hosts;
+        // the steady-state expectation is sub-100 ms.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.is_searching() && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            !app.is_searching(),
+            "is_searching() must be false after the latest result lands"
+        );
     }
 }

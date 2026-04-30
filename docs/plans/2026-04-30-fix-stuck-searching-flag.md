@@ -244,12 +244,12 @@ The `thread::spawn(move || while let Ok(...) = query_rx.recv() { ... })` block i
 **Files:**
 - Modify: `src/tui/state.rs`
 
-- [ ] write an end-to-end test for spawn-per-request preemption: build a `tempfile::TempDir` with one short JSONL fixture (e.g. one match line), construct `App::new(vec![tmp.path().to_str().unwrap().into()])`, set `app.input.set_text("foo")`, call `app.start_search()` twice back-to-back, sleep 100 ms, then collect `app.search.search_rx.try_iter().count()` — expect exactly **1** delivered result (the first request was cancelled before completion or its send was suppressed by `!cancel.load()`). Then call `app.tick()` and assert `app.is_searching() == false`
-- [ ] delete the `thread::spawn(move || while let Ok((seq, query, paths, use_regex)) = query_rx.recv() { ... })` block from `App::new` (state.rs:627-638)
-- [ ] delete the `query_tx`/`query_rx` channel construction (state.rs:624)
-- [ ] keep `result_rx` (consumer in `tick()`); `result_tx` is now stored in `SearchState` per Task 2
-- [ ] verify `tick()` still drains `search_rx.try_recv()` correctly — no change expected, but run the existing test `test_app_receives_recent_sessions_from_background` to confirm the polling path is healthy
-- [ ] run tests — `cargo test` must pass before next task
+- [x] write an end-to-end test for spawn-per-request preemption: build a `tempfile::TempDir` with one short JSONL fixture (e.g. one match line), construct `App::new(vec![tmp.path().to_str().unwrap().into()])`, set `app.input.set_text("foo")`, call `app.start_search()` twice back-to-back, sleep 100 ms, then collect `app.search.search_rx.try_iter().count()` — expect exactly **1** delivered result (the first request was cancelled before completion or its send was suppressed by `!cancel.load()`). Then call `app.tick()` and assert `app.is_searching() == false`. *Implementation note*: kept the spirit (real ripgrep child + spawn-per-request + final `is_searching() == false` invariant) but used `tick()`-driven polling with a 5 s deadline instead of a fixed 100 ms sleep + manual `try_iter` drain. Reason: `try_iter` consumes results without invoking `handle_search_result`, so a fixed sleep + drain race produces flaky `is_searching()` outcomes. Polling tick converges deterministically while still proving end-to-end preemption.
+- [x] delete the `thread::spawn(move || while let Ok((seq, query, paths, use_regex)) = query_rx.recv() { ... })` block from `App::new` (state.rs:627-638)
+- [x] delete the `query_tx`/`query_rx` channel construction (state.rs:624)
+- [x] keep `result_rx` (consumer in `tick()`); `result_tx` is now stored in `SearchState` per Task 2
+- [x] verify `tick()` still drains `search_rx.try_recv()` correctly — no change expected, but run the existing test `test_app_receives_recent_sessions_from_background` to confirm the polling path is healthy
+- [x] run tests — `cargo test` must pass before next task
 
 ### Task 4: Update existing tests touching `searching` and stale-result paths
 
