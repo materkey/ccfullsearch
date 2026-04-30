@@ -155,6 +155,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "filetime",
+ "libc",
  "predicates",
  "ratatui",
  "rayon",

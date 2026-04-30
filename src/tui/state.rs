@@ -491,7 +491,7 @@ pub enum AutomationFilter {
     Auto,
 }
 
-/// Result from background search thread.
+/// Result from a per-request search thread.
 ///
 /// With `SearchHandle` as the source of truth, secondary validation by
 /// query/paths/use_regex was redundant — newer requests cancel older ones
@@ -516,7 +516,7 @@ pub(crate) struct SearchHandle {
     pub cancel: Arc<AtomicBool>,
 }
 
-/// Search-related state: results, cursors, background channel.
+/// Search-related state: results, cursors, per-request channel.
 pub struct SearchState {
     /// All search result groups (unfiltered)
     pub(crate) all_groups: Vec<SessionGroup>,
@@ -534,7 +534,7 @@ pub struct SearchState {
     pub error: Option<String>,
     /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
     pub latest_chains: HashMap<String, HashSet<String>>,
-    /// Channel to receive search results from background thread
+    /// Channel to receive search results from per-request search threads
     pub(crate) search_rx: Receiver<BackgroundSearchResult>,
     /// Sender end of the result channel — cloned into each spawned per-request
     /// thread so it can deliver its result back to the UI.
@@ -1401,7 +1401,8 @@ impl App {
     pub(crate) fn start_search(&mut self) {
         self.search.search_seq += 1;
         let seq = self.search.search_seq;
-        self.last_query = self.input.text().to_string();
+        let query = self.input.text().to_string();
+        self.last_query = query.clone();
         self.last_regex_mode = self.regex_mode;
         self.last_search_paths = self.search_paths.clone();
         self.search.search_truncated = false;
@@ -1413,7 +1414,6 @@ impl App {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel.clone();
         let tx = self.search.result_tx.clone();
-        let query = self.input.text().to_string();
         let paths = self.search_paths.clone();
         let use_regex = self.regex_mode;
 
@@ -1441,8 +1441,9 @@ impl App {
     /// Test-only helper to install or clear an in-flight search handle.
     /// Used by external integration tests (e.g. render snapshots) to
     /// exercise the "Searching…" status without spawning a real thread.
-    /// `SearchHandle` itself is `pub(crate)`, so external callers cannot
-    /// construct one directly — this helper bridges that gap.
+    /// `SearchHandle` itself is `pub(crate)`, so external (integration
+    /// test) callers cannot construct one directly — this helper bridges
+    /// that gap.
     #[doc(hidden)]
     pub fn set_searching_for_test(&mut self, searching: bool) {
         if searching {
@@ -3402,6 +3403,42 @@ mod tests {
         assert_eq!(app.search.groups[0].session_id, "match");
     }
 
+    // The Err arm of `handle_search_result` must clear `current` (so
+    // `is_searching()` returns false) and store the error message. A
+    // regression that re-introduced an early-return in this arm — for
+    // example checking the error before the seq match and bailing — could
+    // strand `current` at `Some(_)` and resurface the original
+    // stuck-`searching` behaviour. Pin both invariants here.
+    #[test]
+    fn handle_search_result_err_clears_current_and_stores_error() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.search_seq = 4;
+        app.search.current = Some(SearchHandle {
+            seq: 4,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 4,
+            query: "boom".to_string(),
+            result: Err("ripgrep search failed: exit status 2".to_string()),
+        });
+
+        assert!(
+            app.search.current.is_none(),
+            "Err with matching seq must clear current"
+        );
+        assert!(
+            !app.is_searching(),
+            "is_searching must be false after Err lands"
+        );
+        assert_eq!(
+            app.search.error.as_deref(),
+            Some("ripgrep search failed: exit status 2"),
+            "error must be surfaced for the renderer"
+        );
+    }
+
     // `handle_search_result` must preserve the AI-rank gate at state.rs:1130
     // verbatim: while a rank is applied (`ranked_count = Some(_)`),
     // `apply_groups_filter` must NOT run. This complements the existing
@@ -3579,7 +3616,13 @@ mod tests {
         // sync `search_seq` so any future `start_search` continues
         // monotonically. We rebuild the handle in place to keep its
         // `cancel` flag tied to the new seq number we are about to inject
-        // results for.
+        // results for. Before swapping the handle out, also cancel the
+        // second real worker explicitly: `start_search` only cancels the
+        // *previous* request, so worker 2's cancel flag is otherwise still
+        // `false`. Without this it can win the load-vs-send race and push
+        // a real seq=2 result onto the channel; the seq-mismatch guard in
+        // `handle_search_result` would still drop it, but cancelling here
+        // makes the test deterministic by suppressing the send entirely.
         app.search.search_seq = 100;
         let prev_cancel = app
             .search
@@ -3587,9 +3630,10 @@ mod tests {
             .take()
             .map(|h| h.cancel)
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        prev_cancel.store(true, Ordering::Relaxed);
         app.search.current = Some(SearchHandle {
             seq: 100,
-            cancel: prev_cancel,
+            cancel: Arc::new(AtomicBool::new(false)),
         });
 
         // Inject the stale seq=99 result first (must be silently dropped),

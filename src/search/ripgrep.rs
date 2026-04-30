@@ -149,7 +149,10 @@ pub fn search_multiple_paths(
         return Err("cancelled".into());
     }
 
-    let _ = build_regex_matcher(query, use_regex)?;
+    // Build the regex matcher once and reuse it across every path. Returns
+    // a fast `Invalid regex` error before spawning ripgrep when `use_regex`
+    // is true and `query` doesn't compile.
+    let regex_matcher = build_regex_matcher(query, use_regex)?;
 
     let mut all_results = Vec::new();
     let mut any_truncated = false;
@@ -167,7 +170,13 @@ pub fn search_multiple_paths(
             continue;
         }
 
-        let (results, truncated) = search_single_path(query, search_path, use_regex, cancel)?;
+        let (results, truncated) = search_single_path(
+            query,
+            search_path,
+            use_regex,
+            regex_matcher.as_ref(),
+            cancel,
+        )?;
         all_results.extend(results);
         any_truncated |= truncated;
     }
@@ -180,6 +189,13 @@ pub fn search_multiple_paths(
 
 const MAX_COUNT_PER_FILE: usize = 1000;
 
+/// Maximum bytes of `rg` stderr we keep in memory for the failure-message
+/// diagnostic. Beyond this we keep draining the pipe (so the child does not
+/// block on a full pipe buffer) but discard the additional bytes. 64 KiB is
+/// roughly the Linux pipe buffer size and far more than typical `rg`
+/// warning output; truncated diagnostics are noted explicitly in the error.
+const STDERR_KEEP_BYTES: usize = 64 * 1024;
+
 /// Search a single path.
 /// Returns (matches, truncated) where truncated is true if any file hit the per-file match limit.
 ///
@@ -191,6 +207,7 @@ fn search_single_path(
     query: &str,
     search_path: &str,
     use_regex: bool,
+    regex_matcher: Option<&regex::Regex>,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(Vec<RipgrepMatch>, bool), String> {
     let args = build_ripgrep_args(query, search_path, use_regex);
@@ -211,17 +228,39 @@ fn search_single_path(
     // Drain stderr on a dedicated thread so a chatty `rg` (warnings about
     // unreadable files, regex diagnostics, etc.) cannot fill the pipe buffer
     // (~64 KiB on Linux) and block the child while we are stuck waiting for
-    // stdout / `child.wait()`. The captured bytes are also surfaced in any
-    // failure message, restoring the diagnostics that the previous
-    // `Command::output()` path included.
+    // stdout / `child.wait()`. We cap the *retained* bytes at
+    // `STDERR_KEEP_BYTES` (~64 KiB) — beyond that we keep reading (and
+    // discarding) so the pipe never fills, but stop appending. The
+    // captured prefix is surfaced in any failure message, restoring the
+    // diagnostics that the previous `Command::output()` path included.
     let stderr = child
         .stderr
         .take()
         .ok_or_else(|| "ripgrep stderr was not captured".to_string())?;
     let stderr_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = std::io::BufReader::new(stderr).read_to_end(&mut buf);
-        buf
+        let mut keep: Vec<u8> = Vec::new();
+        let mut discard = [0u8; 8 * 1024];
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut truncated = false;
+        // First, fill `keep` up to the cap.
+        while keep.len() < STDERR_KEEP_BYTES {
+            let remaining = STDERR_KEEP_BYTES - keep.len();
+            let buf_len = discard.len().min(remaining);
+            match reader.read(&mut discard[..buf_len]) {
+                Ok(0) => return (keep, false),
+                Ok(n) => keep.extend_from_slice(&discard[..n]),
+                Err(_) => return (keep, false),
+            }
+        }
+        // Then, drain (and discard) anything else so the pipe never blocks.
+        loop {
+            match reader.read(&mut discard) {
+                Ok(0) => break,
+                Ok(_) => truncated = true,
+                Err(_) => break,
+            }
+        }
+        (keep, truncated)
     });
 
     let mut results = Vec::new();
@@ -229,7 +268,6 @@ fn search_single_path(
     let mut file_match_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
-    let regex_matcher = build_regex_matcher(query, use_regex)?;
     let query_lower = query.to_lowercase();
     let mut resolve_cache: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -271,7 +309,7 @@ fn search_single_path(
             // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
             // This filters out false positives where query matched file path or metadata
             if let Some(ref msg) = m.message {
-                let matches = if let Some(ref re) = regex_matcher {
+                let matches = if let Some(re) = regex_matcher {
                     re.is_match(&msg.content)
                 } else {
                     msg.content.to_lowercase().contains(&query_lower)
@@ -290,18 +328,26 @@ fn search_single_path(
     // Wait for the stderr drainer to finish; the child has exited so the
     // pipe is closed and `read_to_end` returns. Failures here only mean the
     // thread panicked, which is not actionable for the caller.
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let (stderr_bytes, stderr_truncated) = stderr_handle.join().unwrap_or_default();
 
     // ripgrep exit code 1 means "no matches" — that is success for our purposes.
     if !status.success() && status.code() != Some(1) {
         let stderr_text = String::from_utf8_lossy(&stderr_bytes);
         let trimmed = stderr_text.trim();
+        let suffix = if stderr_truncated {
+            " [stderr truncated]"
+        } else {
+            ""
+        };
         if trimmed.is_empty() {
-            return Err(format!("ripgrep search failed: exit status {}", status));
+            return Err(format!(
+                "ripgrep search failed: exit status {}{}",
+                status, suffix
+            ));
         }
         return Err(format!(
-            "ripgrep search failed: exit status {}: {}",
-            status, trimmed
+            "ripgrep search failed: exit status {}: {}{}",
+            status, trimmed, suffix
         ));
     }
 
@@ -1123,9 +1169,14 @@ mod tests {
         create_test_session(&temp_dir, "big_session.jsonl", &content);
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let (_, truncated) =
-            search_single_path("findme", temp_dir.path().to_str().unwrap(), false, &cancel)
-                .expect("Search should succeed");
+        let (_, truncated) = search_single_path(
+            "findme",
+            temp_dir.path().to_str().unwrap(),
+            false,
+            None,
+            &cancel,
+        )
+        .expect("Search should succeed");
 
         assert!(
             truncated,
@@ -1140,9 +1191,14 @@ mod tests {
         create_test_session(&temp_dir, "session.jsonl", session_content);
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let (_, truncated) =
-            search_single_path("Hello", temp_dir.path().to_str().unwrap(), false, &cancel)
-                .expect("Search should succeed");
+        let (_, truncated) = search_single_path(
+            "Hello",
+            temp_dir.path().to_str().unwrap(),
+            false,
+            None,
+            &cancel,
+        )
+        .expect("Search should succeed");
 
         assert!(
             !truncated,
@@ -1276,19 +1332,55 @@ mod tests {
         );
     }
 
+    /// Probe the actual pipe buffer size on Linux via `F_GETPIPE_SZ` so
+    /// the chatty-stderr test can scale its fixture accordingly. On
+    /// non-Linux unix (macOS, BSD) and on probe failures the canonical
+    /// 64 KiB Linux default is returned.
+    #[cfg(unix)]
+    fn probe_pipe_buffer_bytes() -> usize {
+        const DEFAULT_PIPE_BUF: usize = 64 * 1024;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+            // SAFETY: `pipe2` writes two valid file descriptors into `fds`
+            // on success. We immediately wrap them in `OwnedFd` so they
+            // are closed on drop even if `fcntl` fails.
+            let mut fds: [libc::c_int; 2] = [0; 2];
+            let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+            if rc != 0 {
+                return DEFAULT_PIPE_BUF;
+            }
+            let _read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+            let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            let size = unsafe { libc::fcntl(write.as_raw_fd(), libc::F_GETPIPE_SZ) };
+            if size > 0 {
+                size as usize
+            } else {
+                DEFAULT_PIPE_BUF
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            DEFAULT_PIPE_BUF
+        }
+    }
+
     #[test]
     fn test_search_does_not_deadlock_on_chatty_stderr() {
         // Regression for a stderr-deadlock: when `rg` produces enough
-        // stderr output to fill the pipe buffer (~64 KiB on Linux), it
-        // blocks on `write()` until something drains the pipe. The wrapper
-        // must drain stderr concurrently with stdout, otherwise the child
-        // hangs forever and `child.wait()` never returns.
+        // stderr output to fill the pipe buffer, it blocks on `write()`
+        // until something drains the pipe. The wrapper must drain stderr
+        // concurrently with stdout, otherwise the child hangs forever and
+        // `child.wait()` never returns.
         //
         // We trigger chatty stderr by creating many `*.jsonl` files with
         // mode `0o000` so the user (running this test) cannot read them.
         // `rg` prints "Permission denied (os error 13)" once per file.
-        // Each line is ~80 bytes; 1500 files easily clears 64 KiB and
-        // would deadlock the old code.
+        // The number of files is sized off the *actual* pipe buffer
+        // (probed via `F_GETPIPE_SZ` on Linux, falling back to the
+        // canonical 64 KiB default on macOS/BSD/probe failure) so the
+        // fixture deterministically clears the buffer even on hosts with
+        // larger pipes (some BSDs configure 1 MiB).
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1316,13 +1408,18 @@ mod tests {
                 return;
             }
 
-            // Long filenames make each stderr line longer, so we hit the
-            // pipe buffer with fewer files. ~80 bytes per line × 1500
-            // files ≈ 120 KiB of stderr — well past the 64 KiB
-            // Linux/macOS pipe buffer.
-            for i in 0..1500 {
+            // Each `rg` "Permission denied" line is roughly 80 bytes
+            // (path + boilerplate). Write ~2x the actual pipe buffer so
+            // we are guaranteed to exceed it even on systems with larger
+            // pipes. Floor at 1500 files to preserve the original
+            // fixture's strength on the common 64 KiB Linux/macOS case.
+            const APPROX_LINE_BYTES: usize = 80;
+            let pipe_buf = probe_pipe_buffer_bytes();
+            let target_stderr_bytes = pipe_buf.saturating_mul(2);
+            let file_count = (target_stderr_bytes / APPROX_LINE_BYTES).max(1500);
+            for i in 0..file_count {
                 let path = temp_dir.path().join(format!(
-                    "unreadable_with_a_long_filename_to_pad_stderr_{:04}.jsonl",
+                    "unreadable_with_a_long_filename_to_pad_stderr_{:06}.jsonl",
                     i
                 ));
                 std::fs::write(&path, "{\"type\":\"summary\"}\n").unwrap();
@@ -1346,11 +1443,17 @@ mod tests {
             let elapsed = start.elapsed();
 
             // Restore permissions so TempDir cleanup can remove the files.
-            for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
-                let entry = entry.unwrap();
-                let mut perms = std::fs::metadata(entry.path()).unwrap().permissions();
-                perms.set_mode(0o644);
-                let _ = std::fs::set_permissions(entry.path(), perms);
+            // Per-entry errors are ignored so a single failure does not
+            // panic the loop and leave subsequent files unreadable, which
+            // would break TempDir cleanup.
+            if let Ok(entries) = std::fs::read_dir(temp_dir.path()) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = std::fs::metadata(entry.path()) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o644);
+                        let _ = std::fs::set_permissions(entry.path(), perms);
+                    }
+                }
             }
 
             assert!(
