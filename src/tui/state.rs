@@ -493,18 +493,15 @@ pub enum AutomationFilter {
 
 /// Result from background search thread.
 ///
-/// `paths` and `use_regex` are still populated (the worker had no way to
-/// elide them without changing the struct shape that test code relies on),
-/// but `handle_search_result` no longer validates them: with `SearchHandle`
-/// as the source of truth, secondary checks were redundant — newer requests
-/// cancel older ones before they can deliver, and any straggler with a
-/// stale `seq` is dropped on arrival.
-#[allow(dead_code)]
+/// With `SearchHandle` as the source of truth, secondary validation by
+/// query/paths/use_regex was redundant — newer requests cancel older ones
+/// before they can deliver, and any straggler with a stale `seq` is
+/// dropped on arrival. Only `seq` (for routing) and `query` (preserved on
+/// `results_query` so renderers can show what produced the current
+/// matches) flow through to `handle_search_result`.
 pub(crate) struct BackgroundSearchResult {
     pub seq: u64,
     pub query: String,
-    pub paths: Vec<String>,
-    pub use_regex: bool,
     pub result: Result<crate::search::SearchResult, String>,
 }
 
@@ -547,9 +544,9 @@ pub struct SearchState {
     /// Whether the last search hit the per-file match limit (results may be incomplete)
     pub search_truncated: bool,
     /// Channel to receive (file_path, count, compacted) from background message-counting thread
-    pub(crate) message_count_rx: Option<std::sync::mpsc::Receiver<(String, usize, bool)>>,
+    pub(crate) message_count_rx: Option<Receiver<(String, usize, bool)>>,
     /// Cancellation flag for the background counting thread
-    pub(crate) message_count_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) message_count_cancel: Option<Arc<AtomicBool>>,
 }
 
 /// Tree-view state: loaded tree, cursor, scroll, background loader.
@@ -1104,23 +1101,22 @@ impl App {
         }
     }
 
+    /// Process a background search result. Returns silently (no state
+    /// mutation) if no handle is in flight, or if the result's `seq` does
+    /// not match the current handle's `seq`. Otherwise consumes `current`,
+    /// stores the matches into `groups`, and clears the searching state.
+    ///
+    /// The handle is the single source of truth: a result is fresh iff
+    /// its seq matches the current request's seq. Newer requests cancel
+    /// older ones before they can deliver, so any received result with
+    /// `seq == current.seq` is by construction consistent with the
+    /// request that produced it — secondary checks on query / paths /
+    /// use_regex are redundant and were removed because they could
+    /// strand the prior `searching: bool` flag at `true`.
     pub(crate) fn handle_search_result(
         &mut self,
-        BackgroundSearchResult {
-            seq,
-            query,
-            paths: _,
-            use_regex: _,
-            result,
-        }: BackgroundSearchResult,
+        BackgroundSearchResult { seq, query, result }: BackgroundSearchResult,
     ) {
-        // The handle is the single source of truth: a result is fresh iff
-        // its seq matches the current request's seq. Newer requests cancel
-        // older ones before they can deliver, so any received result with
-        // `seq == current.seq` is by construction consistent with the
-        // request that produced it — secondary checks on query / paths /
-        // use_regex are redundant and were removed because they could
-        // strand the prior `searching: bool` flag at `true`.
         let Some(current) = self.search.current.as_ref() else {
             return;
         };
@@ -1393,6 +1389,15 @@ impl App {
     /// installing the new handle. The result is dispatched via
     /// `search.result_tx`; `tick()` polls `search.search_rx` and routes
     /// matching-`seq` results through `handle_search_result`.
+    ///
+    /// **Threading invariant**: must be called from the UI thread. The
+    /// straggler-via-load-vs-send race (a worker that observes `cancel ==
+    /// false`, then loses the race to the cancel-store, then sends anyway)
+    /// is closed by the seq discriminator in `handle_search_result`, but
+    /// only because `current` is guaranteed to be populated (with the new
+    /// handle, line below) by the time `tick()` runs. If `start_search`
+    /// were ever called from a non-UI thread, a stray send could land while
+    /// `current` is `None` and silently disappear.
     pub(crate) fn start_search(&mut self) {
         self.search.search_seq += 1;
         let seq = self.search.search_seq;
@@ -1419,13 +1424,7 @@ impl App {
             // in `handle_search_result`: a stale result that slips through
             // here will be dropped on arrival.
             if !cancel_worker.load(Ordering::Relaxed) {
-                let _ = tx.send(BackgroundSearchResult {
-                    seq,
-                    query,
-                    paths,
-                    use_regex,
-                    result,
-                });
+                let _ = tx.send(BackgroundSearchResult { seq, query, result });
             }
         });
 
@@ -1585,8 +1584,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "later".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
@@ -1631,8 +1628,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "reply".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
@@ -1679,8 +1674,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "detekt".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![result],
                 truncated: false,
@@ -1706,8 +1699,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "query".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: true,
@@ -1724,8 +1715,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 2,
             query: "query".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: false,
@@ -2983,8 +2972,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "query".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![fresh],
                 truncated: false,
@@ -3042,8 +3029,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "query".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![fresh],
                 truncated: false,
@@ -3108,8 +3093,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "query".to_string(),
-            paths: app.search_paths.clone(),
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![fresh],
                 truncated: false,
@@ -3342,8 +3325,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "ignored".to_string(),
-            paths: vec![],
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: false,
@@ -3367,8 +3348,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 3,
             query: "stale".to_string(),
-            paths: vec![],
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![],
                 truncated: false,
@@ -3407,8 +3386,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 7,
             query: "needle".to_string(),
-            paths: vec![],
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![m],
                 truncated: false,
@@ -3454,8 +3431,6 @@ mod tests {
         app.handle_search_result(BackgroundSearchResult {
             seq: 1,
             query: "any".to_string(),
-            paths: vec![],
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![RipgrepMatch {
                     file_path: "/sessions/fresh.jsonl".to_string(),
@@ -3528,13 +3503,16 @@ mod tests {
     // the only mechanism that decides which result wins — this test
     // proves it does end-to-end.
     //
-    // Spawn-per-request also bounds the channel population: at most one
-    // result reaches the channel because the cancelled request's
-    // `if !cancel_worker.load()` guard suppresses its send before the
-    // newer thread has finished. The straggler-via-load-vs-send race is
-    // closed by the seq discriminator in `handle_search_result`, so a
-    // pessimistic upper bound of 2 is what the cancellation contract
-    // actually guarantees end-to-end.
+    // The assertion intentionally only verifies the
+    // `is_searching() == false` invariant: the cancellation contract
+    // guarantees at most two delivered results (the matching one plus a
+    // potential straggler that won the load-vs-send race), but
+    // sandboxing the channel-count to "exactly 1" is racy on slow CI
+    // hosts where the cancelled worker's send may sneak in before its
+    // `cancel.load()` check fires. The seq-mismatch guard in
+    // `handle_search_result` filters any straggler out of `groups`, and
+    // the `current.is_none()` invariant is the actual contract this
+    // test pins.
     #[test]
     fn back_to_back_start_search_delivers_one_result_and_clears_searching() {
         // One short JSONL fixture with a line that matches "foo".
@@ -3571,45 +3549,53 @@ mod tests {
     }
 
     // Regression for the original stuck-`searching` bug, expressed as a
-    // synthetic channel-injection test. Two `start_search` calls produce
-    // seq=1 (cancelled) and seq=2 (current). When both BackgroundSearchResults
-    // arrive on the channel — even with the stale seq=1 first — `tick()` must
-    // drain both, keep only seq=2's data, and converge on
-    // `is_searching() == false`. The earlier code's secondary filter could
-    // discard seq=2 (the matching one) on a query/paths/use_regex mismatch
-    // and never clear the stored `searching: bool`; this test pins the
-    // contract that seq is the only discriminator and `current` is the
-    // single source of truth.
+    // synthetic channel-injection test. After two `start_search` calls, we
+    // jump `current.seq` to a far-out value (100) so synthetic injections
+    // cannot collide with real-worker results. We then push a stale (seq=99)
+    // and a fresh (seq=100) result onto the channel; `tick()` must drain
+    // both, keep only seq=100's data, and converge on `is_searching() ==
+    // false`. The earlier code's secondary filter could discard the matching
+    // seq result on a query/paths/use_regex mismatch and never clear the
+    // stored `searching: bool`; this test pins the contract that seq is the
+    // only discriminator and `current` is the single source of truth.
     #[test]
     fn back_to_back_start_search_stale_then_fresh_clears_is_searching() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = App::new(vec![dir.path().to_str().unwrap().to_string()]);
         app.input.set_text("query");
 
-        // Two requests: the first is cancelled by the second; `current.seq`
-        // is now 2. `start_search` also spawns real worker threads; with an
-        // empty corpus they produce empty `Ok` results that may land on the
-        // channel ahead of our injected ones. Drain those first so the
-        // assertions below observe only the synthetic results we control.
+        // Two requests: the first is cancelled by the second. `start_search`
+        // also spawns real worker threads; with an empty corpus they may
+        // produce empty `Ok` results that race with our synthetic injections.
+        // To eliminate the collision risk entirely, after the two real
+        // start_search calls we jump `search_seq` (and `current.seq`) to a
+        // value far above what the real workers can produce, then inject
+        // synthetic results with seqs `99` (stale) and `100` (fresh). Real
+        // worker results carrying seq `1` or `2` will be dropped by the
+        // seq-mismatch guard in `handle_search_result`.
         app.start_search();
         app.start_search();
-        let current_seq = app
+        // Bump the current handle's seq above the real-worker range and
+        // sync `search_seq` so any future `start_search` continues
+        // monotonically. We rebuild the handle in place to keep its
+        // `cancel` flag tied to the new seq number we are about to inject
+        // results for.
+        app.search.search_seq = 100;
+        let prev_cancel = app
             .search
             .current
-            .as_ref()
-            .expect("second start_search installs a fresh handle")
-            .seq;
-        assert_eq!(current_seq, 2);
-        let drain_deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < drain_deadline {
-            if app.search.search_rx.try_recv().is_err() {
-                break;
-            }
-        }
+            .take()
+            .map(|h| h.cancel)
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        app.search.current = Some(SearchHandle {
+            seq: 100,
+            cancel: prev_cancel,
+        });
 
-        // Inject the stale seq=1 result first (must be silently dropped),
-        // then the fresh seq=2 result that carries the only data we expect
-        // to see materialise in `groups`.
+        // Inject the stale seq=99 result first (must be silently dropped),
+        // then the fresh seq=100 result that carries the only data we
+        // expect to see materialise in `groups`. Real-worker stragglers
+        // with seq <= 2 will likewise mismatch and be dropped.
         let stale_match = RipgrepMatch {
             file_path: "/sessions/stale.jsonl".to_string(),
             message: Some(Message {
@@ -3638,35 +3624,34 @@ mod tests {
         app.search
             .result_tx
             .send(BackgroundSearchResult {
-                seq: 1,
+                seq: 99,
                 query: "query".to_string(),
-                paths: app.search_paths.clone(),
-                use_regex: false,
                 result: Ok(crate::search::SearchResult {
                     matches: vec![stale_match],
                     truncated: false,
                 }),
             })
-            .expect("send stale seq=1 result");
+            .expect("send stale seq=99 result");
         app.search
             .result_tx
             .send(BackgroundSearchResult {
-                seq: 2,
+                seq: 100,
                 query: "query".to_string(),
-                paths: app.search_paths.clone(),
-                use_regex: false,
                 result: Ok(crate::search::SearchResult {
                     matches: vec![fresh_match],
                     truncated: false,
                 }),
             })
-            .expect("send fresh seq=2 result");
+            .expect("send fresh seq=100 result");
 
+        // Drain everything currently buffered: real-worker results (seq
+        // 1 or 2) are dropped by the mismatch guard, the stale seq=99 is
+        // dropped, the fresh seq=100 lands and clears `current`.
         app.tick();
 
         assert!(
             !app.is_searching(),
-            "is_searching() must be false after the matching seq=2 result lands"
+            "is_searching() must be false after the matching seq=100 result lands"
         );
         assert!(
             app.search.current.is_none(),
@@ -3675,11 +3660,11 @@ mod tests {
         assert_eq!(
             app.search.groups.len(),
             1,
-            "only the seq=2 result must populate groups"
+            "only the seq=100 result must populate groups"
         );
         assert_eq!(
             app.search.groups[0].session_id, "fresh",
-            "groups must contain only the fresh seq=2 data, not the stale seq=1 data"
+            "groups must contain only the fresh seq=100 data, not the stale seq=99 or any real-worker data"
         );
     }
 }

@@ -446,8 +446,6 @@ mod tests {
         let stale_result = crate::tui::state::BackgroundSearchResult {
             seq: 1, // older than current
             query: "query".to_string(),
-            paths: vec!["/all".to_string()],
-            use_regex: false,
             result: Ok(crate::search::SearchResult {
                 matches: vec![RipgrepMatch {
                     file_path: "/all/session.jsonl".to_string(),

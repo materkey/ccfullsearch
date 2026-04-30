@@ -3,11 +3,12 @@ use crate::session::resolve_parent_session;
 use crate::session::SessionSource;
 use regex::RegexBuilder;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
 
 static DESKTOP_TITLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -207,6 +208,22 @@ fn search_single_path(
         .ok_or_else(|| "ripgrep stdout was not captured".to_string())?;
     let reader = BufReader::new(stdout);
 
+    // Drain stderr on a dedicated thread so a chatty `rg` (warnings about
+    // unreadable files, regex diagnostics, etc.) cannot fill the pipe buffer
+    // (~64 KiB on Linux) and block the child while we are stuck waiting for
+    // stdout / `child.wait()`. The captured bytes are also surfaced in any
+    // failure message, restoring the diagnostics that the previous
+    // `Command::output()` path included.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "ripgrep stderr was not captured".to_string())?;
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::BufReader::new(stderr).read_to_end(&mut buf);
+        buf
+    });
+
     let mut results = Vec::new();
     let mut truncated = false;
     let mut file_match_counts: std::collections::HashMap<String, usize> =
@@ -221,6 +238,8 @@ fn search_single_path(
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
+            // Reap the drainer so we do not leak the thread or its pipe end.
+            let _ = stderr_handle.join();
             return Err("cancelled".into());
         }
 
@@ -268,9 +287,22 @@ fn search_single_path(
         .wait()
         .map_err(|e| format!("Failed to wait for ripgrep: {}", e))?;
 
+    // Wait for the stderr drainer to finish; the child has exited so the
+    // pipe is closed and `read_to_end` returns. Failures here only mean the
+    // thread panicked, which is not actionable for the caller.
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+
     // ripgrep exit code 1 means "no matches" — that is success for our purposes.
     if !status.success() && status.code() != Some(1) {
-        return Err(format!("ripgrep search failed: exit status {}", status));
+        let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+        let trimmed = stderr_text.trim();
+        if trimmed.is_empty() {
+            return Err(format!("ripgrep search failed: exit status {}", status));
+        }
+        return Err(format!(
+            "ripgrep search failed: exit status {}: {}",
+            status, trimmed
+        ));
     }
 
     Ok((results, truncated))
@@ -1155,12 +1187,13 @@ mod tests {
         // Build a large fixture so an uncancelled run takes long enough for the
         // cancel-mid-flight check to be meaningful. We spread matching lines across
         // many files (ripgrep's --max-count caps per-file output at MAX_COUNT_PER_FILE,
-        // so a single huge file would simply truncate quickly). With 30 files of
-        // ~MAX_COUNT_PER_FILE matching lines each, ripgrep streams ~30k JSON
-        // records that we parse + post-filter in user space.
+        // so a single huge file would simply truncate quickly). With 60 files of
+        // ~MAX_COUNT_PER_FILE matching lines each, ripgrep streams ~60k JSON
+        // records that we parse + post-filter in user space — wall-clock for this
+        // is on the order of 100 ms even on M-series CPUs in release mode.
         let temp_dir = TempDir::new().unwrap();
         let line_template = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"findme PADDING_PADDING_PADDING_PADDING line "#;
-        for f in 0..30 {
+        for f in 0..60 {
             let mut content = String::with_capacity(200 * MAX_COUNT_PER_FILE);
             for i in 0..MAX_COUNT_PER_FILE {
                 content.push_str(line_template);
@@ -1190,6 +1223,17 @@ mod tests {
             "fixture should produce matches"
         );
 
+        // Sanity-check that the baseline was substantial enough for our
+        // cancel-during-iteration window to be meaningful. If the baseline
+        // is somehow under 20 ms (truly extreme hardware), the test below
+        // would race; surface that with a clear message rather than a
+        // confusing cancel-not-observed failure.
+        assert!(
+            baseline_elapsed >= std::time::Duration::from_millis(20),
+            "fixture is too small for the cancel-mid-flight assertion to be meaningful (baseline={:?}); enlarge the fixture",
+            baseline_elapsed
+        );
+
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_worker = cancel.clone();
         let path = temp_dir.path().to_str().unwrap().to_string();
@@ -1198,10 +1242,14 @@ mod tests {
             search_multiple_paths("findme", &[path], false, &cancel_for_worker)
         });
 
-        // Cancel almost immediately so the search is definitely still in flight on
-        // any reasonable machine — baseline above takes tens of ms even on an M-class
-        // CPU due to the post-filter loop walking ~30k JSON records.
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // Cancel after a fraction of the observed baseline (or 1 ms,
+        // whichever is larger). The fraction ensures even fast hosts give
+        // the worker enough time to spawn `rg` and start the read loop —
+        // we want to land inside `BufReader::lines()`, not before the
+        // child has been spawned. 1/4 of baseline is conservative; the
+        // baseline assertion above guarantees this is at least 5 ms.
+        let cancel_after = std::cmp::max(std::time::Duration::from_millis(1), baseline_elapsed / 4);
+        std::thread::sleep(cancel_after);
         cancel.store(true, Ordering::Relaxed);
 
         let join_start = std::time::Instant::now();
@@ -1210,8 +1258,9 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Mid-flight cancelled search must return Err (baseline took {:?}, join took {:?})",
+            "Mid-flight cancelled search must return Err (baseline took {:?}, cancel_after={:?}, join took {:?})",
             baseline_elapsed,
+            cancel_after,
             join_elapsed
         );
         assert_eq!(result.err().unwrap(), "cancelled");
@@ -1220,9 +1269,127 @@ mod tests {
         // 500 ms — the actual time is typically a couple of ms.
         assert!(
             join_elapsed < std::time::Duration::from_millis(500),
-            "Cancelled search did not unwind quickly: join took {:?}, baseline {:?}",
+            "Cancelled search did not unwind quickly: join took {:?}, baseline {:?}, cancel_after {:?}",
             join_elapsed,
-            baseline_elapsed
+            baseline_elapsed,
+            cancel_after
         );
+    }
+
+    #[test]
+    fn test_search_does_not_deadlock_on_chatty_stderr() {
+        // Regression for a stderr-deadlock: when `rg` produces enough
+        // stderr output to fill the pipe buffer (~64 KiB on Linux), it
+        // blocks on `write()` until something drains the pipe. The wrapper
+        // must drain stderr concurrently with stdout, otherwise the child
+        // hangs forever and `child.wait()` never returns.
+        //
+        // We trigger chatty stderr by creating many `*.jsonl` files with
+        // mode `0o000` so the user (running this test) cannot read them.
+        // `rg` prints "Permission denied (os error 13)" once per file.
+        // Each line is ~80 bytes; 1500 files easily clears 64 KiB and
+        // would deadlock the old code.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp_dir = TempDir::new().unwrap();
+            // Verify chmod 0o000 actually blocks reads for the test
+            // runner (root bypasses POSIX read perms; in that case rg
+            // produces no Permission-denied lines and the deadlock
+            // condition cannot be triggered, so we skip).
+            let probe = temp_dir.path().join("__perm_probe.jsonl");
+            std::fs::write(&probe, "{}\n").unwrap();
+            let mut probe_perms = std::fs::metadata(&probe).unwrap().permissions();
+            probe_perms.set_mode(0o000);
+            std::fs::set_permissions(&probe, probe_perms).unwrap();
+            let probe_readable = std::fs::read_to_string(&probe).is_ok();
+            // Restore so the file can be deleted later by TempDir.
+            let mut restore = std::fs::metadata(&probe).unwrap().permissions();
+            restore.set_mode(0o644);
+            let _ = std::fs::set_permissions(&probe, restore);
+            let _ = std::fs::remove_file(&probe);
+            if probe_readable {
+                eprintln!(
+                    "skipping test_search_does_not_deadlock_on_chatty_stderr: chmod 0o000 did not block reads (likely running as root)"
+                );
+                return;
+            }
+
+            // Long filenames make each stderr line longer, so we hit the
+            // pipe buffer with fewer files. ~80 bytes per line × 1500
+            // files ≈ 120 KiB of stderr — well past the 64 KiB
+            // Linux/macOS pipe buffer.
+            for i in 0..1500 {
+                let path = temp_dir.path().join(format!(
+                    "unreadable_with_a_long_filename_to_pad_stderr_{:04}.jsonl",
+                    i
+                ));
+                std::fs::write(&path, "{\"type\":\"summary\"}\n").unwrap();
+                let mut perms = std::fs::metadata(&path).unwrap().permissions();
+                perms.set_mode(0o000);
+                std::fs::set_permissions(&path, perms).unwrap();
+            }
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            let start = std::time::Instant::now();
+            // The search itself will not match anything but must complete.
+            // The 30 s deadline is generous; the actual time on a working
+            // implementation is well under 1 s. Without the stderr
+            // drain, the old code blocked indefinitely.
+            let result = search_multiple_paths(
+                "findme",
+                &[temp_dir.path().to_str().unwrap().to_string()],
+                false,
+                &cancel,
+            );
+            let elapsed = start.elapsed();
+
+            // Restore permissions so TempDir cleanup can remove the files.
+            for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+                let entry = entry.unwrap();
+                let mut perms = std::fs::metadata(entry.path()).unwrap().permissions();
+                perms.set_mode(0o644);
+                let _ = std::fs::set_permissions(entry.path(), perms);
+            }
+
+            assert!(
+                elapsed < std::time::Duration::from_secs(30),
+                "search hung — likely a stderr-pipe deadlock (took {:?})",
+                elapsed
+            );
+            // The unreadable files cause `rg` to exit with a non-zero
+            // status; we must surface that as an Err with the captured
+            // stderr text included (regression check for the previous
+            // opaque "exit status N" message).
+            match result {
+                Err(msg) => {
+                    assert!(
+                        msg.contains("exit status"),
+                        "error must mention exit status, got: {}",
+                        msg
+                    );
+                    assert!(
+                        msg.to_lowercase().contains("permission") || msg.contains("os error 13"),
+                        "error must include captured stderr text, got: {}",
+                        msg
+                    );
+                }
+                Ok(_) => {
+                    // Some rg builds may treat read errors as exit code 0
+                    // with warnings on stderr only. In that case the
+                    // test still proves no deadlock occurred, which is
+                    // the primary regression we are guarding against.
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // chmod 0o000 is meaningless on non-unix platforms; the
+            // deadlock guarantee is enforced by the same code path
+            // regardless. Skip rather than introduce a Windows-specific
+            // stderr-flooding fixture.
+            eprintln!("skipping test_search_does_not_deadlock_on_chatty_stderr: non-unix platform");
+        }
     }
 }
