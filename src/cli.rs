@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Serialize)]
 struct CliSearchResult {
@@ -31,7 +33,10 @@ struct ListResult {
 
 /// Run CLI search command
 pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: usize) {
-    let search_result = match search_multiple_paths(query, search_paths, use_regex) {
+    // CLI search is one-shot and runs to completion; no cancellation is needed,
+    // but the lower-level API requires a token, so we pass a permanently-false one.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let search_result = match search_multiple_paths(query, search_paths, use_regex, &cancel) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Search error: {}", e);

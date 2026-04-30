@@ -626,7 +626,12 @@ impl App {
         // Spawn background search thread
         thread::spawn(move || {
             while let Ok((seq, query, paths, use_regex)) = query_rx.recv() {
-                let result = search_multiple_paths(&query, &paths, use_regex);
+                // Task 1 of the stuck-`searching`-flag plan: thread a cancellation token
+                // through search_multiple_paths. The legacy worker is being preserved
+                // verbatim (Task 3 deletes it); each iteration uses a fresh always-false
+                // token so behavior is unchanged at this stage.
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let result = search_multiple_paths(&query, &paths, use_regex, &cancel);
                 let _ = result_tx.send(BackgroundSearchResult {
                     seq,
                     query,

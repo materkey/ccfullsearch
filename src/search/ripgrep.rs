@@ -5,6 +5,8 @@ use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 static DESKTOP_TITLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
@@ -124,22 +126,38 @@ fn search_with_options(
     search_path: &str,
     use_regex: bool,
 ) -> Result<Vec<RipgrepMatch>, String> {
-    search_multiple_paths(query, &[search_path.to_string()], use_regex).map(|result| result.matches)
+    let cancel = Arc::new(AtomicBool::new(false));
+    search_multiple_paths(query, &[search_path.to_string()], use_regex, &cancel)
+        .map(|result| result.matches)
 }
 
 /// Search multiple paths with explicit regex mode option.
 /// Returns a `SearchResult` with matches and a truncation flag.
+///
+/// `cancel` is a cooperative cancellation token: when set to `true` before invocation
+/// the function returns `Err("cancelled")` immediately without spawning ripgrep; when
+/// flipped mid-flight the spawned `rg` child is killed and the function returns
+/// `Err("cancelled")` after the child is reaped.
 pub fn search_multiple_paths(
     query: &str,
     search_paths: &[String],
     use_regex: bool,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<SearchResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+
     let _ = build_regex_matcher(query, use_regex)?;
 
     let mut all_results = Vec::new();
     let mut any_truncated = false;
 
     for search_path in search_paths {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+
         if search_path.is_empty() {
             continue;
         }
@@ -148,7 +166,7 @@ pub fn search_multiple_paths(
             continue;
         }
 
-        let (results, truncated) = search_single_path(query, search_path, use_regex)?;
+        let (results, truncated) = search_single_path(query, search_path, use_regex, cancel)?;
         all_results.extend(results);
         any_truncated |= truncated;
     }
@@ -163,31 +181,32 @@ const MAX_COUNT_PER_FILE: usize = 1000;
 
 /// Search a single path.
 /// Returns (matches, truncated) where truncated is true if any file hit the per-file match limit.
+///
+/// Streams ripgrep stdout line-by-line so memory does not balloon on broad queries
+/// (e.g. single-character searches against a multi-GB corpus). On each line the
+/// `cancel` flag is polled; when set, the spawned child is killed, reaped, and the
+/// function returns `Err("cancelled")`.
 fn search_single_path(
     query: &str,
     search_path: &str,
     use_regex: bool,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(Vec<RipgrepMatch>, bool), String> {
     let args = build_ripgrep_args(query, search_path, use_regex);
 
-    let output = Command::new("rg")
+    let mut child = Command::new("rg")
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|e| format!("Failed to run ripgrep: {}", e))?;
 
-    if !output.status.success() && output.status.code() != Some(1) {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            format!("exit status {}", output.status)
-        } else {
-            stderr
-        };
-        return Err(format!("ripgrep search failed: {}", detail));
-    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ripgrep stdout was not captured".to_string())?;
+    let reader = BufReader::new(stdout);
 
-    let reader = BufReader::new(&output.stdout[..]);
     let mut results = Vec::new();
     let mut truncated = false;
     let mut file_match_counts: std::collections::HashMap<String, usize> =
@@ -199,6 +218,12 @@ fn search_single_path(
         std::collections::HashMap::new();
 
     for line in reader.lines().map_while(Result::ok) {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".into());
+        }
+
         if let Some(mut m) = parse_ripgrep_json(&line) {
             // Track raw ripgrep matches per file to detect --max-count truncation.
             // Uses a HashMap so interleaved multi-threaded ripgrep output is handled
@@ -237,6 +262,15 @@ fn search_single_path(
                 }
             }
         }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for ripgrep: {}", e))?;
+
+    // ripgrep exit code 1 means "no matches" — that is success for our purposes.
+    if !status.success() && status.code() != Some(1) {
+        return Err(format!("ripgrep search failed: exit status {}", status));
     }
 
     Ok((results, truncated))
@@ -565,7 +599,13 @@ mod tests {
 
     #[test]
     fn test_search_multiple_paths_invalid_regex_returns_error() {
-        let result = search_multiple_paths("(", &["/path/that/does/not/exist".to_string()], true);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = search_multiple_paths(
+            "(",
+            &["/path/that/does/not/exist".to_string()],
+            true,
+            &cancel,
+        );
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("Invalid regex"), "unexpected error: {}", err);
@@ -1050,8 +1090,10 @@ mod tests {
         }
         create_test_session(&temp_dir, "big_session.jsonl", &content);
 
-        let (_, truncated) = search_single_path("findme", temp_dir.path().to_str().unwrap(), false)
-            .expect("Search should succeed");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_, truncated) =
+            search_single_path("findme", temp_dir.path().to_str().unwrap(), false, &cancel)
+                .expect("Search should succeed");
 
         assert!(
             truncated,
@@ -1065,12 +1107,122 @@ mod tests {
         let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
         create_test_session(&temp_dir, "session.jsonl", session_content);
 
-        let (_, truncated) = search_single_path("Hello", temp_dir.path().to_str().unwrap(), false)
-            .expect("Search should succeed");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_, truncated) =
+            search_single_path("Hello", temp_dir.path().to_str().unwrap(), false, &cancel)
+                .expect("Search should succeed");
 
         assert!(
             !truncated,
             "Should not flag truncation for small result sets"
+        );
+    }
+
+    #[test]
+    fn test_search_multiple_paths_cancel_before_invocation_returns_immediately() {
+        // When the cancel flag is already set, the function must return Err("cancelled")
+        // without spawning ripgrep. We rely on the early-exit check at the top of
+        // search_multiple_paths — if it weren't there the bogus path below would still
+        // be silently skipped (existence check), so we add a real path too: even when
+        // a real fixture is present, no work should happen because cancel was preset.
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let start = std::time::Instant::now();
+        let result = search_multiple_paths(
+            "Hello",
+            &[temp_dir.path().to_str().unwrap().to_string()],
+            false,
+            &cancel,
+        );
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "Pre-cancelled search must return Err");
+        let err = result.err().unwrap();
+        assert_eq!(err, "cancelled", "unexpected error: {}", err);
+        // Pre-cancelled path should be effectively instant (no rg spawn).
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "Pre-cancelled search took too long: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_search_mid_flight_cancellation_kills_child() {
+        // Build a large fixture so an uncancelled run takes long enough for the
+        // cancel-mid-flight check to be meaningful. We spread matching lines across
+        // many files (ripgrep's --max-count caps per-file output at MAX_COUNT_PER_FILE,
+        // so a single huge file would simply truncate quickly). With 30 files of
+        // ~MAX_COUNT_PER_FILE matching lines each, ripgrep streams ~30k JSON
+        // records that we parse + post-filter in user space.
+        let temp_dir = TempDir::new().unwrap();
+        let line_template = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"findme PADDING_PADDING_PADDING_PADDING line "#;
+        for f in 0..30 {
+            let mut content = String::with_capacity(200 * MAX_COUNT_PER_FILE);
+            for i in 0..MAX_COUNT_PER_FILE {
+                content.push_str(line_template);
+                content.push_str(&format!(
+                    r#"{}-{}"}}]}},"sessionId":"sess{}","timestamp":"2025-01-09T10:00:00Z"}}"#,
+                    f, i, f
+                ));
+                content.push('\n');
+            }
+            create_test_session(&temp_dir, &format!("huge_{:02}.jsonl", f), &content);
+        }
+
+        // Measure baseline so we can reason about whether the cancel actually
+        // stopped work instead of arriving after the search naturally finished.
+        let baseline_cancel = Arc::new(AtomicBool::new(false));
+        let baseline_start = std::time::Instant::now();
+        let baseline = search_multiple_paths(
+            "findme",
+            &[temp_dir.path().to_str().unwrap().to_string()],
+            false,
+            &baseline_cancel,
+        )
+        .expect("baseline search should succeed");
+        let baseline_elapsed = baseline_start.elapsed();
+        assert!(
+            !baseline.matches.is_empty(),
+            "fixture should produce matches"
+        );
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_worker = cancel.clone();
+        let path = temp_dir.path().to_str().unwrap().to_string();
+
+        let handle = std::thread::spawn(move || {
+            search_multiple_paths("findme", &[path], false, &cancel_for_worker)
+        });
+
+        // Cancel almost immediately so the search is definitely still in flight on
+        // any reasonable machine — baseline above takes tens of ms even on an M-class
+        // CPU due to the post-filter loop walking ~30k JSON records.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        cancel.store(true, Ordering::Relaxed);
+
+        let join_start = std::time::Instant::now();
+        let result = handle.join().expect("worker thread panicked");
+        let join_elapsed = join_start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "Mid-flight cancelled search must return Err (baseline took {:?}, join took {:?})",
+            baseline_elapsed,
+            join_elapsed
+        );
+        assert_eq!(result.err().unwrap(), "cancelled");
+        // After cancel, the worker should drop out of its read loop quickly because
+        // the rg child was killed and stdout EOF'd. The deadline is a generous
+        // 500 ms — the actual time is typically a couple of ms.
+        assert!(
+            join_elapsed < std::time::Duration::from_millis(500),
+            "Cancelled search did not unwind quickly: join took {:?}, baseline {:?}",
+            join_elapsed,
+            baseline_elapsed
         );
     }
 }
