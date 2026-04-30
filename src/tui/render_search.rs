@@ -4,6 +4,7 @@ use crate::search::{
 use crate::session::record::MessageRole;
 use crate::tui::render_tree::render_tree_mode;
 use crate::tui::view::AppView;
+use chrono::Local;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -26,6 +27,16 @@ pub(crate) const SELECTION_BG: Color = Color::Rgb(75, 0, 130);
 /// terminals (ANSI bright-black ≈ `#555`) is too muddy against the dark
 /// panel and mis-matched the design handoff.
 pub(crate) const DIM_FG: Color = Color::Rgb(107, 113, 128);
+
+/// Project chip foreground from the slate handoff accent (`#6262ff`).
+const PROJECT_FG: Color = Color::Rgb(98, 98, 255);
+/// Subtle project chip background. Dark enough to preserve contrast on the
+/// default terminal background while still separating the project from pipes.
+const PROJECT_BG: Color = Color::Rgb(27, 31, 39);
+/// Project chip background used on the selected purple row.
+const SELECTED_PROJECT_BG: Color = Color::Rgb(94, 36, 130);
+/// Branch marker foreground from the handoff cyan (`#56c2ff`).
+const BRANCH_FG: Color = Color::Rgb(86, 194, 255);
 
 /// Pre-built preview prefixes shared by `render_groups` (collapsed groups)
 /// and `render_recent_sessions`. Hoisted so the render hot path does not
@@ -739,6 +750,7 @@ struct SessionHeaderParts<'a> {
     has_automation: bool,
 }
 
+#[cfg(test)]
 fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     let sid = if p.session_id.len() > 8 {
         &p.session_id[..8]
@@ -752,7 +764,103 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     )
 }
 
+fn truncated_session_id(session_id: &str) -> &str {
+    if session_id.len() > 8 {
+        &session_id[..8]
+    } else {
+        session_id
+    }
+}
+
+fn style_with_bg(style: Style, bg: Option<Color>) -> Style {
+    match bg {
+        Some(bg) => style.bg(bg),
+        None => style,
+    }
+}
+
+/// Styled header line used by search results and recent sessions. It keeps
+/// the same text grammar as `format_session_header_line`, but gives the
+/// scannable fields their own visual hierarchy: source, project, branch, and
+/// count no longer blend into the timestamp/session-id scaffolding.
+fn render_session_header_line(
+    prefix: &str,
+    p: SessionHeaderParts<'_>,
+    base_style: Style,
+    selected: bool,
+) -> Line<'static> {
+    let row_bg = base_style.bg;
+    let base = base_style;
+    let accent = if selected {
+        base
+    } else {
+        Style::default().fg(Color::Magenta)
+    };
+    let project = if selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .bg(SELECTED_PROJECT_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(PROJECT_FG)
+            .bg(PROJECT_BG)
+            .add_modifier(Modifier::BOLD)
+    };
+    let branch = if selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(BRANCH_FG).add_modifier(Modifier::BOLD)
+    };
+    let count = if selected {
+        base
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let mut spans = vec![
+        Span::styled(prefix.to_string(), base),
+        Span::styled(p.caret.to_string(), base),
+        Span::styled(" ".to_string(), base),
+        Span::styled(format!("[{}]", p.source), style_with_bg(accent, row_bg)),
+        Span::styled(format!(" {} | ", p.date), base),
+        Span::styled(p.project.to_string(), project),
+        Span::styled(" | ".to_string(), base),
+    ];
+
+    if p.branch == "-" {
+        spans.push(Span::styled("-".to_string(), base));
+    } else {
+        spans.push(Span::styled(
+            format!("⎇ {}", p.branch),
+            style_with_bg(branch, row_bg),
+        ));
+    }
+
+    spans.extend([
+        Span::styled(format!(" | {} ", truncated_session_id(p.session_id)), base),
+        Span::styled(format!("({})", p.count), style_with_bg(count, row_bg)),
+    ]);
+
+    if p.has_automation {
+        let automation = if selected {
+            base
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        spans.push(Span::styled(
+            " [A]".to_string(),
+            style_with_bg(automation, row_bg),
+        ));
+    }
+
+    Line::from(spans)
+}
+
 /// Recent-session header text. Uses `▶` (non-expandable) and a `N msgs` tail.
+#[cfg(test)]
 pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSession) -> String {
     let count_str = match session.message_count {
         Some(n) => format!("{} msgs", n),
@@ -797,7 +905,6 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         let session = &app.recent.filtered[i];
         let is_selected = i == app.recent.cursor;
 
-        let header_text = build_recent_session_header_text(session);
         let prefix = if is_selected { "> " } else { "  " };
         // Selected style intentionally omits `Modifier::BOLD`: in some
         // monospace fonts (e.g. Iosevka) the bold variant of the `▶` glyph
@@ -812,7 +919,31 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         if is_selected {
             selected_item_idx = Some(items.len());
         }
-        items.push(ListItem::new(format!("{}{}", prefix, header_text)).style(header_style));
+        let count_str = match session.message_count {
+            Some(n) => format!("{} msgs", n),
+            None => "-".to_string(),
+        };
+        let date = session
+            .timestamp
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        let header = render_session_header_line(
+            prefix,
+            SessionHeaderParts {
+                caret: "▶",
+                source: session.source.display_name(),
+                date: &date,
+                project: &session.project,
+                branch: session.branch.as_deref().unwrap_or("-"),
+                session_id: &session.session_id,
+                count: &count_str,
+                has_automation: session.automation.is_some(),
+            },
+            header_style,
+            is_selected,
+        );
+        items.push(ListItem::new(header).style(header_style));
 
         // Preview line — same `     User:/Claude: <text>` grammar as the
         // collapsed search preview. Purple selection bg comes from the outer
@@ -847,6 +978,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
 
 /// Search-group header text. Uses `▶`/`▼` (collapsed vs expanded) and a
 /// `N/M matches` tail (with `+` suffix for compacted sessions).
+#[cfg(test)]
 pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> String {
     let first_match = group.first_match();
     let (date_str, branch, source) = if let Some(m) = first_match {
@@ -887,8 +1019,6 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
 }
 
 fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool) -> ListItem<'a> {
-    let header_text = build_group_header_text(group, expanded);
-
     // No BOLD on selected+collapsed — see `render_recent_sessions` for the
     // Iosevka ▶ clipping rationale; both screens must stay in sync.
     let style = if selected && !expanded {
@@ -900,7 +1030,54 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
     };
 
     let prefix = if selected { "> " } else { "  " };
-    ListItem::new(format!("{}{}", prefix, header_text)).style(style)
+    let first_match = group.first_match();
+    let (date_str, branch, source) = if let Some(m) = first_match {
+        let source = m.source.display_name();
+        if let Some(ref msg) = m.message {
+            let date = msg
+                .timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
+            let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
+            (date, branch, source)
+        } else {
+            ("-".to_string(), "-".to_string(), source)
+        }
+    } else {
+        ("-".to_string(), "-".to_string(), "CLI")
+    };
+
+    let count_str = match group.message_count {
+        Some(total) => {
+            let suffix = if group.message_count_compacted {
+                "+"
+            } else {
+                ""
+            };
+            format!("{}/{}{} matches", group.matches.len(), total, suffix)
+        }
+        None => format!("{} matches", group.matches.len()),
+    };
+
+    let project = extract_project_from_path(&group.file_path);
+    let header = render_session_header_line(
+        prefix,
+        SessionHeaderParts {
+            caret: if expanded { "▼" } else { "▶" },
+            source,
+            date: &date_str,
+            project: &project,
+            branch: &branch,
+            session_id: &group.session_id,
+            count: &count_str,
+            has_automation: group.automation.is_some(),
+        },
+        style,
+        selected,
+    );
+
+    ListItem::new(header).style(style)
 }
 
 fn render_sub_match<'a>(
@@ -2668,12 +2845,17 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.recent.loading = false;
         app.recent.load_rx = None;
+        let timestamp = Utc.with_ymd_and_hms(2026, 4, 17, 19, 51, 0).unwrap();
+        let expected_date = timestamp
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
         app.recent.filtered = vec![RecentSession {
             session_id: "b701e752abcd".to_string(),
             file_path: "/projects/sess.jsonl".to_string(),
             project: "avito-android".to_string(),
             source: SessionSource::ClaudeCodeCLI,
-            timestamp: Utc.with_ymd_and_hms(2026, 4, 17, 19, 51, 0).unwrap(),
+            timestamp,
             summary: "grep samsungapps across this week's sessions".to_string(),
             automation: None,
             branch: Some("main".to_string()),
@@ -2701,8 +2883,10 @@ mod tests {
             }
         }
         let header = header_line.expect("header line should render");
+        let expected_header =
+            format!("[CLI] {expected_date} | avito-android | ⎇ main | b701e752 (17 msgs)");
         assert!(
-            header.contains("[CLI] 2026-04-17 19:51 | avito-android | main | b701e752 (17 msgs)"),
+            header.contains(&expected_header),
             "unexpected header: {:?}",
             header
         );
@@ -2711,6 +2895,137 @@ mod tests {
             preview.contains("User: grep samsungapps"),
             "unexpected preview: {:?}",
             preview
+        );
+    }
+
+    fn find_cell_for_text(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        needle: &str,
+    ) -> Option<(u16, u16)> {
+        for y in 0..height {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            if let Some(byte_idx) = line.find(needle) {
+                let x = line[..byte_idx].chars().count() as u16;
+                return Some((x, y));
+            }
+        }
+        None
+    }
+
+    fn assert_unselected_project_and_branch_are_highlighted(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        project: &str,
+        branch: &str,
+    ) {
+        let (project_x, project_y) = find_cell_for_text(buffer, width, height, project)
+            .unwrap_or_else(|| panic!("project {project:?} should render"));
+        let project_cell = buffer.cell((project_x, project_y)).unwrap();
+        assert_eq!(project_cell.fg, PROJECT_FG);
+        assert_eq!(project_cell.bg, PROJECT_BG);
+        assert!(
+            project_cell.modifier.contains(Modifier::BOLD),
+            "project should be bold"
+        );
+
+        let branch_marker = format!("⎇ {branch}");
+        let (branch_x, branch_y) = find_cell_for_text(buffer, width, height, &branch_marker)
+            .unwrap_or_else(|| panic!("branch {branch_marker:?} should render"));
+        let branch_cell = buffer.cell((branch_x, branch_y)).unwrap();
+        assert_eq!(branch_cell.fg, BRANCH_FG);
+        assert!(
+            branch_cell.modifier.contains(Modifier::BOLD),
+            "branch marker should be bold"
+        );
+    }
+
+    #[test]
+    fn test_render_search_header_highlights_project_and_branch() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.results_query = "test".to_string();
+        let msg = Message {
+            session_id: "search-style".to_string(),
+            role: "user".to_string(),
+            content: "test content".to_string(),
+            text_content: "test content".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
+            branch: Some("feature-branch".to_string()),
+            line_number: 1,
+            ..Default::default()
+        };
+        let file_path =
+            "/path/to/projects/-Users-test-projects-highlight-app/session.jsonl".to_string();
+        app.search.groups = vec![SessionGroup {
+            session_id: "search-style".to_string(),
+            file_path: file_path.clone(),
+            matches: vec![RipgrepMatch {
+                file_path,
+                message: Some(msg),
+                source: SessionSource::ClaudeCodeCLI,
+            }],
+            automation: None,
+            message_count: Some(12),
+            message_count_compacted: false,
+        }];
+        app.search.group_cursor = 99; // keep the only rendered row unselected
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        assert_unselected_project_and_branch_are_highlighted(
+            terminal.backend().buffer(),
+            120,
+            24,
+            "highlight-app",
+            "feature-branch",
+        );
+    }
+
+    #[test]
+    fn test_render_recent_header_highlights_project_and_branch() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: "recent-style".to_string(),
+            file_path: "/p/sess.jsonl".to_string(),
+            project: "recent-app".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
+            summary: "recent summary".to_string(),
+            automation: None,
+            branch: Some("recent-branch".to_string()),
+            message_count: Some(8),
+            preview_role: MessageRole::User,
+        }];
+        app.recent.cursor = 99; // keep the only rendered row unselected
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        assert_unselected_project_and_branch_are_highlighted(
+            terminal.backend().buffer(),
+            120,
+            24,
+            "recent-app",
+            "recent-branch",
         );
     }
 
