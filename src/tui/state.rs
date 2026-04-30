@@ -757,8 +757,15 @@ impl App {
     }
 
     /// Determine the outcome of the TUI session based on app state after the loop exits.
-    pub fn into_outcome(self) -> TuiOutcome {
-        match self.outcome {
+    ///
+    /// Takes `self` by value so callers see this as the consuming operation
+    /// it logically is — but the body uses `mem::take` on the relevant
+    /// fields rather than destructuring `self`. This is required because
+    /// `App` implements `Drop` (to cancel any in-flight search on exit),
+    /// and Rust forbids moving fields out of a `Drop`-bearing value.
+    pub fn into_outcome(mut self) -> TuiOutcome {
+        let outcome = self.outcome.take();
+        match outcome {
             Some(AppOutcome::Pick(picked)) => TuiOutcome::Pick(picked),
             Some(AppOutcome::Resume(target)) => {
                 ccs_debug!(
@@ -768,12 +775,13 @@ impl App {
                     target.source,
                     target.uuid
                 );
+                let input = std::mem::take(&mut self.input);
                 TuiOutcome::Resume {
                     session_id: target.session_id,
                     file_path: target.file_path,
                     source: target.source,
                     uuid: target.uuid,
-                    query: self.input.into_text(),
+                    query: input.into_text(),
                 }
             }
             None => TuiOutcome::Quit,
@@ -1447,6 +1455,25 @@ impl App {
             });
         } else if let Some(h) = self.search.current.take() {
             h.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// On TUI shutdown (Quit / Resume / Pick / panic / unwind), cancel any
+/// in-flight search so the per-request worker thread and its `rg` child
+/// exit instead of running to completion in the background. Without this
+/// drop, exiting the TUI mid-search leaves an orphaned `rg` process and a
+/// worker thread blocked in `read_line()` until ripgrep finishes naturally
+/// — wasting CPU and battery on a result no one will read. The watchdog
+/// thread (in the ripgrep wrapper) observes this flag and kills `rg`
+/// within ~50 ms.
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(h) = self.search.current.take() {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(flag) = self.search.message_count_cancel.take() {
+            flag.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -2614,7 +2641,7 @@ mod tests {
 
         app.handle_action(KeyAction::Enter);
 
-        match app.outcome {
+        match &app.outcome {
             Some(AppOutcome::Resume(_)) => {}
             other => panic!(
                 "Expected Resume outcome after Enter in AI mode with ranked_count=Some, got {:?}",
@@ -3703,6 +3730,63 @@ mod tests {
         assert_eq!(
             app.search.groups[0].session_id, "fresh",
             "groups must contain only the fresh seq=100 data, not the stale seq=99 or any real-worker data"
+        );
+    }
+
+    // Drop on `App` must cancel any in-flight search so the per-request
+    // worker thread and its `rg` child unwind instead of running to
+    // completion after the TUI exits. This catches all outcome paths
+    // (Quit / Resume / Pick / panic / unwind) without scattering the
+    // cancellation across each one.
+    #[test]
+    fn dropping_app_cancels_in_flight_search() {
+        let app = App::new(vec!["/test".to_string()]);
+        // Build a handle whose cancel flag we can observe from the test
+        // after the App is dropped. We hold our own clone of the Arc so
+        // dropping App does not free the AtomicBool out from under us.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let observer = cancel.clone();
+
+        // Install via direct field access — the test module shares the
+        // module's pub(crate) visibility for `SearchHandle`.
+        let mut app = app;
+        app.search.current = Some(SearchHandle {
+            seq: app.search.search_seq + 1,
+            cancel,
+        });
+        assert!(app.is_searching());
+        assert!(
+            !observer.load(Ordering::Relaxed),
+            "cancel flag must start false"
+        );
+
+        drop(app);
+
+        assert!(
+            observer.load(Ordering::Relaxed),
+            "Drop on App must set the in-flight handle's cancel flag"
+        );
+    }
+
+    // Drop on `App` must also cancel the background message-count thread
+    // so it exits quickly after the TUI shuts down instead of finishing
+    // its file scan in the background. Same all-paths-covered argument as
+    // the search cancellation above.
+    #[test]
+    fn dropping_app_cancels_in_flight_message_count() {
+        let app = App::new(vec!["/test".to_string()]);
+        let flag = Arc::new(AtomicBool::new(false));
+        let observer = flag.clone();
+
+        let mut app = app;
+        app.search.message_count_cancel = Some(flag);
+        assert!(!observer.load(Ordering::Relaxed));
+
+        drop(app);
+
+        assert!(
+            observer.load(Ordering::Relaxed),
+            "Drop on App must set the message-count cancel flag"
         );
     }
 }
