@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -44,7 +45,17 @@ fn build_regex_matcher(query: &str, use_regex: bool) -> Result<Option<regex::Reg
     }
 }
 
+#[cfg(test)]
 fn build_ripgrep_args(query: &str, search_path: &str, use_regex: bool) -> Vec<String> {
+    build_ripgrep_args_with_extra(query, search_path, use_regex, &[])
+}
+
+fn build_ripgrep_args_with_extra(
+    query: &str,
+    search_path: &str,
+    use_regex: bool,
+    extra: &[String],
+) -> Vec<String> {
     let mut args = vec![
         "--json".to_string(),
         "--glob".to_string(),
@@ -57,6 +68,8 @@ fn build_ripgrep_args(query: &str, search_path: &str, use_regex: bool) -> Vec<St
     if !use_regex {
         args.push("--fixed-strings".to_string());
     }
+
+    args.extend_from_slice(extra);
 
     let prefilter_patterns = build_prefilter_patterns(query, use_regex);
     if prefilter_patterns.len() == 1 {
@@ -146,6 +159,30 @@ pub fn search_multiple_paths(
     use_regex: bool,
     cancel: &Arc<AtomicBool>,
 ) -> Result<SearchResult, String> {
+    search_multiple_paths_inner(query, search_paths, use_regex, cancel, &[])
+}
+
+/// Test-only variant that lets a test inject extra `rg` flags
+/// (e.g. `--threads 1`) so timing-sensitive tests can be deterministic
+/// without bloating the fixture. Production code paths always pass `&[]`.
+#[cfg(test)]
+fn search_multiple_paths_with_extra_args(
+    query: &str,
+    search_paths: &[String],
+    use_regex: bool,
+    cancel: &Arc<AtomicBool>,
+    extra_args: &[String],
+) -> Result<SearchResult, String> {
+    search_multiple_paths_inner(query, search_paths, use_regex, cancel, extra_args)
+}
+
+fn search_multiple_paths_inner(
+    query: &str,
+    search_paths: &[String],
+    use_regex: bool,
+    cancel: &Arc<AtomicBool>,
+    extra_args: &[String],
+) -> Result<SearchResult, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
@@ -177,6 +214,7 @@ pub fn search_multiple_paths(
             use_regex,
             regex_matcher.as_ref(),
             cancel,
+            extra_args,
         )?;
         all_results.extend(results);
         any_truncated |= truncated;
@@ -209,15 +247,18 @@ const STDERR_KEEP_BYTES: usize = 64 * 1024;
 /// the `cancel` flag every 50 ms and kills the `rg` child as soon as the flag flips.
 /// This guarantees responsive cancellation even when `rg` is busy scanning a huge
 /// corpus and has not produced any stdout yet — without the watchdog, the main loop
-/// would block in `read_line()` and never observe the flag.
+/// would block in `read_line()` and never observe the flag. The watchdog uses a
+/// `Condvar` for its 50 ms wait so the main thread can wake it instantly on
+/// successful completion (no per-path latency tax).
 fn search_single_path(
     query: &str,
     search_path: &str,
     use_regex: bool,
     regex_matcher: Option<&regex::Regex>,
     cancel: &Arc<AtomicBool>,
+    extra_args: &[String],
 ) -> Result<(Vec<RipgrepMatch>, bool), String> {
-    let args = build_ripgrep_args(query, search_path, use_regex);
+    let args = build_ripgrep_args_with_extra(query, search_path, use_regex, extra_args);
 
     let mut child = Command::new("rg")
         .args(&args)
@@ -277,26 +318,34 @@ fn search_single_path(
     // the per-line cancel check never fires because no line is ever yielded.
     let child = Arc::new(Mutex::new(Some(child)));
 
-    // Watchdog completion flag — separate from `cancel` so the watchdog can
-    // exit cleanly after a normal search completes (no goroutine leak).
-    let done = Arc::new(AtomicBool::new(false));
+    // Watchdog completion signal — separate from `cancel` so the watchdog
+    // can exit cleanly after a normal search completes (no thread leak).
+    // `(Mutex<bool>, Condvar)` lets the main thread wake the watchdog
+    // immediately on completion via `notify_one`, instead of leaving it
+    // parked inside `thread::sleep(50ms)`. Without the wakeable wait every
+    // uncancelled search would stall up to 50 ms per path on `join()`.
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
 
     let watchdog_cancel = cancel.clone();
     let watchdog_done = done.clone();
     let watchdog_child = child.clone();
-    let watchdog_handle = thread::spawn(move || loop {
-        if watchdog_done.load(Ordering::Relaxed) {
-            return;
-        }
-        if watchdog_cancel.load(Ordering::Relaxed) {
-            if let Ok(mut guard) = watchdog_child.lock() {
-                if let Some(c) = guard.as_mut() {
-                    let _ = c.kill();
+    let watchdog_handle = thread::spawn(move || {
+        let (lock, cvar) = &*watchdog_done;
+        let mut done_guard = lock.lock().unwrap();
+        while !*done_guard {
+            if watchdog_cancel.load(Ordering::Relaxed) {
+                if let Ok(mut guard) = watchdog_child.lock() {
+                    if let Some(c) = guard.as_mut() {
+                        let _ = c.kill();
+                    }
                 }
+                return;
             }
-            return;
+            let (new_guard, _timeout) = cvar
+                .wait_timeout(done_guard, Duration::from_millis(50))
+                .unwrap();
+            done_guard = new_guard;
         }
-        thread::sleep(Duration::from_millis(50));
     });
 
     let mut results = Vec::new();
@@ -315,6 +364,16 @@ fn search_single_path(
         child.lock().ok().and_then(|mut g| g.take())
     }
 
+    // Helper: signal the watchdog to exit and wake it from any
+    // `wait_timeout` so it does not stall the join in `thread::sleep`.
+    let signal_done = |done: &Arc<(Mutex<bool>, Condvar)>| {
+        let (lock, cvar) = &**done;
+        if let Ok(mut guard) = lock.lock() {
+            *guard = true;
+            cvar.notify_one();
+        }
+    };
+
     for line in reader.lines().map_while(Result::ok) {
         if cancel.load(Ordering::Relaxed) {
             // Cooperative cancel: kill+reap the child ourselves. The
@@ -322,7 +381,7 @@ fn search_single_path(
             // `Child::kill()` on an already-dead process returns
             // `InvalidInput` which we ignore — the operation is idempotent
             // for our purposes.
-            done.store(true, Ordering::Relaxed);
+            signal_done(&done);
             if let Some(mut c) = take_child(&child) {
                 let _ = c.kill();
                 let _ = c.wait();
@@ -376,8 +435,10 @@ fn search_single_path(
     // The for-loop exited either because rg's stdout reached EOF (normal
     // completion) or because the watchdog killed the child (cancel was
     // observed before the next line was emitted). Signal the watchdog to
-    // exit and reap it.
-    done.store(true, Ordering::Relaxed);
+    // exit and reap it. The Condvar notify wakes the watchdog out of any
+    // pending `wait_timeout(50ms)` so the join is essentially instant —
+    // critical for keeping per-path overhead low on multi-path searches.
+    signal_done(&done);
     let _ = watchdog_handle.join();
 
     // If cancel was observed by the watchdog (and we missed it because the
@@ -1247,6 +1308,7 @@ mod tests {
             false,
             None,
             &cancel,
+            &[],
         )
         .expect("Search should succeed");
 
@@ -1269,6 +1331,7 @@ mod tests {
             false,
             None,
             &cancel,
+            &[],
         )
         .expect("Search should succeed");
 
@@ -1422,48 +1485,49 @@ mod tests {
         // *responsiveness* assertion is what proves the watchdog
         // actually killed rg mid-scan.
         //
-        // Fixture sizing: build a corpus large enough that the natural
-        // (uncancelled) scan time substantially exceeds the cancel
-        // window across realistic hardware. We probe natural scan time
-        // and skip the responsiveness assertion if the probe is too
-        // fast for the assertion to be meaningful — preserving the
-        // test's regression value where it can apply (slower CI hosts,
-        // larger real corpora) without flaking on M-series desktops.
+        // Determinism strategy: instead of a multi-GB fixture (which is
+        // brittle on slow disks and slow CI), we exploit per-file `open`
+        // overhead by creating many tiny files and forcing single-thread
+        // rg. With ~10000 small files, file traversal dominates rg's
+        // wall-clock and reliably pushes probe_elapsed past 100 ms even
+        // on fast hardware (M-series), without burning gigabytes of
+        // disk space. Throughput-based slowdown is unreliable because rg
+        // scans hundreds of MB/s even with --threads 1 on hot pages.
         let temp_dir = TempDir::new().unwrap();
-        for f in 0..200 {
-            let pad_char = char::from_u32(b'A' as u32 + (f as u32 % 26)).unwrap();
-            let big_padding: String = std::iter::repeat_n(pad_char, 10_000).collect();
-            let mut content = String::with_capacity(11_000 * MAX_COUNT_PER_FILE);
-            for i in 0..MAX_COUNT_PER_FILE {
-                content.push_str(&format!(
-                    r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"haystack {} line {}-{}"}}]}},"sessionId":"sess{}","timestamp":"2025-01-09T10:00:00Z"}}"#,
-                    big_padding, f, i, f
-                ));
-                content.push('\n');
-            }
-            create_test_session(&temp_dir, &format!("nomatch_{:03}.jsonl", f), &content);
+        const FILE_COUNT: usize = 10_000;
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"haystack line"}]},"sessionId":"sess1","timestamp":"2025-01-09T10:00:00Z"}"#;
+        // ~120 bytes per file × 10k = ~1.2 MB content + filesystem
+        // block overhead (~40 MB on common filesystems with 4 KB blocks).
+        for f in 0..FILE_COUNT {
+            create_test_session(&temp_dir, &format!("nomatch_{:05}.jsonl", f), line);
         }
 
-        // Warm up the page cache so the probe and cancellation runs are
-        // both hot — eliminates the cold-vs-hot timing skew that would
-        // otherwise let the cancellation run naturally complete before
-        // the cancel sleep elapses.
+        // Force single-threaded rg so per-file overhead dominates and
+        // timing is reproducible across hosts.
+        let extra_args: Vec<String> = vec!["--threads".to_string(), "1".to_string()];
+
+        // Warm up the directory entry cache so the probe and the
+        // cancellation run are both hot — eliminates cold-vs-hot timing
+        // skew that would otherwise make the cancel run appear faster
+        // than the watchdog actually achieved.
         let warmup_cancel = Arc::new(AtomicBool::new(false));
-        let _ = search_multiple_paths(
+        let _ = search_multiple_paths_with_extra_args(
             "ZZZ_NEVER_MATCHES_ZZZ",
             &[temp_dir.path().to_str().unwrap().to_string()],
             false,
             &warmup_cancel,
+            &extra_args,
         );
 
         // Probe natural scan time on hot pages.
         let probe_cancel = Arc::new(AtomicBool::new(false));
         let probe_start = std::time::Instant::now();
-        let probe = search_multiple_paths(
+        let probe = search_multiple_paths_with_extra_args(
             "ZZZ_NEVER_MATCHES_ZZZ",
             &[temp_dir.path().to_str().unwrap().to_string()],
             false,
             &probe_cancel,
+            &extra_args,
         )
         .expect("probe should succeed (no matches is success)");
         let probe_elapsed = probe_start.elapsed();
@@ -1471,17 +1535,30 @@ mod tests {
             probe.matches.is_empty(),
             "fixture should produce no matches"
         );
+        assert!(
+            probe_elapsed >= std::time::Duration::from_millis(100),
+            "fixture is too small: probe_elapsed={:?} (need ≥ 100 ms for the responsiveness assertion to discriminate). \
+             Increase FILE_COUNT.",
+            probe_elapsed
+        );
 
-        // Run the cancellation experiment. Cancel-after = 30 ms is a
-        // small fraction of expected scan time on slow hardware.
-        let cancel_after = std::time::Duration::from_millis(30);
+        // Run the cancellation experiment. Cancel-after = 20 ms is a
+        // small fraction of expected scan time even on fast hosts.
+        let cancel_after = std::time::Duration::from_millis(20);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_worker = cancel.clone();
         let path = temp_dir.path().to_str().unwrap().to_string();
+        let extra_for_worker = extra_args.clone();
 
         let spawn_start = std::time::Instant::now();
         let handle = std::thread::spawn(move || {
-            search_multiple_paths("ZZZ_NEVER_MATCHES_ZZZ", &[path], false, &cancel_for_worker)
+            search_multiple_paths_with_extra_args(
+                "ZZZ_NEVER_MATCHES_ZZZ",
+                &[path],
+                false,
+                &cancel_for_worker,
+                &extra_for_worker,
+            )
         });
 
         std::thread::sleep(cancel_after);
@@ -1505,32 +1582,24 @@ mod tests {
             }
         }
 
-        // Responsiveness contract: when natural scan time is large
-        // enough for the assertion to be meaningful, total wall-clock
-        // must be substantially below it. If the watchdog were absent
-        // and the per-line cancel check never fired (the bug
-        // scenario), `total_elapsed` would be ≈ probe_elapsed because
-        // the worker would have to wait for natural rg completion.
-        // Skip rather than flake on hosts where the probe is too fast
-        // for this to discriminate — sub-200 ms scans race with the
-        // 50 ms watchdog poll cadence.
-        if probe_elapsed >= std::time::Duration::from_millis(200) {
-            let max_total = (probe_elapsed * 3) / 4;
-            assert!(
-                total_elapsed < max_total,
-                "Cancelled search took {:?}, expected < {:?} (probe_elapsed={:?}, cancel_after={:?}); \
-                 watchdog likely did not observe the cancel flag in time — search ran to natural completion",
-                total_elapsed,
-                max_total,
-                probe_elapsed,
-                cancel_after
-            );
-        } else {
-            eprintln!(
-                "watchdog responsiveness assertion skipped: probe_elapsed={:?} (need ≥ 200 ms)",
-                probe_elapsed
-            );
-        }
+        // Responsiveness contract: total wall-clock must be substantially
+        // below the natural probe time. If the watchdog were absent and
+        // the per-line cancel check never fired (the bug scenario),
+        // `total_elapsed` would be ≈ probe_elapsed because the worker
+        // would have to wait for natural rg completion. We require
+        // total_elapsed < probe_elapsed / 2 — strict enough to catch a
+        // broken watchdog (which would push total ≈ probe), tolerant of
+        // the 50 ms watchdog poll cadence + 20 ms cancel_after sleep.
+        let max_total = probe_elapsed / 2;
+        assert!(
+            total_elapsed < max_total,
+            "Cancelled search took {:?}, expected < {:?} (probe_elapsed={:?}, cancel_after={:?}); \
+             watchdog likely did not observe the cancel flag in time — search ran to natural completion",
+            total_elapsed,
+            max_total,
+            probe_elapsed,
+            cancel_after
+        );
     }
 
     /// Probe the actual pipe buffer size on Linux via `F_GETPIPE_SZ` so
