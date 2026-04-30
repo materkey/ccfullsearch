@@ -432,6 +432,8 @@ const COMMAND_NAME_OPEN: &str = "<command-name>";
 const COMMAND_NAME_CLOSE: &str = "</command-name>";
 const COMMAND_MESSAGE_OPEN: &str = "<command-message>";
 const COMMAND_MESSAGE_CLOSE: &str = "</command-message>";
+const COMMAND_ARGS_OPEN: &str = "<command-args>";
+const COMMAND_ARGS_CLOSE: &str = "</command-args>";
 
 fn normalize_command_markup(text: &str) -> Cow<'_, str> {
     if !text.contains("<command-") {
@@ -447,30 +449,54 @@ fn normalize_command_markup(text: &str) -> Cow<'_, str> {
 
         match tag_kind {
             CommandTag::Message => {
-                let Some(close_start) = rest.find(COMMAND_MESSAGE_CLOSE) else {
+                let Some((value, after_message)) =
+                    parse_tag_at(rest, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE)
+                else {
                     output.push_str(rest);
                     return Cow::Owned(output);
                 };
-                let value = &rest[COMMAND_MESSAGE_OPEN.len()..close_start];
-                output.push_str(&slash_command(value));
-                rest = &rest[close_start + COMMAND_MESSAGE_CLOSE.len()..];
+                let (rendered, after_args) =
+                    render_command_with_optional_args(value, after_message);
+                output.push_str(&rendered);
+                rest = after_args;
             }
             CommandTag::Name => {
-                let Some(close_start) = rest.find(COMMAND_NAME_CLOSE) else {
+                let Some((name, after_name)) =
+                    parse_tag_at(rest, COMMAND_NAME_OPEN, COMMAND_NAME_CLOSE)
+                else {
                     output.push_str(rest);
                     return Cow::Owned(output);
                 };
-                let after_name_start = close_start + COMMAND_NAME_CLOSE.len();
-                let after_name = &rest[after_name_start..];
 
-                if after_name.trim_start().starts_with(COMMAND_MESSAGE_OPEN) {
-                    rest = after_name.trim_start();
-                    continue;
+                let after_gap = after_name.trim_start();
+                if after_gap.starts_with(COMMAND_MESSAGE_OPEN) {
+                    let Some((message, after_message)) =
+                        parse_tag_at(after_gap, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE)
+                    else {
+                        output.push_str(&slash_command(name));
+                        rest = after_name;
+                        continue;
+                    };
+                    let (rendered, after_args) =
+                        render_command_with_optional_args(message, after_message);
+                    output.push_str(&rendered);
+                    rest = after_args;
+                } else {
+                    let (rendered, after_args) =
+                        render_command_with_optional_args(name, after_name);
+                    output.push_str(&rendered);
+                    rest = after_args;
                 }
-
-                let value = &rest[COMMAND_NAME_OPEN.len()..close_start];
-                output.push_str(&slash_command(value));
-                rest = after_name;
+            }
+            CommandTag::Args => {
+                let Some((args, after_args)) =
+                    parse_tag_at(rest, COMMAND_ARGS_OPEN, COMMAND_ARGS_CLOSE)
+                else {
+                    output.push_str(rest);
+                    return Cow::Owned(output);
+                };
+                output.push_str(args.trim());
+                rest = after_args;
             }
         }
     }
@@ -483,18 +509,57 @@ fn normalize_command_markup(text: &str) -> Cow<'_, str> {
 enum CommandTag {
     Name,
     Message,
+    Args,
 }
 
 fn next_command_tag(text: &str) -> Option<(usize, CommandTag)> {
-    match (
-        text.find(COMMAND_NAME_OPEN),
-        text.find(COMMAND_MESSAGE_OPEN),
-    ) {
-        (Some(name), Some(message)) if name <= message => Some((name, CommandTag::Name)),
-        (Some(_), Some(message)) => Some((message, CommandTag::Message)),
-        (Some(name), None) => Some((name, CommandTag::Name)),
-        (None, Some(message)) => Some((message, CommandTag::Message)),
-        (None, None) => None,
+    [
+        text.find(COMMAND_NAME_OPEN)
+            .map(|idx| (idx, CommandTag::Name)),
+        text.find(COMMAND_MESSAGE_OPEN)
+            .map(|idx| (idx, CommandTag::Message)),
+        text.find(COMMAND_ARGS_OPEN)
+            .map(|idx| (idx, CommandTag::Args)),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|(idx, _)| *idx)
+}
+
+fn parse_tag_at<'a>(text: &'a str, open: &str, close: &str) -> Option<(&'a str, &'a str)> {
+    let body = text.strip_prefix(open)?;
+    let close_start = body.find(close)?;
+    let value = &body[..close_start];
+    let rest = &body[close_start + close.len()..];
+    Some((value, rest))
+}
+
+fn render_command_with_optional_args<'a>(
+    command: &str,
+    after_command: &'a str,
+) -> (String, &'a str) {
+    let mut rendered = slash_command(command);
+    let after_gap = after_command.trim_start();
+
+    if let Some((args, after_args)) = parse_tag_at(after_gap, COMMAND_ARGS_OPEN, COMMAND_ARGS_CLOSE)
+    {
+        append_command_args(&mut rendered, args);
+        (rendered, after_args)
+    } else {
+        (rendered, after_command)
+    }
+}
+
+fn append_command_args(rendered: &mut String, args: &str) {
+    let args = args.trim();
+    if args.is_empty() {
+        return;
+    }
+    if rendered.trim().is_empty() {
+        rendered.push_str(args);
+    } else {
+        rendered.push(' ');
+        rendered.push_str(args);
     }
 }
 
@@ -843,6 +908,77 @@ mod tests {
         assert_eq!(
             SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
             "/status"
+        );
+    }
+
+    #[test]
+    fn test_render_empty_command_args_are_suppressed() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>revdiff:revdiff</command-message><command-args></command-args>"
+                .into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/revdiff:revdiff"
+        );
+    }
+
+    #[test]
+    fn test_render_command_message_with_args() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>foo</command-message><command-args>bar baz</command-args>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Full),
+            "/foo bar baz"
+        );
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 200 }),
+            "/foo bar baz"
+        );
+    }
+
+    #[test]
+    fn test_render_command_name_with_args() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-name>foo</command-name><command-args>bar baz</command-args>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/foo bar baz"
+        );
+    }
+
+    #[test]
+    fn test_render_command_message_beats_name_and_keeps_args() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-name>ignored</command-name><command-message>foo</command-message><command-args>bar baz</command-args>"
+                .into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/foo bar baz"
+        );
+    }
+
+    #[test]
+    fn test_render_standalone_command_args() {
+        let empty = vec![ContentBlock::Text("<command-args></command-args>".into())];
+        assert_eq!(
+            SessionRecord::render_content(&empty, &ContentMode::TextOnly),
+            ""
+        );
+
+        let non_empty = vec![ContentBlock::Text(
+            "<command-args>bar baz</command-args>".into(),
+        )];
+        assert_eq!(
+            SessionRecord::render_content(&non_empty, &ContentMode::TextOnly),
+            "bar baz"
         );
     }
 

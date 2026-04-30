@@ -54,9 +54,61 @@ fn build_ripgrep_args(query: &str, search_path: &str, use_regex: bool) -> Vec<St
         args.push("--fixed-strings".to_string());
     }
 
-    args.push(query.to_string());
+    let prefilter_patterns = build_prefilter_patterns(query, use_regex);
+    if prefilter_patterns.len() == 1 {
+        args.push(query.to_string());
+    } else {
+        for pattern in prefilter_patterns {
+            args.push("-e".to_string());
+            args.push(pattern);
+        }
+    }
     args.push(search_path.to_string());
     args
+}
+
+fn build_prefilter_patterns(query: &str, use_regex: bool) -> Vec<String> {
+    let mut patterns = vec![query.to_string()];
+
+    if use_regex {
+        if is_regex_slash_command_query(query) {
+            push_command_tag_prefilters(&mut patterns);
+        }
+        return patterns;
+    }
+
+    let Some(command_head) = slash_command_search_head(query) else {
+        return patterns;
+    };
+
+    if command_head.is_empty() {
+        push_command_tag_prefilters(&mut patterns);
+        return patterns;
+    }
+
+    push_unique(&mut patterns, &format!("<command-message>{command_head}"));
+    push_unique(&mut patterns, &format!("<command-name>{command_head}"));
+    patterns
+}
+
+fn is_regex_slash_command_query(query: &str) -> bool {
+    query.starts_with('/') || query.starts_with("^/")
+}
+
+fn slash_command_search_head(query: &str) -> Option<&str> {
+    let command = query.strip_prefix('/')?;
+    Some(command.split_whitespace().next().unwrap_or(""))
+}
+
+fn push_command_tag_prefilters(patterns: &mut Vec<String>) {
+    push_unique(patterns, "<command-message>");
+    push_unique(patterns, "<command-name>");
+}
+
+fn push_unique(patterns: &mut Vec<String>, pattern: &str) {
+    if !patterns.iter().any(|existing| existing == pattern) {
+        patterns.push(pattern.to_string());
+    }
 }
 
 /// Search for query in JSONL files using ripgrep (test helper, discards truncation flag)
@@ -601,6 +653,67 @@ mod tests {
         assert!(
             !warmup_results.is_empty(),
             "Should match 'warmup' in content"
+        );
+    }
+
+    #[test]
+    fn test_search_finds_command_message_by_rendered_slash_command() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-message>revdiff:revdiff</command-message><command-args></command-args>"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let results = search("/revdiff:revdiff", temp_dir.path().to_str().unwrap())
+            .expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].message.as_ref().unwrap().content,
+            "/revdiff:revdiff"
+        );
+    }
+
+    #[test]
+    fn test_search_finds_command_name_args_by_rendered_slash_command() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>foo</command-name><command-args>bar baz</command-args>"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let results =
+            search("/foo bar", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message.as_ref().unwrap().content, "/foo bar baz");
+    }
+
+    #[test]
+    fn test_search_regex_finds_command_name_args_by_rendered_slash_command() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>foo</command-name><command-args>bar baz</command-args>"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let results = search_with_options("^/foo bar", temp_dir.path().to_str().unwrap(), true)
+            .expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message.as_ref().unwrap().content, "/foo bar baz");
+    }
+
+    #[test]
+    fn test_search_command_prefilter_keeps_normalized_post_filter() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>foo</command-name><command-args>different</command-args>"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+
+        let results =
+            search("/foo bar", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        assert!(
+            results.is_empty(),
+            "raw command tag prefilter must not bypass normalized content filtering"
         );
     }
 
