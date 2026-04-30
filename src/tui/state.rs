@@ -6,7 +6,9 @@ use crate::tree::SessionTree;
 use crate::tui::dispatch::{KeyAction, KeyContext};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -490,12 +492,31 @@ pub enum AutomationFilter {
 }
 
 /// Result from background search thread.
+///
+/// `paths` and `use_regex` are still populated (the worker had no way to
+/// elide them without changing the struct shape that test code relies on),
+/// but `handle_search_result` no longer validates them: with `SearchHandle`
+/// as the source of truth, secondary checks were redundant — newer requests
+/// cancel older ones before they can deliver, and any straggler with a
+/// stale `seq` is dropped on arrival.
+#[allow(dead_code)]
 pub(crate) struct BackgroundSearchResult {
     pub seq: u64,
     pub query: String,
     pub paths: Vec<String>,
     pub use_regex: bool,
     pub result: Result<crate::search::SearchResult, String>,
+}
+
+/// Handle on a single in-flight search request. Carries the request's
+/// monotonic sequence number and a cooperative cancellation flag that the
+/// background thread checks while iterating ripgrep output. `App.search.current
+/// .is_some()` is the single source of truth for "is a search in flight";
+/// the previous `searching: bool` shadow flag has been removed because any
+/// early return from `handle_search_result` could leave it stuck at `true`.
+pub(crate) struct SearchHandle {
+    pub seq: u64,
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Search-related state: results, cursors, background channel.
@@ -509,14 +530,18 @@ pub struct SearchState {
     pub group_cursor: usize,
     pub sub_cursor: usize,
     pub expanded: bool,
-    pub searching: bool,
+    /// Handle on the in-flight search request, if any. Replaces the prior
+    /// `searching: bool`. `current.is_some()` is the source of truth for the
+    /// "Searching…" status.
+    pub(crate) current: Option<SearchHandle>,
     pub error: Option<String>,
     /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
     pub latest_chains: HashMap<String, HashSet<String>>,
     /// Channel to receive search results from background thread
     pub(crate) search_rx: Receiver<BackgroundSearchResult>,
-    /// Channel to send search requests to background thread
-    pub(crate) search_tx: Sender<(u64, String, Vec<String>, bool)>,
+    /// Sender end of the result channel — cloned into each spawned per-request
+    /// thread so it can deliver its result back to the UI.
+    pub(crate) result_tx: Sender<BackgroundSearchResult>,
     /// Monotonic request sequence to ignore stale async results
     pub(crate) search_seq: u64,
     /// Whether the last search hit the per-file match limit (results may be incomplete)
@@ -619,20 +644,25 @@ pub struct App {
 
 impl App {
     pub fn new(search_paths: Vec<String>) -> Self {
-        // Create channels for async search
+        // Channel for results from per-request search threads. `result_tx` is
+        // promoted to a `SearchState` field (was a local in the legacy
+        // worker model) so each spawn-per-request thread in `start_search`
+        // can `.clone()` it.
         let (result_tx, result_rx) = mpsc::channel::<BackgroundSearchResult>();
-        let (query_tx, query_rx) = mpsc::channel::<(u64, String, Vec<String>, bool)>();
+        // Legacy single-worker channel. Task 2 of the stuck-`searching`-flag
+        // plan removes the `search_tx` field, so `query_tx` is no longer
+        // stored anywhere and the worker's `query_rx.recv()` will return
+        // `Err` shortly after construction, letting the thread exit cleanly.
+        // Task 3 deletes the worker entirely.
+        let (_query_tx, query_rx) = mpsc::channel::<(u64, String, Vec<String>, bool)>();
+        let result_tx_for_worker = result_tx.clone();
 
         // Spawn background search thread
         thread::spawn(move || {
             while let Ok((seq, query, paths, use_regex)) = query_rx.recv() {
-                // Task 1 of the stuck-`searching`-flag plan: thread a cancellation token
-                // through search_multiple_paths. The legacy worker is being preserved
-                // verbatim (Task 3 deletes it); each iteration uses a fresh always-false
-                // token so behavior is unchanged at this stage.
-                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = Arc::new(AtomicBool::new(false));
                 let result = search_multiple_paths(&query, &paths, use_regex, &cancel);
-                let _ = result_tx.send(BackgroundSearchResult {
+                let _ = result_tx_for_worker.send(BackgroundSearchResult {
                     seq,
                     query,
                     paths,
@@ -675,11 +705,11 @@ impl App {
                 group_cursor: 0,
                 sub_cursor: 0,
                 expanded: false,
-                searching: false,
+                current: None,
                 error: None,
                 latest_chains: HashMap::new(),
                 search_rx: result_rx,
-                search_tx: query_tx,
+                result_tx,
                 search_seq: 0,
                 search_truncated: false,
                 message_count_rx: None,
@@ -789,10 +819,12 @@ impl App {
         self.search.expanded = false;
         self.preview_mode = false;
         self.search.latest_chains.clear();
-        self.search.searching = false;
+        if let Some(handle) = self.search.current.take() {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
         self.search.error = None;
         if let Some(flag) = self.search.message_count_cancel.take() {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            flag.store(true, Ordering::Relaxed);
         }
         self.search.message_count_rx = None;
     }
@@ -1099,19 +1131,25 @@ impl App {
         BackgroundSearchResult {
             seq,
             query,
-            paths,
-            use_regex,
+            paths: _,
+            use_regex: _,
             result,
         }: BackgroundSearchResult,
     ) {
-        // Ignore stale async results if query text, mode, path scope, or request sequence changed.
-        if seq != self.search.search_seq
-            || query != self.input.text()
-            || use_regex != self.regex_mode
-            || paths != self.search_paths
-        {
+        // The handle is the single source of truth: a result is fresh iff
+        // its seq matches the current request's seq. Newer requests cancel
+        // older ones before they can deliver, so any received result with
+        // `seq == current.seq` is by construction consistent with the
+        // request that produced it — secondary checks on query / paths /
+        // use_regex are redundant and were removed because they could
+        // strand the prior `searching: bool` flag at `true`.
+        let Some(current) = self.search.current.as_ref() else {
+            return;
+        };
+        if seq != current.seq {
             return;
         }
+        self.search.current = None;
 
         match result {
             Ok(search_result) => {
@@ -1141,11 +1179,10 @@ impl App {
                 self.search.expanded = false;
                 self.search.error = None;
                 self.search.latest_chains.clear();
-                self.search.searching = false;
 
                 // Spawn background thread to count total messages per session file
                 if let Some(flag) = self.search.message_count_cancel.take() {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    flag.store(true, Ordering::Relaxed);
                 }
                 let file_paths: Vec<String> = self
                     .search
@@ -1157,11 +1194,11 @@ impl App {
                     .collect();
                 if !file_paths.is_empty() {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel = Arc::new(AtomicBool::new(false));
                     let cancel_clone = cancel.clone();
                     std::thread::spawn(move || {
                         for fp in file_paths {
-                            if cancel_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                            if cancel_clone.load(Ordering::Relaxed) {
                                 break;
                             }
                             let (msg_count, compacted) = crate::search::count_session_messages(&fp);
@@ -1176,7 +1213,6 @@ impl App {
             }
             Err(e) => {
                 self.search.error = Some(e);
-                self.search.searching = false;
                 self.search.search_truncated = false;
             }
         }
@@ -1372,20 +1408,74 @@ impl App {
         self.ai.ranked_count = Some(matched_count);
     }
 
-    /// Start an async search in the background thread
+    /// Start an async search by spawning a dedicated per-request thread.
+    ///
+    /// Cancels any prior in-flight handle (cooperative + forced via the
+    /// ripgrep wrapper's `child.kill()` on the next line iteration) before
+    /// installing the new handle. The result is dispatched via
+    /// `search.result_tx`; `tick()` polls `search.search_rx` and routes
+    /// matching-`seq` results through `handle_search_result`.
     pub(crate) fn start_search(&mut self) {
         self.search.search_seq += 1;
+        let seq = self.search.search_seq;
         self.last_query = self.input.text().to_string();
         self.last_regex_mode = self.regex_mode;
         self.last_search_paths = self.search_paths.clone();
-        self.search.searching = true;
         self.search.search_truncated = false;
-        let _ = self.search.search_tx.send((
-            self.search.search_seq,
-            self.input.text().to_string(),
-            self.search_paths.clone(),
-            self.regex_mode,
-        ));
+
+        if let Some(prev) = self.search.current.take() {
+            prev.cancel.store(true, Ordering::Relaxed);
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
+        let tx = self.search.result_tx.clone();
+        let query = self.input.text().to_string();
+        let paths = self.search_paths.clone();
+        let use_regex = self.regex_mode;
+
+        thread::spawn(move || {
+            let result = search_multiple_paths(&query, &paths, use_regex, &cancel_worker);
+            // The race window between the final `cancel.load()` inside
+            // ripgrep and this `send` is closed by the seq discriminator
+            // in `handle_search_result`: a stale result that slips through
+            // here will be dropped on arrival.
+            if !cancel_worker.load(Ordering::Relaxed) {
+                let _ = tx.send(BackgroundSearchResult {
+                    seq,
+                    query,
+                    paths,
+                    use_regex,
+                    result,
+                });
+            }
+        });
+
+        self.search.current = Some(SearchHandle { seq, cancel });
+    }
+
+    /// Whether a search request is currently in flight.
+    /// Derived from `search.current`, replacing the prior stored
+    /// `searching: bool` flag.
+    pub fn is_searching(&self) -> bool {
+        self.search.current.is_some()
+    }
+
+    /// Test-only helper to install or clear an in-flight search handle.
+    /// Used by external integration tests (e.g. render snapshots) to
+    /// exercise the "Searching…" status without spawning a real thread.
+    /// `SearchHandle` itself is `pub(crate)`, so external callers cannot
+    /// construct one directly — this helper bridges that gap.
+    #[doc(hidden)]
+    pub fn set_searching_for_test(&mut self, searching: bool) {
+        if searching {
+            self.search.current = Some(SearchHandle {
+                seq: self.search.search_seq,
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+        } else if let Some(h) = self.search.current.take() {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1484,6 +1574,10 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.input.set_text("later");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.recent.all = vec![RecentSession {
             session_id: "auto-session".to_string(),
             file_path: "/sessions/auto-session.jsonl".to_string(),
@@ -1537,6 +1631,10 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.input.set_text("reply");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.automation_filter = AutomationFilter::Auto;
 
         let result = RipgrepMatch {
@@ -1581,6 +1679,10 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.input.set_text("detekt");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
 
         let result = RipgrepMatch {
             file_path: session_file.path().to_string_lossy().to_string(),
@@ -1615,6 +1717,10 @@ mod tests {
     fn test_search_truncated_clears_on_non_truncated_result() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.input.set_text("query");
         app.regex_mode = false;
 
@@ -1633,6 +1739,10 @@ mod tests {
 
         // Second result: not truncated — flag must clear
         app.search.search_seq = 2;
+        app.search.current = Some(SearchHandle {
+            seq: 2,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.handle_search_result(BackgroundSearchResult {
             seq: 2,
             query: "query".to_string(),
@@ -1703,7 +1813,10 @@ mod tests {
         app.search.group_cursor = 1;
         app.search.sub_cursor = 2;
         app.search.expanded = true;
-        app.search.searching = true;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.typing = true;
         app.last_keystroke = Some(Instant::now());
         app.search
@@ -1720,7 +1833,7 @@ mod tests {
             app.last_keystroke.is_none(),
             "last_keystroke should be None"
         );
-        assert!(!app.search.searching, "searching should be false");
+        assert!(!app.is_searching(), "is_searching should be false");
         assert!(app.last_query.is_empty(), "last_query should be cleared");
         assert_eq!(
             app.search.results_count, 0,
@@ -2060,7 +2173,10 @@ mod tests {
         app.search.group_cursor = 1;
         app.search.sub_cursor = 2;
         app.search.expanded = true;
-        app.search.searching = true;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         app.search
             .latest_chains
             .insert("file".to_string(), HashSet::new());
@@ -2093,7 +2209,7 @@ mod tests {
         assert_eq!(app.search.sub_cursor, 0, "sub_cursor should be reset");
         assert!(!app.search.expanded, "expanded should be reset");
         assert!(!app.typing, "typing should be false after debounce");
-        assert!(!app.search.searching, "searching should be false");
+        assert!(!app.is_searching(), "is_searching should be false");
         assert!(
             app.search.latest_chains.is_empty(),
             "latest_chains should be cleared"
@@ -2858,6 +2974,10 @@ mod tests {
         app.ai.ranked_count = None;
         app.input.set_text("query");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         // Pre-populate `search.groups` to emulate the stale AI-ranked list
         // that was visible when the user pressed Ctrl+R.
         app.search.groups = vec![SessionGroup {
@@ -2914,6 +3034,10 @@ mod tests {
         app.ai.ranked_count = Some(1);
         app.input.set_text("query");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         let ranked = SessionGroup {
             session_id: "ranked".to_string(),
             file_path: "/sessions/ranked.jsonl".to_string(),
@@ -2976,6 +3100,10 @@ mod tests {
         app.ai.result_rx = Some(rx);
         app.input.set_text("query");
         app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
         let snapshotted = SessionGroup {
             session_id: "snapshotted".to_string(),
             file_path: "/sessions/snapshotted.jsonl".to_string(),
@@ -3180,5 +3308,233 @@ mod tests {
             original.iter().map(|g| &g.session_id).collect::<Vec<_>>(),
             "no-match result must leave visible ordering untouched"
         );
+    }
+
+    // =========================================================================
+    // Task 2: SearchHandle / `current` source-of-truth tests
+    // =========================================================================
+
+    // `start_search` must (a) install a fresh `SearchHandle` in `current`,
+    // (b) cancel the prior handle by setting its `cancel` flag to `true`,
+    // and (c) bump `search_seq` so the new handle is distinguishable from
+    // the cancelled one. Empty `search_paths` keeps the spawned worker
+    // thread idle (search_multiple_paths returns Ok({matches: [], …})
+    // immediately) so the test does not race with real ripgrep work.
+    #[test]
+    fn start_search_cancels_prior_handle_and_bumps_seq() {
+        let mut app = App::new(vec![]);
+        app.input.set_text("foo");
+
+        app.start_search();
+        let first = app.search.current.as_ref().expect("first handle present");
+        let first_seq = first.seq;
+        let first_cancel = first.cancel.clone();
+
+        app.start_search();
+        let second = app
+            .search
+            .current
+            .as_ref()
+            .expect("second handle present after re-issue");
+
+        assert!(
+            first_cancel.load(Ordering::Relaxed),
+            "prior handle's cancel flag must be set"
+        );
+        assert!(
+            second.seq > first_seq,
+            "second seq ({}) must be greater than first ({})",
+            second.seq,
+            first_seq
+        );
+        assert!(
+            !second.cancel.load(Ordering::Relaxed),
+            "new handle must start uncancelled"
+        );
+    }
+
+    // `handle_search_result` discriminates by `seq` only and ignores results
+    // when no handle is in flight. The matching-seq case clears `current`
+    // and processes the matches.
+    #[test]
+    fn handle_search_result_no_op_when_no_current() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        assert!(app.search.current.is_none());
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "ignored".to_string(),
+            paths: vec![],
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![],
+                truncated: false,
+            }),
+        });
+
+        assert!(app.search.results_query.is_empty());
+        assert!(app.search.groups.is_empty());
+    }
+
+    #[test]
+    fn handle_search_result_drops_mismatched_seq() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.search_seq = 5;
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.search.current = Some(SearchHandle {
+            seq: 5,
+            cancel: cancel.clone(),
+        });
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 3,
+            query: "stale".to_string(),
+            paths: vec![],
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![],
+                truncated: false,
+            }),
+        });
+
+        assert!(
+            app.search.current.is_some(),
+            "current handle must survive a mismatched seq"
+        );
+        assert_eq!(app.search.results_query, "");
+    }
+
+    #[test]
+    fn handle_search_result_consumes_current_on_seq_match() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.search_seq = 7;
+        app.search.current = Some(SearchHandle {
+            seq: 7,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        let m = RipgrepMatch {
+            file_path: "/sessions/match.jsonl".to_string(),
+            message: Some(Message {
+                session_id: "match".to_string(),
+                role: "user".to_string(),
+                content: "needle".to_string(),
+                timestamp: Utc::now(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::ClaudeCodeCLI,
+        };
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 7,
+            query: "needle".to_string(),
+            paths: vec![],
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![m],
+                truncated: false,
+            }),
+        });
+
+        assert!(
+            app.search.current.is_none(),
+            "matching seq must clear current"
+        );
+        assert!(!app.is_searching(), "is_searching must be false");
+        assert_eq!(app.search.results_query, "needle");
+        assert_eq!(app.search.groups.len(), 1);
+        assert_eq!(app.search.groups[0].session_id, "match");
+    }
+
+    // `handle_search_result` must preserve the AI-rank gate at state.rs:1130
+    // verbatim: while a rank is applied (`ranked_count = Some(_)`),
+    // `apply_groups_filter` must NOT run. This complements the existing
+    // `ai_handle_search_result_preserves_groups_when_rank_applied` test —
+    // it is restated here under the new contract (current/seq) to guard
+    // against accidental removal of the gate during the rewrite.
+    #[test]
+    fn handle_search_result_preserves_groups_when_rank_applied_with_handle() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.ranked_count = Some(1);
+        app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        let ranked = SessionGroup {
+            session_id: "ranked".to_string(),
+            file_path: "/sessions/ranked.jsonl".to_string(),
+            matches: vec![],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        };
+        app.search.groups = vec![ranked.clone()];
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "any".to_string(),
+            paths: vec![],
+            use_regex: false,
+            result: Ok(crate::search::SearchResult {
+                matches: vec![RipgrepMatch {
+                    file_path: "/sessions/fresh.jsonl".to_string(),
+                    message: Some(Message {
+                        session_id: "fresh".to_string(),
+                        role: "user".to_string(),
+                        content: "any".to_string(),
+                        timestamp: Utc::now(),
+                        line_number: 1,
+                        ..Default::default()
+                    }),
+                    source: SessionSource::ClaudeCodeCLI,
+                }],
+                truncated: false,
+            }),
+        });
+
+        assert!(
+            app.search.current.is_none(),
+            "current must be cleared even when AI rank is applied"
+        );
+        assert_eq!(
+            app.search.groups.len(),
+            1,
+            "AI-ranked groups must NOT be replaced"
+        );
+        assert_eq!(app.search.groups[0].session_id, "ranked");
+        assert_eq!(
+            app.search.all_groups.len(),
+            1,
+            "all_groups must still absorb fresh data for post-invalidation refresh"
+        );
+        assert_eq!(app.search.all_groups[0].session_id, "fresh");
+    }
+
+    // `clear_input` (Ctrl-C with non-empty input) must cancel any in-flight
+    // search by setting the handle's cancel flag and clearing `current`.
+    #[test]
+    fn clear_input_cancels_in_flight_search() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.input.set_text_and_cursor("query", 5);
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: cancel.clone(),
+        });
+
+        app.clear_input();
+
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "clear_input must set the cancel flag of the in-flight handle"
+        );
+        assert!(
+            app.search.current.is_none(),
+            "current handle must be taken/cleared"
+        );
+        assert!(!app.is_searching());
     }
 }

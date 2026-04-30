@@ -133,7 +133,7 @@ fn snapshot_search_status_indicators() {
 
     // Test "Searching..." status
     app.typing = false;
-    app.search.searching = true;
+    app.set_searching_for_test(true);
     terminal.draw(|frame| render(frame, &app.view())).unwrap();
     let lines = buffer_lines(&terminal);
     assert!(
@@ -142,7 +142,7 @@ fn snapshot_search_status_indicators() {
     );
 
     // Test error status
-    app.search.searching = false;
+    app.set_searching_for_test(false);
     app.search.error = Some("rg not found".to_string());
     terminal.draw(|frame| render(frame, &app.view())).unwrap();
     let lines = buffer_lines(&terminal);

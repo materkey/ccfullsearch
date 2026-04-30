@@ -13,3 +13,12 @@ impl<'a> std::ops::Deref for AppView<'a> {
         self.0
     }
 }
+
+impl<'a> AppView<'a> {
+    /// Whether a search request is currently in flight.
+    /// Renderers should call this instead of inspecting internal
+    /// state — `App.search.current` is `pub(crate)`.
+    pub fn is_searching(&self) -> bool {
+        self.0.is_searching()
+    }
+}

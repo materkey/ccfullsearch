@@ -225,19 +225,19 @@ The `thread::spawn(move || while let Ok(...) = query_rx.recv() { ... })` block i
 
 > **Atomicity note**: After this task lands, the legacy worker thread (state.rs:627-638) becomes idle — its `query_rx.recv()` returns `Err` because we drop the `query_tx` field and the sender is no longer held anywhere. The thread exits cleanly. Task 3 then removes the now-dead worker code. This means the tree compiles and tests pass at the end of Task 2 even though the worker is technically still spawned but immediately stops.
 
-- [ ] write a test asserting that calling `start_search` twice in a row stores `Some(_)` in `current`, sets the *first* handle's `cancel` flag to `true`, and that the second handle has a different `seq`. Use an empty `search_paths` (which makes `search_multiple_paths` return `Ok` immediately so the spawned thread exits without doing real work)
-- [ ] write a test for the new `handle_search_result` contract via direct channel injection: (a) `current = None` → `handle_search_result` no-op; (b) `current = Some(seq=5)` and result with `seq=3` → no-op, `current` unchanged; (c) `current = Some(seq=5)` and result with `seq=5` → `current = None`, `groups` populated
-- [ ] write a test that `handle_search_result` does NOT call `apply_groups_filter()` when `ai.ranked_count.is_some()` — i.e. preserves the AI-rank gate (mirror the existing `ai_handle_search_result_preserves_groups_when_rank_applied` test at state.rs:2906)
-- [ ] write a test that `clear_input()` during an in-flight search sets the current handle's cancel flag to `true` and clears `current`
-- [ ] rewrite `test_stale_search_result_ignored_when_scope_changes` (state.rs:429-456) against the new contract — assert that a result with `seq < current.seq` is dropped and `current` is preserved (no scope-change semantics anymore)
-- [ ] add `pub(crate) struct SearchHandle { pub seq: u64, pub cancel: Arc<AtomicBool> }` to `state.rs`
-- [ ] in `SearchState`: remove `searching: bool` and `search_tx`; add `current: Option<SearchHandle>` and `result_tx: Sender<BackgroundSearchResult>`
-- [ ] add `pub fn is_searching(&self) -> bool { self.search.current.is_some() }` on `App`; expose via `AppView::is_searching()`
-- [ ] rewrite `start_search` per the design block above (cancel previous handle → spawn thread → store new handle)
-- [ ] rewrite `handle_search_result` per the design block above; **CRITICAL: preserve verbatim the `if self.ai.ranked_count.is_none() && !self.ai.thinking { self.apply_groups_filter(); }` gate** at state.rs:1130 — only the seq/query/paths/use_regex secondary `if` block at lines 1102-1109 is removed
-- [ ] update `reset_search_state` and `clear_input`: replace `self.search.searching = false;` with `if let Some(h) = self.search.current.take() { h.cancel.store(true, Ordering::Relaxed); }`
-- [ ] update `render_search.rs:340` to call `view.is_searching()` instead of reading `app.search.searching`
-- [ ] run tests — `cargo test` must pass before next task
+- [x] write a test asserting that calling `start_search` twice in a row stores `Some(_)` in `current`, sets the *first* handle's `cancel` flag to `true`, and that the second handle has a different `seq`. Use an empty `search_paths` (which makes `search_multiple_paths` return `Ok` immediately so the spawned thread exits without doing real work)
+- [x] write a test for the new `handle_search_result` contract via direct channel injection: (a) `current = None` → `handle_search_result` no-op; (b) `current = Some(seq=5)` and result with `seq=3` → no-op, `current` unchanged; (c) `current = Some(seq=5)` and result with `seq=5` → `current = None`, `groups` populated
+- [x] write a test that `handle_search_result` does NOT call `apply_groups_filter()` when `ai.ranked_count.is_some()` — i.e. preserves the AI-rank gate (mirror the existing `ai_handle_search_result_preserves_groups_when_rank_applied` test at state.rs:2906)
+- [x] write a test that `clear_input()` during an in-flight search sets the current handle's cancel flag to `true` and clears `current`
+- [x] rewrite `test_stale_search_result_ignored_when_scope_changes` (state.rs:429-456) against the new contract — assert that a result with `seq < current.seq` is dropped and `current` is preserved (no scope-change semantics anymore)
+- [x] add `pub(crate) struct SearchHandle { pub seq: u64, pub cancel: Arc<AtomicBool> }` to `state.rs`
+- [x] in `SearchState`: remove `searching: bool` and `search_tx`; add `current: Option<SearchHandle>` and `result_tx: Sender<BackgroundSearchResult>`
+- [x] add `pub fn is_searching(&self) -> bool { self.search.current.is_some() }` on `App`; expose via `AppView::is_searching()`
+- [x] rewrite `start_search` per the design block above (cancel previous handle → spawn thread → store new handle)
+- [x] rewrite `handle_search_result` per the design block above; **CRITICAL: preserve verbatim the `if self.ai.ranked_count.is_none() && !self.ai.thinking { self.apply_groups_filter(); }` gate** at state.rs:1130 — only the seq/query/paths/use_regex secondary `if` block at lines 1102-1109 is removed
+- [x] update `reset_search_state` and `clear_input`: replace `self.search.searching = false;` with `if let Some(h) = self.search.current.take() { h.cancel.store(true, Ordering::Relaxed); }`
+- [x] update `render_search.rs:340` to call `view.is_searching()` instead of reading `app.search.searching`
+- [x] run tests — `cargo test` must pass before next task
 
 ### Task 3: Remove the long-lived background worker thread
 

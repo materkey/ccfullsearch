@@ -409,7 +409,7 @@ mod tests {
         app.last_keystroke = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS + 1));
         app.tick();
 
-        assert!(app.search.searching);
+        assert!(app.is_searching());
         assert_eq!(app.search.search_seq, 1);
         assert_eq!(app.last_search_paths, vec!["/all/-Users-test".to_string()]);
     }
@@ -425,16 +425,26 @@ mod tests {
         assert!(!app.typing);
     }
 
+    // Stale results are dropped on `seq` mismatch alone — the prior
+    // secondary filter on query/paths/use_regex was redundant and could
+    // strand `searching` at `true`. With `current` as the source of
+    // truth, a result whose seq doesn't match the current handle is
+    // silently dropped and the in-flight handle is preserved.
     #[test]
-    fn test_stale_search_result_ignored_when_scope_changes() {
+    fn test_stale_search_result_ignored_on_seq_mismatch() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
         let mut app = App::new(vec!["/all".to_string()]);
         app.input.set_text("query");
-        app.search_paths = vec!["/project".to_string()];
-        app.search.search_seq = 1;
-        app.search.searching = true;
+        app.search.search_seq = 2;
+        app.search.current = Some(crate::tui::state::SearchHandle {
+            seq: 2,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
 
         let stale_result = crate::tui::state::BackgroundSearchResult {
-            seq: 1,
+            seq: 1, // older than current
             query: "query".to_string(),
             paths: vec!["/all".to_string()],
             use_regex: false,
@@ -452,7 +462,10 @@ mod tests {
 
         assert_eq!(app.search.results_count, 0);
         assert!(app.search.groups.is_empty());
-        assert!(app.search.searching);
+        assert!(
+            app.is_searching(),
+            "in-flight handle must survive a stale result"
+        );
     }
 
     // =========================================================================

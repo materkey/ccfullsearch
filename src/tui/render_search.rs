@@ -354,7 +354,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
         )
-    } else if app.search.searching {
+    } else if app.is_searching() {
         Span::styled(
             "Searching...",
             Style::default()
