@@ -30,6 +30,27 @@ pub fn is_on_latest_chain(file_path: &str, target_uuid: &str) -> bool {
     dag.chain_from(tip).contains(target_uuid)
 }
 
+/// Check whether resuming from `target_uuid` requires creating a fork.
+///
+/// Claude's plain `--resume <session-id>` always opens the current session tip.
+/// Therefore selecting any existing UUID other than the current resumable tip
+/// must create a fork, even when the selected UUID is an ancestor on the latest
+/// chain. Unknown UUIDs are treated as no-fork because they can come from an
+/// auxiliary file that was resolved to its parent session.
+pub fn should_fork_for_resume(file_path: &str, target_uuid: &str) -> bool {
+    let dag = match SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if dag.get(target_uuid).is_none() {
+        return false;
+    }
+    let Some(tip) = dag.tip(TipStrategy::LastAppended) else {
+        return false;
+    };
+    tip != target_uuid
+}
+
 /// Build the set of uuids on the latest chain (from the terminal message backwards).
 pub fn build_chain_from_tip(file_path: &str) -> Option<HashSet<String>> {
     let dag = SessionDag::from_file(Path::new(file_path), DisplayFilter::Standard).ok()?;
@@ -556,6 +577,58 @@ mod tests {
         assert!(
             !is_on_latest_chain(path.to_str().unwrap(), "a5"),
             "UUID on non-latest branch should return false"
+        );
+    }
+
+    #[test]
+    fn test_should_fork_for_resume_from_ancestor_on_latest_chain() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","uuid":"u3","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:03:00Z"}}"#).unwrap();
+
+        assert!(
+            should_fork_for_resume(path.to_str().unwrap(), "u2"),
+            "selecting an ancestor on the latest chain must fork, otherwise claude --resume opens u3"
+        );
+        assert!(
+            !should_fork_for_resume(path.to_str().unwrap(), "u3"),
+            "selecting the current tip does not need a fork"
+        );
+        assert!(
+            !should_fork_for_resume(path.to_str().unwrap(), "missing"),
+            "unknown UUIDs should not trigger spurious forks"
+        );
+    }
+
+    #[test]
+    fn test_latest_tip_ignores_non_displayable_tail_for_fork_decision() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"attachment","uuid":"att1","parentUuid":"u2","sessionId":"s1","timestamp":"2025-01-01T00:02:01Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"system","uuid":"sys1","parentUuid":"att1","sessionId":"s1","timestamp":"2025-01-01T00:02:02Z"}}"#).unwrap();
+
+        assert_eq!(latest_tip_uuid(path.to_str().unwrap()), Some("u2".into()));
+        assert!(
+            !should_fork_for_resume(path.to_str().unwrap(), "u2"),
+            "the latest displayable message should remain the no-fork resume target"
+        );
+        assert!(
+            should_fork_for_resume(path.to_str().unwrap(), "u1"),
+            "older messages should fork even when they are ancestors of the latest message"
         );
     }
 }

@@ -8,7 +8,7 @@ use std::path::Path;
 /// Strategy for selecting the tip (terminal node) of the conversation DAG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipStrategy {
-    /// Pick the last displayable UUID (by file order) that has no children.
+    /// Pick the last displayable UUID (by file order) that has no displayable children.
     /// Fallback: last UUID seen (any type).
     /// Used by: resume/fork.rs, recent.rs
     LastAppended,
@@ -47,7 +47,6 @@ pub struct DagEntry {
 /// Sidechain records are excluded during construction.
 pub struct SessionDag {
     entries: HashMap<String, DagEntry>,
-    parent_set: HashSet<String>,
     displayable_order: Vec<String>,
     last_uuid: Option<String>,
 }
@@ -61,7 +60,6 @@ impl SessionDag {
         let reader = BufReader::new(file);
 
         let mut entries = HashMap::new();
-        let mut parent_set = HashSet::new();
         let mut displayable_order = Vec::new();
         let mut last_uuid = None;
 
@@ -90,10 +88,6 @@ impl SessionDag {
             };
             let parent_uuid = session::extract_parent_uuid_or_logical(&json);
 
-            if let Some(ref p) = parent_uuid {
-                parent_set.insert(p.clone());
-            }
-
             let record_type = session::extract_record_type(&json);
             let is_displayable = is_displayable_type(record_type, filter);
             let timestamp = session::extract_timestamp(&json);
@@ -118,7 +112,6 @@ impl SessionDag {
 
         Ok(SessionDag {
             entries,
-            parent_set,
             displayable_order,
             last_uuid,
         })
@@ -132,7 +125,6 @@ impl SessionDag {
         I: Iterator<Item = (SessionRecord, usize, Option<DateTime<Utc>>)>,
     {
         let mut entries = HashMap::new();
-        let mut parent_set = HashSet::new();
         let mut displayable_order = Vec::new();
         let mut last_uuid = None;
 
@@ -145,10 +137,6 @@ impl SessionDag {
                 continue;
             };
             let parent_uuid = record.dag_parent_uuid().map(|s| s.to_string());
-
-            if let Some(ref p) = parent_uuid {
-                parent_set.insert(p.clone());
-            }
 
             let is_displayable = is_record_displayable(&record, filter);
 
@@ -172,7 +160,6 @@ impl SessionDag {
 
         SessionDag {
             entries,
-            parent_set,
             displayable_order,
             last_uuid,
         }
@@ -180,14 +167,19 @@ impl SessionDag {
 
     /// Select the tip (terminal node) of the conversation using the given strategy.
     pub fn tip(&self, strategy: TipStrategy) -> Option<&str> {
+        let displayable_parent_set = self.displayable_parent_set();
+
         match strategy {
             TipStrategy::LastAppended => {
-                // Scan displayable UUIDs in reverse (last-seen first),
-                // pick the first one that has no children.
+                // Scan displayable UUIDs in reverse (last-seen first), pick
+                // the first one with no displayable children. Non-displayable
+                // attachment/system records are DAG nodes, but they should not
+                // make the preceding user/assistant message stop being the
+                // resumable conversation tip.
                 self.displayable_order
                     .iter()
                     .rev()
-                    .find(|uuid| !self.parent_set.contains(*uuid))
+                    .find(|uuid| !displayable_parent_set.contains(*uuid))
                     .map(|s| s.as_str())
                     .or(self.last_uuid.as_deref())
             }
@@ -196,7 +188,7 @@ impl SessionDag {
                 let tip = self
                     .displayable_order
                     .iter()
-                    .filter(|uuid| !self.parent_set.contains(*uuid))
+                    .filter(|uuid| !displayable_parent_set.contains(*uuid))
                     .filter_map(|uuid| self.entries.get(uuid))
                     .filter(|e| e.timestamp.is_some())
                     .max_by_key(|e| e.timestamp)
@@ -245,6 +237,37 @@ impl SessionDag {
     /// Get an entry by UUID.
     pub fn get(&self, uuid: &str) -> Option<&DagEntry> {
         self.entries.get(uuid)
+    }
+
+    /// Build the set of displayable nodes that have a displayable child in the
+    /// collapsed display graph. Non-displayable bridge nodes are walked through.
+    fn displayable_parent_set(&self) -> HashSet<String> {
+        let displayable: HashSet<&str> =
+            self.displayable_order.iter().map(String::as_str).collect();
+        let mut parents = HashSet::new();
+
+        for uuid in &self.displayable_order {
+            let mut current_parent = self.entries.get(uuid).and_then(|e| e.parent_uuid.clone());
+            let mut visited = HashSet::new();
+
+            while let Some(parent_uuid) = current_parent {
+                if !visited.insert(parent_uuid.clone()) {
+                    break;
+                }
+
+                if displayable.contains(parent_uuid.as_str()) {
+                    parents.insert(parent_uuid);
+                    break;
+                }
+
+                current_parent = self
+                    .entries
+                    .get(&parent_uuid)
+                    .and_then(|e| e.parent_uuid.clone());
+            }
+        }
+
+        parents
     }
 }
 
@@ -374,6 +397,18 @@ mod tests {
         (record, 0, None)
     }
 
+    fn metadata_record(
+        uuid: &str,
+        parent: Option<&str>,
+    ) -> (SessionRecord, usize, Option<DateTime<Utc>>) {
+        let record = SessionRecord::Metadata {
+            uuid: Some(uuid.to_string()),
+            parent_uuid: parent.map(|s| s.to_string()),
+            is_sidechain: false,
+        };
+        (record, 0, None)
+    }
+
     // --- TipStrategy::LastAppended tests ---
 
     #[test]
@@ -388,6 +423,22 @@ mod tests {
         ];
         let dag = SessionDag::from_records(records.into_iter(), DisplayFilter::Standard);
         assert_eq!(dag.tip(TipStrategy::LastAppended), Some("u4"));
+    }
+
+    #[test]
+    fn test_tip_last_appended_ignores_non_displayable_tail() {
+        // Real Claude Code files often append attachment/system records after
+        // the last user/assistant message. They are DAG children, but they are
+        // not valid conversation rows to resume from.
+        let records = vec![
+            user_record("u1", None, None),
+            assistant_record("u2", Some("u1"), None, 1),
+            metadata_record("sys1", Some("u2")),
+        ];
+        let dag = SessionDag::from_records(records.into_iter(), DisplayFilter::Standard);
+
+        assert_eq!(dag.tip(TipStrategy::LastAppended), Some("u2"));
+        assert_eq!(dag.tip(TipStrategy::MaxTimestamp), Some("u2"));
     }
 
     #[test]

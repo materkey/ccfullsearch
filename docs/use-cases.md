@@ -102,7 +102,7 @@ Conversations with Claude can branch when you retry, edit, or fork. The tree vie
 3. Use `Left`/`Right` to jump between branch points, `Tab` to toggle the preview pane
 4. Select a specific message and press `Enter`
 
-If the selected message is **not** on the latest chain, `ccs` automatically creates a forked JSONL file — extracting only the branch from root to your selected point — and resumes from that fork. This is branch-aware resume that Claude Code's own `--resume` flag doesn't support.
+If the selected message is not the current tip, `ccs` automatically creates a forked JSONL file — extracting only the chain from root to your selected point — and resumes from that fork. This supports both branch-aware resume and resume from an earlier point on the current chain, which Claude Code's own `--resume` flag doesn't handle.
 
 ### Open tree view directly for a session
 
@@ -251,7 +251,7 @@ When resume opens the wrong session or fork logic seems off:
 CCS_DEBUG=1 ccs 2>/tmp/ccs-debug.log
 ```
 
-The log traces the full chain: TUI selection -> `resolve_parent_session` (handles subagent files, mismatched filenames) -> fork decision (is selected message on latest chain?) -> final `claude --resume` command.
+The log traces the full chain: TUI selection -> `resolve_parent_session` (handles subagent files, mismatched filenames) -> fork decision (is selected message the current tip?) -> final `claude --resume` command.
 
 ### Overlay popup sizing
 

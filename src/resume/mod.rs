@@ -91,7 +91,7 @@ fn resume_inner(
     if let Some(uuid) = message_uuid {
         if !file_changed
             && source == SessionSource::ClaudeCodeCLI
-            && !fork::is_on_latest_chain(&resolved_file_path, uuid)
+            && fork::should_fork_for_resume(&resolved_file_path, uuid)
         {
             let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
             ccs_debug!(
@@ -120,8 +120,8 @@ fn resume_inner(
 }
 
 /// Resume a Claude session based on its source.
-/// If `message_uuid` is provided and the message is not on the latest chain,
-/// creates a forked JSONL file and resumes from that instead.
+/// If `message_uuid` is provided and the message is not the current resumable
+/// tip, creates a forked JSONL file and resumes from that instead.
 /// For subagent sessions, automatically resumes the parent session.
 pub fn resume(
     session_id: &str,

@@ -248,9 +248,9 @@ impl App {
                 }));
             } else {
                 // Don't pass message uuid from search results — it triggers
-                // fork logic when the message is not on the latest chain.
+                // fork logic when the message is not the current tip.
                 // UUID-based resume is only meaningful from tree view where
-                // the user explicitly selects a specific branch point.
+                // the user explicitly selects a specific point.
                 self.outcome = Some(AppOutcome::Resume(ResumeTarget {
                     session_id,
                     file_path,
