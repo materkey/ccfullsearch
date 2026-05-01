@@ -226,25 +226,17 @@ impl SessionTree {
         // Step 1: Build display graph — collapse non-displayable nodes
         let (display_children, display_roots) = self.build_display_graph();
 
-        // Step 2: DFS with column tracking
+        // Step 2: DFS with compact branch-lane tracking
         let mut rows: Vec<TreeRow> = Vec::new();
-        let mut active_columns: Vec<bool> = Vec::new();
+        let root_count = display_roots.len();
 
-        for root in &display_roots {
-            let col = find_free_column(&active_columns);
-            if col >= active_columns.len() {
-                active_columns.push(true);
+        for (i, root) in display_roots.iter().enumerate() {
+            let connector = if root_count > 1 {
+                Some(i == root_count - 1)
             } else {
-                active_columns[col] = true;
-            }
-            self.dfs_flatten(
-                root,
-                col,
-                true, // is_last_child of root level
-                &display_children,
-                &mut active_columns,
-                &mut rows,
-            );
+                None
+            };
+            self.dfs_flatten(root, &[], connector, &display_children, &mut rows);
         }
 
         self.rows = rows;
@@ -326,13 +318,13 @@ impl SessionTree {
             }
             visited.insert(parent_uuid.clone());
 
-            if let Some(cached) = cache.get(parent_uuid) {
-                return cached.clone();
-            }
-
             if displayable.contains(parent_uuid) {
                 cache.insert(uuid.to_string(), Some(parent_uuid.clone()));
                 return Some(parent_uuid.clone());
+            }
+
+            if let Some(cached) = cache.get(parent_uuid) {
+                return cached.clone();
             }
 
             current_parent = self
@@ -349,10 +341,9 @@ impl SessionTree {
     fn dfs_flatten(
         &self,
         uuid: &str,
-        column: usize,
-        is_last_child: bool,
+        prefix_lanes: &[bool],
+        connector: Option<bool>,
         display_children: &HashMap<String, Vec<String>>,
-        active_columns: &mut Vec<bool>,
         rows: &mut Vec<TreeRow>,
     ) {
         let node = match self.nodes.get(uuid) {
@@ -365,7 +356,7 @@ impl SessionTree {
         let is_on_latest = self.latest_chain.contains(uuid);
 
         // Build graph symbols
-        let graph = build_graph_symbols(column, active_columns, is_last_child, !kids.is_empty());
+        let graph = build_graph_symbols(prefix_lanes, connector);
 
         let is_compaction = node.role.as_deref() == Some("compaction")
             || is_context_loss_message(&node.content_preview);
@@ -381,14 +372,6 @@ impl SessionTree {
             is_compaction,
         });
 
-        if kids.is_empty() {
-            // Leaf: free column
-            if column < active_columns.len() {
-                active_columns[column] = false;
-            }
-            return;
-        }
-
         // Sort children: latest chain first, then by line_index
         let mut sorted_kids = kids;
         sorted_kids.sort_by(|a, b| {
@@ -402,36 +385,25 @@ impl SessionTree {
             })
         });
 
-        let num_kids = sorted_kids.len();
+        let mut child_prefix = prefix_lanes.to_vec();
+        if let Some(is_last) = connector {
+            child_prefix.push(!is_last);
+        }
+
+        let child_count = sorted_kids.len();
         for (i, child) in sorted_kids.into_iter().enumerate() {
-            let is_last = i == num_kids - 1;
-            if i == 0 {
-                // First child continues on same column
-                self.dfs_flatten(
-                    &child,
-                    column,
-                    is_last,
-                    display_children,
-                    active_columns,
-                    rows,
-                );
+            let child_connector = if child_count > 1 {
+                Some(i == child_count - 1)
             } else {
-                // Allocate new column for branch
-                let new_col = find_free_column(active_columns);
-                if new_col >= active_columns.len() {
-                    active_columns.push(true);
-                } else {
-                    active_columns[new_col] = true;
-                }
-                self.dfs_flatten(
-                    &child,
-                    new_col,
-                    is_last,
-                    display_children,
-                    active_columns,
-                    rows,
-                );
-            }
+                None
+            };
+            self.dfs_flatten(
+                &child,
+                &child_prefix,
+                child_connector,
+                display_children,
+                rows,
+            );
         }
     }
 
@@ -455,35 +427,22 @@ impl SessionTree {
     }
 }
 
-/// Find the first free (false) column, or return the length (meaning append).
-fn find_free_column(active_columns: &[bool]) -> usize {
-    // Start from column 1 to keep column 0 for main trunk
-    for (i, active) in active_columns.iter().enumerate().skip(1) {
-        if !active {
-            return i;
-        }
-    }
-    active_columns.len()
-}
-
 /// Build the graph gutter string for a row.
-fn build_graph_symbols(
-    column: usize,
-    active_columns: &[bool],
-    _is_last_child: bool,
-    _has_children: bool,
-) -> String {
-    let max_col = active_columns.len().max(column + 1);
+fn build_graph_symbols(prefix_lanes: &[bool], connector: Option<bool>) -> String {
     let mut result = String::new();
 
-    for col in 0..max_col {
-        if col == column {
-            result.push_str("* ");
-        } else if col < active_columns.len() && active_columns[col] {
+    for has_later_sibling in prefix_lanes {
+        if *has_later_sibling {
             result.push_str("| ");
         } else {
             result.push_str("  ");
         }
+    }
+
+    match connector {
+        Some(false) => result.push_str("|-* "),
+        Some(true) => result.push_str("\\-* "),
+        None => result.push_str("* "),
     }
 
     result
@@ -789,17 +748,36 @@ mod tests {
 
     #[test]
     fn test_graph_symbols_single_column() {
-        let active = vec![true];
-        let symbols = build_graph_symbols(0, &active, true, true);
-        assert!(symbols.contains('*'));
+        assert_eq!(build_graph_symbols(&[], None), "* ");
     }
 
     #[test]
     fn test_graph_symbols_multiple_columns() {
-        let active = vec![true, true];
-        let symbols = build_graph_symbols(1, &active, false, true);
+        let symbols = build_graph_symbols(&[true], Some(false));
         assert!(symbols.contains('|'));
         assert!(symbols.contains('*'));
+    }
+
+    #[test]
+    fn test_branched_graph_symbols_show_separate_lanes() {
+        let dir = TempDir::new().unwrap();
+        let path = create_branched_session(&dir);
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        let symbols: Vec<&str> = tree.rows.iter().map(|r| r.graph_symbols.as_str()).collect();
+
+        assert!(
+            symbols.iter().any(|s| s.contains("|-*")),
+            "first branch should use a visible split connector: {symbols:?}"
+        );
+        assert!(
+            symbols.iter().any(|s| s.contains("| *")),
+            "rows inside an earlier branch should keep the pending sibling lane visible: {symbols:?}"
+        );
+        assert!(
+            symbols.iter().any(|s| s.contains("\\-*")),
+            "last branch should use a visible closing connector: {symbols:?}"
+        );
     }
 
     #[test]
