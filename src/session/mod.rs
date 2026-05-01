@@ -31,6 +31,37 @@ impl SessionSource {
     }
 }
 
+/// Product/tool that owns a session transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionProvider {
+    /// Claude Code or Claude Desktop session.
+    Claude,
+    /// Codex CLI session.
+    Codex,
+}
+
+impl SessionProvider {
+    /// Detect the session provider from the transcript path.
+    pub fn from_path(path: &str) -> Self {
+        let normalized = path.replace('\\', "/");
+        if normalized.contains("/.codex/sessions/")
+            || normalized.contains("/.codex/archived_sessions/")
+        {
+            SessionProvider::Codex
+        } else {
+            SessionProvider::Claude
+        }
+    }
+
+    /// Returns display name for the provider.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            SessionProvider::Claude => "Claude",
+            SessionProvider::Codex => "Codex",
+        }
+    }
+}
+
 /// Extract session ID from a JSON record.
 /// Supports both CLI format (`sessionId`) and Desktop format (`session_id`).
 pub fn extract_session_id(json: &serde_json::Value) -> Option<String> {
@@ -314,6 +345,31 @@ mod tests {
     fn test_session_source_display_name() {
         assert_eq!(SessionSource::ClaudeCodeCLI.display_name(), "CLI");
         assert_eq!(SessionSource::ClaudeDesktop.display_name(), "Desktop");
+    }
+
+    #[test]
+    fn test_session_provider_from_claude_path() {
+        let path = "/Users/user/.claude/projects/-Users-user-myproject/abc123.jsonl";
+        assert_eq!(SessionProvider::from_path(path), SessionProvider::Claude);
+    }
+
+    #[test]
+    fn test_session_provider_from_codex_sessions_path() {
+        let path =
+            "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-session.jsonl";
+        assert_eq!(SessionProvider::from_path(path), SessionProvider::Codex);
+    }
+
+    #[test]
+    fn test_session_provider_from_codex_archived_sessions_path() {
+        let path = "/Users/user/.codex/archived_sessions/rollout-2026-05-01T12-00-00-session.jsonl";
+        assert_eq!(SessionProvider::from_path(path), SessionProvider::Codex);
+    }
+
+    #[test]
+    fn test_session_provider_display_name() {
+        assert_eq!(SessionProvider::Claude.display_name(), "Claude");
+        assert_eq!(SessionProvider::Codex.display_name(), "Codex");
     }
 
     #[test]

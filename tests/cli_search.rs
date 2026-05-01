@@ -42,6 +42,7 @@ fn search_returns_json_lines() {
         let parsed: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("Each line should be valid JSON: {}\nLine: {}", e, line));
         assert!(parsed.get("session_id").is_some(), "Should have session_id");
+        assert!(parsed.get("provider").is_some(), "Should have provider");
         assert!(parsed.get("role").is_some(), "Should have role");
         assert!(parsed.get("content").is_some(), "Should have content");
     }

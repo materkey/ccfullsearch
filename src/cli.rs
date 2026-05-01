@@ -1,5 +1,5 @@
 use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths, Message};
-use crate::session::{collect_session_jsonl_files, SessionSource};
+use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fs;
@@ -10,6 +10,7 @@ use std::path::Path;
 struct CliSearchResult {
     session_id: String,
     project: String,
+    provider: String,
     source: String,
     file_path: String,
     timestamp: String,
@@ -21,6 +22,7 @@ struct CliSearchResult {
 struct ListResult {
     session_id: String,
     project: String,
+    provider: String,
     source: String,
     file_path: String,
     last_active: String,
@@ -46,6 +48,7 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
 
     for group in &groups {
         let project = extract_project_from_path(&group.file_path);
+        let provider = SessionProvider::from_path(&group.file_path);
         let source = SessionSource::from_path(&group.file_path);
 
         for m in &group.matches {
@@ -57,6 +60,7 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
                 let result = CliSearchResult {
                     session_id: msg.session_id.clone(),
                     project: project.clone(),
+                    provider: provider.display_name().to_string(),
                     source: source.display_name().to_string(),
                     file_path: m.file_path.clone(),
                     timestamp: msg.timestamp.to_rfc3339(),
@@ -101,6 +105,7 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
 
     let path_str = path.to_str()?;
     let project = extract_project_from_path(path_str);
+    let provider = SessionProvider::from_path(path_str);
     let source = SessionSource::from_path(path_str);
 
     let mut session_id: Option<String> = None;
@@ -130,6 +135,7 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
     Some(ListResult {
         session_id,
         project,
+        provider: provider.display_name().to_string(),
         source: source.display_name().to_string(),
         file_path: path_str.to_string(),
         last_active,

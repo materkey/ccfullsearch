@@ -20,7 +20,7 @@ pub mod tree;
 pub mod tui;
 pub mod update;
 
-pub use session::SessionSource;
+pub use session::{SessionProvider, SessionSource};
 
 pub fn get_search_paths() -> Vec<String> {
     let mut search_paths = Vec::new();
