@@ -44,6 +44,8 @@ const PROJECT_BG: Color = Color::Rgb(27, 31, 39);
 const SELECTED_PROJECT_BG: Color = Color::Rgb(94, 36, 130);
 /// Branch marker foreground from the handoff cyan (`#56c2ff`).
 const BRANCH_FG: Color = Color::Rgb(86, 194, 255);
+const CLAUDE_AGENT_FG: Color = Color::Rgb(255, 140, 90);
+const CODEX_AGENT_FG: Color = Color::Rgb(122, 167, 255);
 
 /// Pre-built preview prefixes shared by `render_groups` (collapsed groups)
 /// and `render_recent_sessions`. Hoisted so the render hot path does not
@@ -743,11 +745,11 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
 const RECENT_LINES_PER_SESSION: usize = 2;
 
 /// Shared header layout used by both collapsed search groups and recent
-/// sessions: `<caret> [provider] [source] date | project | branch | sid (count)[ [A]]`.
+/// sessions: `<caret> <agent> [source] date | project | branch | sid (count)[ [A]]`.
 /// `session_id` is truncated to 8 chars here so callers don't have to.
 struct SessionHeaderParts<'a> {
     caret: &'a str,
-    provider: &'a str,
+    provider: SessionProvider,
     source: &'a str,
     date: &'a str,
     project: &'a str,
@@ -755,6 +757,21 @@ struct SessionHeaderParts<'a> {
     session_id: &'a str,
     count: &'a str,
     has_automation: bool,
+}
+
+fn provider_badge_label(provider: SessionProvider) -> &'static str {
+    match provider {
+        SessionProvider::Claude => "CC",
+        SessionProvider::Codex => "CX",
+    }
+}
+
+fn provider_badge_style(provider: SessionProvider, _selected: bool, _base: Style) -> Style {
+    let fg = match provider {
+        SessionProvider::Claude => CLAUDE_AGENT_FG,
+        SessionProvider::Codex => CODEX_AGENT_FG,
+    };
+    Style::default().fg(fg).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -766,8 +783,16 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     };
     let auto_tag = if p.has_automation { " [A]" } else { "" };
     format!(
-        "{} [{}] [{}] {} | {} | {} | {} ({}){}",
-        p.caret, p.provider, p.source, p.date, p.project, p.branch, sid, p.count, auto_tag
+        "{} {} [{}] {} | {} | {} | {} ({}){}",
+        p.caret,
+        provider_badge_label(p.provider),
+        p.source,
+        p.date,
+        p.project,
+        p.branch,
+        sid,
+        p.count,
+        auto_tag
     )
 }
 
@@ -812,13 +837,7 @@ fn render_session_header_line(
     } else {
         Style::default().fg(Color::Magenta)
     };
-    let provider = if selected {
-        base
-    } else if p.provider == "Codex" {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::Magenta)
-    };
+    let provider = provider_badge_style(p.provider, selected, base);
     let project = if selected {
         Style::default()
             .fg(Color::Yellow)
@@ -848,7 +867,7 @@ fn render_session_header_line(
         Span::styled(p.caret.to_string(), base),
         Span::styled(" ".to_string(), base),
         Span::styled(
-            format!("[{}] ", p.provider),
+            format!("{} ", provider_badge_label(p.provider)),
             style_with_bg(provider, row_bg),
         ),
         Span::styled(format!("[{}]", p.source), style_with_bg(accent, row_bg)),
@@ -895,7 +914,7 @@ pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSe
     };
     format_session_header_line(SessionHeaderParts {
         caret: "▶",
-        provider: SessionProvider::from_path(&session.file_path).display_name(),
+        provider: SessionProvider::from_path(&session.file_path),
         source: session.source.display_name(),
         date: &session
             .timestamp
@@ -964,7 +983,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
             prefix,
             SessionHeaderParts {
                 caret: "▶",
-                provider: SessionProvider::from_path(&session.file_path).display_name(),
+                provider: SessionProvider::from_path(&session.file_path),
                 source: session.source.display_name(),
                 date: &date,
                 project: &session.project,
@@ -1046,7 +1065,7 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
 
     format_session_header_line(SessionHeaderParts {
         caret: if expanded { "▼" } else { "▶" },
-        provider: SessionProvider::from_path(&group.file_path).display_name(),
+        provider: SessionProvider::from_path(&group.file_path),
         source,
         date: &date_str,
         project: &extract_project_from_path(&group.file_path),
@@ -1104,7 +1123,7 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
         prefix,
         SessionHeaderParts {
             caret: if expanded { "▼" } else { "▶" },
-            provider: SessionProvider::from_path(&group.file_path).display_name(),
+            provider: SessionProvider::from_path(&group.file_path),
             source,
             date: &date_str,
             project: &project,
@@ -1865,13 +1884,10 @@ mod tests {
     /// corresponding Line into a multi-row ListItem, which shifts every
     /// subsequent header by one visual row; with many groups + a cursor
     /// near the end the user sees leaked preview text at the start of a
-    /// later header row (e.g. `"ension6I-...26-04-11 20:27 | …"` — the
-    /// wrapped tail of the previous preview overwriting the `  ▶ [Claude] [CLI] ` of
-    /// the next header).
+    /// later header row (e.g. `"ension6I-...26-04-11 20:27 | …"`).
     ///
-    /// Expectation: every header row in the rendered buffer starts cleanly
-    /// with `  ▶ [` or `> ▶ [`, regardless of newlines / tabs / carriage
-    /// returns inside preview content.
+    /// Expectation: every header row in the rendered buffer starts cleanly,
+    /// regardless of newlines / tabs / carriage returns inside preview content.
     #[test]
     fn test_render_groups_preview_newlines_do_not_shift_next_header() {
         let backend = TestBackend::new(120, 24);
@@ -2675,8 +2691,8 @@ mod tests {
             text
         );
         assert!(
-            text.contains("[Claude]"),
-            "Header should contain [Claude] provider indicator, got: {}",
+            text.contains("CC [CLI]"),
+            "Header should contain CC agent indicator, got: {}",
             text
         );
     }
@@ -2715,8 +2731,8 @@ mod tests {
             text
         );
         assert!(
-            text.contains("[Claude]"),
-            "Header should contain [Claude] provider indicator, got: {}",
+            text.contains("CC [Desktop]"),
+            "Header should contain CC agent indicator, got: {}",
             text
         );
     }
@@ -2752,8 +2768,8 @@ mod tests {
 
         let text = build_group_header_text(&group, false);
         assert!(
-            text.contains("[Codex]"),
-            "Header should contain [Codex] provider indicator, got: {}",
+            text.contains("CX [CLI]"),
+            "Header should contain CX agent indicator, got: {}",
             text
         );
     }
@@ -2903,9 +2919,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!(
-                "▶ [Claude] [CLI] {date} | avito-android | MBSA-2197 | b701e752 (3613 msgs) [A]"
-            )
+            format!("▶ CC [CLI] {date} | avito-android | MBSA-2197 | b701e752 (3613 msgs) [A]")
         );
     }
 
@@ -2933,7 +2947,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ [Claude] [Desktop] {date} | ~ | - | short-id (42 msgs)")
+            format!("▶ CC [Desktop] {date} | ~ | - | short-id (42 msgs)")
         );
     }
 
@@ -2961,7 +2975,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ [Codex] [CLI] {date} | myapp | - | 019f-cod (3 msgs)")
+            format!("▶ CX [CLI] {date} | myapp | - | 019f-cod (3 msgs)")
         );
     }
 
@@ -3007,7 +3021,7 @@ mod tests {
                 line.push_str(buffer.cell((x, y)).unwrap().symbol());
             }
             let trimmed = line.trim_end();
-            if trimmed.contains("▶ [Claude] [CLI]") {
+            if trimmed.contains("▶ CC [CLI]") {
                 header_line = Some(trimmed.to_string());
             } else if trimmed.contains("User: ") {
                 preview_line = Some(trimmed.to_string());
@@ -3015,7 +3029,7 @@ mod tests {
         }
         let header = header_line.expect("header line should render");
         let expected_header =
-            format!("[Claude] [CLI] {expected_date} | avito-android | ⎇ main | b701e752 (17 msgs)");
+            format!("CC [CLI] {expected_date} | avito-android | ⎇ main | b701e752 (17 msgs)");
         assert!(
             header.contains(&expected_header),
             "unexpected header: {:?}",
@@ -3171,18 +3185,10 @@ mod tests {
         panic!("selected {} row not found", label);
     }
 
-    /// Shared contract check for the selected-header caret across the search
-    /// and recent-sessions screens. Pins the "> ▶ [Claude] [CLI]" leading
-    /// sequence, the continuous purple background across those 18 cells, and
-    /// the "no BOLD on the ▶ glyph" invariant — Iosevka renders bold `▶`
-    /// narrower than regular, which visually clips on the solid selection bg.
     fn assert_selected_caret_layout(buffer: &ratatui::buffer::Buffer, label: &str) {
         let y = find_selected_header_y(buffer, label);
 
-        let expected: &[&str] = &[
-            ">", " ", "▶", " ", "[", "C", "l", "a", "u", "d", "e", "]", " ", "[", "C", "L", "I",
-            "]",
-        ];
+        let expected: &[&str] = &[">", " ", "▶", " ", "C", "C", " ", "[", "C", "L", "I", "]"];
         for (i, &want) in expected.iter().enumerate() {
             let got = buffer.cell((i as u16, y)).unwrap().symbol();
             assert_eq!(
@@ -3191,7 +3197,7 @@ mod tests {
                 label, i, want, got
             );
         }
-        for x in 0..18u16 {
+        for x in 0..12u16 {
             let cell = buffer.cell((x, y)).unwrap();
             assert_eq!(
                 cell.bg, SELECTION_BG,
