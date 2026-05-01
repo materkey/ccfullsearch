@@ -1494,10 +1494,10 @@ mod tests {
         // disk space. Throughput-based slowdown is unreliable because rg
         // scans hundreds of MB/s even with --threads 1 on hot pages.
         let temp_dir = TempDir::new().unwrap();
-        const FILE_COUNT: usize = 10_000;
+        const FILE_COUNT: usize = 20_000;
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"haystack line"}]},"sessionId":"sess1","timestamp":"2025-01-09T10:00:00Z"}"#;
-        // ~120 bytes per file × 10k = ~1.2 MB content + filesystem
-        // block overhead (~40 MB on common filesystems with 4 KB blocks).
+        // ~120 bytes per file × 20k = ~2.4 MB content + filesystem
+        // block overhead (~80 MB on common filesystems with 4 KB blocks).
         for f in 0..FILE_COUNT {
             create_test_session(&temp_dir, &format!("nomatch_{:05}.jsonl", f), line);
         }
