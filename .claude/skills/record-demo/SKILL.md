@@ -18,15 +18,21 @@ Do NOT use for:
 - Recording interactive user sessions live — this is a scripted pipeline, not screen-recording software
 - Recording the AI ranking feature (`Ctrl+G`) — it calls `claude -p` as a subprocess; timing is non-deterministic
 
-## Prerequisites
+## Two pipelines
 
-All tools must be on PATH:
+**`record-demo-kitty.sh` (preferred on macOS, full color)** — drives a real
+kitty OS-window via remote control and records it with `screencapture -v -l<wid>`.
+Captures the actual rendered frame so truecolor / 256-color escapes from
+ratatui survive intact, the user's real font (Iosevka 20px from kitty.conf)
+is used, and kitty default theme shows up in the GIF.
+Requires: kitty (with `allow_remote_control yes` and `listen_on …` set,
+both already in the user's kitty.conf), `jq`, `ffmpeg`. macOS-only.
 
-```bash
-brew install tmux asciinema agg
-```
-
-Python 3 (for tiny JSON helper — no pip deps).
+**`record-demo.sh` (legacy / cross-platform)** — drives a tmux pane and
+converts the asciinema cast with `agg`. Cannot capture color: ratatui+crossterm
+0.28 emit only `\e[1m`/`\e[m` in headless tmux on this stack; the GIF ends
+up monochrome regardless of `--theme`/`terminal-features:RGB` tweaks.
+Requires: `tmux`, `asciinema`, `agg`, `python3`.
 
 A built binary: `cargo build --release` produces `target/release/ccs`.
 
@@ -54,10 +60,16 @@ record-demo.sh  ->  tmux pane (120x35)
 
 ## Usage
 
-From the repo root:
+From the repo root, **inside a kitty window** (preferred — full color):
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/.claude/skills/record-demo/scripts/gen-fake-sessions.py
+${CLAUDE_PLUGIN_ROOT}/.claude/skills/record-demo/scripts/record-demo-kitty.sh
+```
+
+Fallback (monochrome, but works without kitty):
+
+```bash
 ${CLAUDE_PLUGIN_ROOT}/.claude/skills/record-demo/scripts/record-demo.sh
 ```
 

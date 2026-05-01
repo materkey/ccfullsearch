@@ -49,12 +49,18 @@ fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 rm -f "$CAST" "$GIF"
 
-tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS"
+tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
+    -e "TERM=xterm-256color" -e "COLORTERM=truecolor"
 # C-b collides with ccs tree-view shortcut; move tmux prefix out of the way
 tmux set-option -t "$SESSION" prefix C-z
+# truecolor: tmux silently downgrades RGB→256 unless terminal-features advertises
+# RGB for the pane's TERM. Without this, ccs's purple SELECTION_BG (#4B0082) and
+# blue BRANCH_FG (#56C2FF) collapse to a flat grey. terminal-features is server-
+# wide; setting it *before* the pane emits any RGB escape is enough.
+tmux set-option -gas terminal-features ",xterm-256color:RGB"
 
 # Neutral prompt — in case anything ever drops us to a shell mid-recording
-tmux send-keys -t "$SESSION" "clear; export PS1='$ '; clear" Enter
+tmux send-keys -t "$SESSION" "clear; export PS1='$ ' COLORTERM=truecolor; clear" Enter
 sleep 0.5
 
 # Write asciinema v2 cast header
@@ -191,7 +197,7 @@ sleep 0.3
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 echo "Converting to GIF…"
-agg --font-size 14 --theme monokai --speed 1.1 --last-frame-duration 2 "$CAST" "$GIF"
+agg --font-size 14 --font-family Iosevka --theme asciinema --speed 1.1 --last-frame-duration 2 "$CAST" "$GIF"
 rm -f "$CAST"
 
 SIZE=$(du -h "$GIF" | cut -f1)
