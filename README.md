@@ -1,37 +1,37 @@
 # ccs
 
-A TUI and CLI tool for searching and browsing Claude Code and Claude Desktop session history.
+`ccs` is a terminal UI and CLI for finding, browsing, and resuming Claude session history.
 
-Built with Rust using [ratatui](https://github.com/ratatui/ratatui) and [ripgrep](https://github.com/BurntSushi/ripgrep).
+It searches Claude Code CLI projects and Claude Desktop local-agent sessions by default. Custom search roots can also include other compatible JSONL transcripts; results carry provider/source metadata such as `Claude`, `Codex`, `CLI`, and `Desktop`.
+
+Built with Rust, [ratatui](https://github.com/ratatui/ratatui), and [ripgrep](https://github.com/BurntSushi/ripgrep).
 
 ![demo](demo.gif)
 
 ## Features
 
-- **Recent sessions on startup** — shows your most recent sessions with first user message as summary when the TUI launches
-- **Full-text search** across all Claude Code CLI and Claude Desktop sessions
-- **Regex search** mode (toggle with `Ctrl+R`)
-- **Session grouping** — results grouped by session with timestamps and project context
-- **Tree view** — visualize conversation branches, forks, and context compactions (`Ctrl+B`)
-- **Session resume** — press `Enter` to resume any session directly from search results or the recent sessions list
-- **AI session re-ranking** — press `Ctrl+G` to ask Claude to re-rank visible sessions by natural-language relevance (requires `claude` CLI in PATH)
-- **Truncation warning** — alerts when search results may be incomplete due to per-file match limits
-- **Async search** — non-blocking background search with debounce
-- **CLI mode** — `search` and `list` subcommands with JSONL output for scripting
-- **Picker mode** — `ccs pick` subcommand for machine-readable session selection (key-value output)
-- **Overlay mode** — `ccs --overlay` resumes sessions as child processes, returning to TUI after exit
-- **Claude Code plugin** — built-in plugin with overlay picker for session resume from Claude Code
-- **Cross-platform** — supports both Claude Code CLI (`~/.claude/projects`) and Claude Desktop sessions
+- Recent sessions on startup, with summaries from session metadata or the first user message.
+- Fast full-text and regex search across JSONL session transcripts.
+- Search and preview of user/assistant content, tool calls/results, thinking blocks, attachments, and rendered slash commands.
+- Session grouping by transcript, with provider/source badges, project, branch, timestamp, match count, and message count.
+- Filters for current project (`Ctrl+A`) and manual/automated sessions (`Ctrl+H`). Manual sessions are shown by default.
+- Tree view (`Ctrl+B`) for conversation branches, forks, latest-chain markers, and compaction boundaries.
+- Resume from selected search results or recent sessions, with branch-aware resume from a selected tree message.
+- AI re-ranking (`Ctrl+G`) of visible sessions by natural-language relevance, using the `claude` CLI.
+- Non-interactive `search` and `list` commands with JSONL output.
+- Interactive `pick` command for scripts and Claude Code plugin integration.
+- Overlay mode (`--overlay`) that resumes Claude as a child process and returns to the picker afterwards.
+- Self-update command for non-Homebrew installs.
 
 ## Installation
 
-### Homebrew (macOS/Linux)
+### Homebrew
 
 ```bash
 brew install materkey/ccs/ccs
 ```
 
-### Shell installer (macOS/Linux)
+### Shell Installer
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/materkey/ccfullsearch/releases/latest/download/ccfullsearch-installer.sh | sh
@@ -43,7 +43,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/materkey/ccfullsearch/r
 cargo install ccfullsearch --locked
 ```
 
-### Cargo binstall
+### cargo-binstall
 
 ```bash
 cargo binstall ccfullsearch
@@ -51,49 +51,22 @@ cargo binstall ccfullsearch
 
 ### Requirements
 
-[ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) must be installed and available in `PATH`. The Homebrew formula installs it automatically.
+- `rg` from [ripgrep](https://github.com/BurntSushi/ripgrep) must be available in `PATH`. The Homebrew formula installs it automatically.
+- `claude` must be available in `PATH` for Claude Code resume and AI re-ranking.
 
-## Architecture
+## Search Paths
 
-```
-src/
-├── lib.rs              # Crate root — re-exports all modules
-├── main.rs             # CLI entry point (clap) + TUI event loop
-├── cli.rs              # Non-interactive search/list commands (JSONL output)
-├── session.rs          # Shared JSONL parsing primitives (timestamps, UUIDs, sources)
-├── recent.rs           # Recent sessions: parallel scanning, summary extraction, RecentSession struct
-├── search/             # Ripgrep integration, message parsing, result grouping
-├── tree/               # Session DAG parsing, branch detection, flattened tree rows
-├── resume/
-│   ├── path_codec.rs   # Claude path encoding/decoding + filesystem walking
-│   ├── fork.rs         # Branch chain detection + fork file creation
-│   └── launcher.rs     # Process launching (exec on Unix, spawn on Windows)
-└── tui/
-    ├── state.rs         # App struct, constructor, input/cursor methods, tick loop
-    ├── search_mode.rs   # Search navigation, enter, toggle, search orchestration
-    ├── tree_mode.rs     # Tree mode enter/exit, navigation, file lookup
-    ├── render_search.rs # Search & preview rendering (+ recent sessions empty state)
-    └── render_tree.rs   # Tree mode rendering
+By default, `ccs` searches:
 
-tests/
-├── fixtures/           # Representative JSONL session files
-├── cli_search.rs       # Integration tests for `ccs search`
-├── cli_list.rs         # Integration tests for `ccs list`
-├── tree_parsing.rs     # Tree parsing via library API
-├── resume_resolution.rs # Resume session resolution tests
-└── render_snapshots.rs # TUI render state verification
-```
+- Claude Code CLI sessions under `~/.claude/projects/`.
+- `CLAUDE_CONFIG_DIR/projects/` when `CLAUDE_CONFIG_DIR` is set.
+- Claude Desktop local-agent sessions on macOS: `~/Library/Application Support/Claude/local-agent-mode-sessions/`.
+- Claude Desktop local-agent sessions on Linux: `~/.config/Claude/local-agent-mode-sessions/`.
 
-## Testing
+Override the defaults with one custom root:
 
 ```bash
-# Run all tests
-cargo test
-
-# Quality checks (same as CI)
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+CCFS_SEARCH_PATH=/custom/sessions/dir ccs
 ```
 
 ## Usage
@@ -101,141 +74,174 @@ cargo test
 ### Interactive TUI
 
 ```bash
-# Launch — shows recent sessions on startup, start typing to search
+# Open recent sessions. Start typing to search.
 ccs
 
-# Open tree view for a specific session
+# Open tree view directly for a session ID or JSONL file path.
 ccs --tree <session-id-or-path>
+
+# Resume from a specific message UUID without opening the picker.
+ccs --overlay --tree /path/to/session.jsonl --resume-uuid <message-uuid>
 ```
 
-### CLI mode
+### CLI
 
 ```bash
-# Search sessions (outputs JSONL)
+# Search sessions. Output is JSONL.
 ccs search "docker build" --limit 10
 
-# Search with regex
-ccs search "OOM|OutOfMemory" --regex
+# Search with regex.
+ccs search "OOM|OutOfMemory" --regex --limit 20
 
-# List all sessions sorted by last activity
+# List sessions by last activity. Output is JSONL.
 ccs list --limit 20
+
+# Update a non-Homebrew installation.
+ccs update
 ```
 
-### Picker mode
+`search` output fields:
 
-Pick a session interactively and output its info in key-value format. Designed for scripting and tool integration.
+| Field | Description |
+|---|---|
+| `session_id` | Session UUID |
+| `project` | Project name extracted from the transcript path |
+| `provider` | Transcript owner, for example `Claude` or `Codex` |
+| `source` | Session source, for example `CLI` or `Desktop` |
+| `file_path` | Full path to the JSONL transcript |
+| `timestamp` | Message timestamp in RFC 3339 format |
+| `role` | Message role |
+| `content` | Extracted searchable content |
+
+`list` output fields:
+
+| Field | Description |
+|---|---|
+| `session_id` | Session UUID |
+| `project` | Project name |
+| `provider` | Transcript owner |
+| `source` | Session source |
+| `file_path` | Full path to the JSONL transcript |
+| `last_active` | Last message timestamp in RFC 3339 format |
+| `message_count` | Number of parsed messages |
+
+### Picker
+
+`ccs pick` opens the TUI and prints the selected session as key-value output. It exits with code `0` on selection and `1` on cancel.
 
 ```bash
-# Pick a session (outputs to stdout)
 ccs pick
-
-# Pick with a pre-filled query
 ccs pick "docker"
-
-# Write output to a file instead of stdout
 ccs pick --output /tmp/session.txt
 ```
 
-Output format (exit code 0 on selection, 1 on cancel):
+Example output:
 
-```
+```text
 session_id: abc-123
 file_path: /path/to/session.jsonl
 source: CLI
 project: my-project
+message_uuid: def-456
 ```
 
-### Overlay mode
+`message_uuid` is present when the selected row maps to a concrete message, including search results and tree selections.
 
-Resume sessions as child processes instead of replacing the TUI process. After exiting Claude, you return to the TUI to pick another session.
+### Overlay Mode
 
 ```bash
-# Launch TUI in overlay mode
 ccs --overlay
 ```
 
+In overlay mode, selecting a Claude Code session launches `claude --resume` as a child process. When Claude exits, `ccs` returns to the picker and restores the current search query.
+
 ## Keybindings
 
-### Recent sessions (empty input)
+### Recent Sessions
 
 | Key | Action |
-|-----|--------|
-| `Up` / `Down` | Navigate recent sessions |
+|---|---|
+| `Up` / `Down` | Navigate sessions |
 | `Enter` | Resume selected session |
-| `Ctrl+B` | Open tree view for selected session |
-| Type | Start searching (recent list disappears) |
-
-### Search mode
-
-| Key | Action |
-|-----|--------|
-| Type | Search query input |
-| `Up` / `Down` | Navigate session groups |
-| `Left` / `Right` | Navigate matches within a group |
-| `Tab` | Expand/collapse match list |
-| `Enter` | Resume selected session |
-| `Ctrl+A` | Toggle project filter (current project / all sessions) |
-| `Ctrl+V` | Toggle preview (same as Tab) |
-| `Ctrl+C` | Clear input (or quit if input is empty) |
-| `Ctrl+R` | Toggle regex search mode |
-| `Ctrl+B` | Open tree view for selected session |
+| `Ctrl+B` | Open tree view |
+| `Ctrl+A` | Toggle current-project filter |
+| `Ctrl+H` | Cycle automation filter: Manual / Auto / All |
 | `Ctrl+G` | Enter AI re-ranking mode |
-| `Esc` | Quit |
+| Type | Start searching |
 
-### AI mode (Ctrl+G)
+### Search
 
 | Key | Action |
-|-----|--------|
-| Type | AI query input |
-| `Enter` | Rank visible sessions (before result) / Resume selected session (after result) |
+|---|---|
+| Type | Edit search query |
+| `Up` / `Down` | Navigate session groups |
+| `Left` / `Right` | Move cursor, or expand/collapse match list when navigating results |
+| `Tab` / `Ctrl+V` | Toggle preview |
+| `Enter` | Resume selected session |
+| `Ctrl+A` | Toggle current-project filter |
+| `Ctrl+H` | Cycle automation filter: Manual / Auto / All |
+| `Ctrl+R` | Toggle regex mode |
+| `Ctrl+B` | Open tree view |
+| `Ctrl+G` | Enter AI re-ranking mode |
+| `Ctrl+C` | Clear query, or quit when query is empty |
+| `Esc` | Close preview, or quit |
+
+Text editing also supports `Home`, `End` / `Ctrl+E`, `Delete`, `Ctrl+W`, `Alt+Backspace`, `Alt+D`, `Alt+B` / `Alt+Left`, `Alt+F` / `Alt+Right`, and `Ctrl+Left` / `Ctrl+Right`.
+
+### AI Mode
+
+| Key | Action |
+|---|---|
+| Type | Edit AI query |
+| `Enter` | Rank visible sessions, or resume the selected ranked session after ranking |
 | `Up` / `Down` | Navigate ranked sessions |
-| `Esc` / `Ctrl+G` | Exit AI mode, restore original order |
+| `Ctrl+C` | Clear AI query, or exit AI mode when the AI query is empty |
+| `Esc` / `Ctrl+G` | Exit AI mode and restore the previous order |
 
-Editing the AI query, or toggling a filter/scope (`Ctrl+R`, `Ctrl+A`, `Ctrl+H`) after a rank invalidates the applied ranking, so the next `Enter` re-ranks instead of resuming.
-If Claude returns no relevant sessions, AI mode stays in rank mode so you can refine the query and press `Enter` again.
+Editing the AI query or toggling `Ctrl+R`, `Ctrl+A`, or `Ctrl+H` invalidates the applied rank, so the next `Enter` ranks again. If Claude returns no relevant sessions, AI mode stays open for query refinement.
 
-### Tree mode
+### Tree
 
 | Key | Action |
-|-----|--------|
+|---|---|
 | `Up` / `Down` | Navigate messages |
 | `Left` / `Right` | Jump to previous/next branch point |
-| `Tab` | Toggle preview pane |
-| `Enter` | Resume session at selected message |
+| `Tab` | Toggle preview |
+| `Enter` | Resume at selected message |
 | `Ctrl+C` / `b` / `Esc` | Back to search |
 | `q` | Quit |
 
 ## Claude Code Plugin
 
-The repo includes a [Claude Code plugin](.claude-plugin/) with a skill for searching and resuming sessions. The plugin supports two modes:
+The repo includes a Claude Code plugin under `.claude-plugin/` and the `ccs` skill under `.claude/skills/ccs/`.
 
-- **CLI mode** — `ccs search` and `ccs list` for non-interactive use
-- **Overlay picker mode** — opens a TUI overlay popup (tmux/kitty/wezterm) to pick a session, then offers to resume it
+The skill supports:
 
-To install, add the plugin path to your Claude Code settings or symlink:
+- CLI mode through `ccs search` and `ccs list`.
+- Overlay picker mode through `.claude/skills/ccs/scripts/launch-ccs.sh`.
+- Overlay resume through `.claude/skills/ccs/scripts/launch-resume.sh`.
+
+With the plugin installed, Claude Code can use `ccs` for requests such as "find where we discussed docker", "list my recent sessions", or "resume a previous conversation".
+
+## Development
 
 ```bash
-# The plugin is auto-discovered from the repo's .claude-plugin/ directory
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 ```
 
-Then Claude will use `ccs` when you ask things like "find where we discussed docker", "list my recent sessions", or "resume a previous conversation".
+Useful docs:
 
-## Releasing
+- [Use cases](docs/use-cases.md)
+- [Changelog](CHANGELOG.md)
 
-1. Bump `version` in `Cargo.toml`
-2. Commit and push to `main`
-3. Publish to crates.io: `cargo publish`
-4. Tag and push: `git tag v<VERSION> && git push origin v<VERSION>`
+## Release
 
-The tag push triggers [cargo-dist](https://github.com/axodotdev/cargo-dist) which:
-- Builds binaries for macOS (arm64/x86_64) and Linux (gnu/musl, arm64/x86_64)
-- Creates tar.gz archives with SHA256 checksums
-- Publishes a GitHub Release with all artifacts
-- Updates the Homebrew formula in [materkey/homebrew-ccs](https://github.com/materkey/homebrew-ccs)
+1. Bump `version` in `Cargo.toml`.
+2. Update `CHANGELOG.md`.
+3. Commit and push to `main`.
+4. Publish to crates.io: `cargo publish`.
+5. Tag and push: `git tag v<VERSION> && git push origin v<VERSION>`.
 
-## How it works
-
-1. Searches JSONL session files using `ripgrep` for speed
-2. Parses matched lines as Claude session messages (user, assistant, tool calls)
-3. Groups results by session with metadata (project name, timestamps)
-4. Tree view parses the full session DAG to show conversation branches and the latest chain
+The tag push triggers cargo-dist, which builds macOS/Linux archives, shell installers, checksums, a GitHub Release, and the Homebrew formula in `materkey/homebrew-ccs`.
