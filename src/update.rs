@@ -34,13 +34,19 @@ fn is_homebrew_install(exe_path: &Path) -> bool {
 
 /// Fetch the latest release tag from GitHub API using curl.
 fn fetch_latest_version() -> Result<String, String> {
+    // Same retry knobs as download() — defensive against transient api.github.com failures.
     let output = Command::new("curl")
         .args([
             "-sSf",
             "--connect-timeout",
-            "10",
+            "20",
             "--max-time",
             "30",
+            "--retry",
+            "3",
+            "--retry-connrefused",
+            "--retry-delay",
+            "1",
             &format!("https://api.github.com/repos/{REPO}/releases/latest"),
         ])
         .output()
@@ -63,13 +69,21 @@ fn fetch_latest_version() -> Result<String, String> {
 
 /// Download a URL to a file path using curl.
 fn download(url: &str, dest: &Path) -> Result<(), String> {
+    // GitHub releases redirect to a Fastly CDN (release-assets.githubusercontent.com)
+    // and individual IPs in 185.199.x.x occasionally stall at TLS handshake. Retry
+    // lets curl pick a different IP from the DNS rotation instead of failing the run.
     let status = Command::new("curl")
         .args([
             "-sSLf",
             "--connect-timeout",
-            "10",
+            "20",
             "--max-time",
             "120",
+            "--retry",
+            "3",
+            "--retry-connrefused",
+            "--retry-delay",
+            "1",
             "-o",
         ])
         .arg(dest)
