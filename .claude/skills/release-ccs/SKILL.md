@@ -1,5 +1,5 @@
 ---
-name: release
+name: release-ccs
 description: Publish a new ccfullsearch release. Bumps version, updates CHANGELOG, commits, tags, pushes, and waits for CI + cargo-dist. Use when user says "release", "publish", "new version", or "зарелизь".
 ---
 
