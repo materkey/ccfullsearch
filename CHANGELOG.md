@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.12.0 - 2026-05-01
+
+### New Features
+- Session provider badges — Claude vs Codex marker on each search result and recent-session row
+- Search slash commands by rendered form — `/foo` matches sessions where JSONL stores `<command-message>foo</command-message>` markup; previews render `/foo args` with arguments inlined
+- Styled session-header metadata — source, project, branch, and counts each get their own visual weight
+- AI ranking UX — hint reads `[Enter] AI Rank` and a dim `── Unranked below ──` separator marks the boundary after partial AI rankings
+- Cancellable in-flight search — typing kills the previous ripgrep child via cooperative flag + `Child::kill()`, removing head-of-line stalls and 594 MB RSS spikes on large corpora
+
+### Fixed
+- Fork the session at the selected message when resuming, instead of landing on the latest tip
+- Tree branches render as compact git-like lanes — no more collapsed star rows on splits
+- Slash commands render as `/name` (or `/name args`) across search, recent, expanded rows, and tree previews
+- Timestamps render in local timezone (was UTC) in tree rows and search/recent headers
+- Brighten preview summaries on selected rows (role prefix stays dim, preview content gets its own color)
+- Ctrl+C in AI ranking mode returns to regular search instead of killing the TUI
+- Treat AI's empty `[]` as a valid "no matches" answer (green "0 sessions ranked"); attach a 100-char stdout sample to real parse failures
+- Keep Enter bound to re-rank after an AI no-match instead of resuming
+
+### Changed
+- Replace long-lived search worker thread with per-request `SearchHandle { seq, cancel }`; `is_searching` is derived, no more stuck flag after a panicked thread
+- Pure-rendering split — `AppView<'a>` read-only projection feeds search and tree views, no mutation during draw
+
 ## v0.11.0 - 2026-04-22
 
 ### New Features

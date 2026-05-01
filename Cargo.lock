@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "ccfullsearch"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "assert_cmd",
  "chrono",
