@@ -455,6 +455,21 @@ fn normalize_command_markup(text: &str) -> Cow<'_, str> {
                     output.push_str(rest);
                     return Cow::Owned(output);
                 };
+
+                // Claude Code emits <command-message>name</command-message> and
+                // <command-name>/name</command-name> as a pair for one slash
+                // invocation (processSlashCommand.tsx). Swallow the trailing
+                // <command-name> so the preview doesn't render "/foo /foo".
+                let after_gap = after_message.trim_start();
+                let after_message = if after_gap.starts_with(COMMAND_NAME_OPEN) {
+                    match parse_tag_at(after_gap, COMMAND_NAME_OPEN, COMMAND_NAME_CLOSE) {
+                        Some((_, after_name)) => after_name,
+                        None => after_message,
+                    }
+                } else {
+                    after_message
+                };
+
                 let (rendered, after_args) =
                     render_command_with_optional_args(value, after_message);
                 output.push_str(&rendered);
@@ -896,6 +911,37 @@ mod tests {
         assert_eq!(
             SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
             "/revdiff:revdiff"
+        );
+    }
+
+    #[test]
+    fn test_render_command_message_suppresses_following_name() {
+        // Claude Code emits both tags as a pair for one slash invocation
+        // (processSlashCommand.tsx -> formatSlashCommandLoadingMetadata).
+        // The trailing <command-name> must be swallowed, not rendered twice.
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>fpf</command-message>\n<command-name>/fpf</command-name>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/fpf"
+        );
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 200 }),
+            "/fpf"
+        );
+    }
+
+    #[test]
+    fn test_render_command_message_suppresses_following_name_with_args() {
+        let blocks = vec![ContentBlock::Text(
+            "<command-message>foo</command-message>\n<command-name>/foo</command-name>\n<command-args>bar baz</command-args>".into(),
+        )];
+
+        assert_eq!(
+            SessionRecord::render_content(&blocks, &ContentMode::TextOnly),
+            "/foo bar baz"
         );
     }
 
