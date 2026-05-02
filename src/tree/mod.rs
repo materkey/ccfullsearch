@@ -222,21 +222,86 @@ impl SessionTree {
     }
 
     /// Build the display graph (only user/assistant) and flatten via DFS.
+    ///
+    /// Uses an explicit work stack instead of recursion so that very long
+    /// linear chains (thousands of messages) don't overflow the OS thread
+    /// stack — `SessionTree::from_file` is invoked from a `std::thread::spawn`
+    /// background thread whose default stack is ~2 MB.
     fn flatten_to_rows(&mut self) {
         // Step 1: Build display graph — collapse non-displayable nodes
         let (display_children, display_roots) = self.build_display_graph();
 
-        // Step 2: DFS with compact branch-lane tracking
+        // Step 2: iterative DFS with compact branch-lane tracking
         let mut rows: Vec<TreeRow> = Vec::new();
         let root_count = display_roots.len();
 
-        for (i, root) in display_roots.iter().enumerate() {
+        // Frames hold (uuid, prefix_lanes, connector) — same parameters the
+        // recursive version used to receive on the call stack.
+        let mut stack: Vec<(String, Vec<bool>, Option<bool>)> =
+            Vec::with_capacity(self.nodes.len());
+
+        // Push roots in reverse so the leftmost root is popped (and emitted) first.
+        for (i, root) in display_roots.iter().enumerate().rev() {
             let connector = if root_count > 1 {
                 Some(i == root_count - 1)
             } else {
                 None
             };
-            self.dfs_flatten(root, &[], connector, &display_children, &mut rows);
+            stack.push((root.clone(), Vec::new(), connector));
+        }
+
+        while let Some((uuid, prefix_lanes, connector)) = stack.pop() {
+            let Some(node) = self.nodes.get(&uuid) else {
+                continue;
+            };
+
+            let kids = display_children.get(&uuid).cloned().unwrap_or_default();
+            let is_branch_point = kids.len() > 1;
+            let is_on_latest = self.latest_chain.contains(&uuid);
+
+            let graph = build_graph_symbols(&prefix_lanes, connector);
+
+            let is_compaction = node.role.as_deref() == Some("compaction")
+                || is_context_loss_message(&node.content_preview);
+
+            rows.push(TreeRow {
+                uuid: uuid.clone(),
+                role: node.role.clone().unwrap_or_else(|| "?".to_string()),
+                timestamp: node.timestamp.unwrap_or_else(Utc::now),
+                content_preview: node.content_preview.clone().unwrap_or_default(),
+                graph_symbols: graph,
+                is_on_latest_chain: is_on_latest,
+                is_branch_point,
+                is_compaction,
+            });
+
+            // Sort children: latest chain first, then by line_index
+            let mut sorted_kids = kids;
+            sorted_kids.sort_by(|a, b| {
+                let a_latest = self.is_descendant_of_latest(a, &display_children);
+                let b_latest = self.is_descendant_of_latest(b, &display_children);
+                b_latest.cmp(&a_latest).then_with(|| {
+                    let a_idx = self.nodes.get(a).map(|n| n.line_index).unwrap_or(0);
+                    let b_idx = self.nodes.get(b).map(|n| n.line_index).unwrap_or(0);
+                    a_idx.cmp(&b_idx)
+                })
+            });
+
+            let mut child_prefix = prefix_lanes;
+            if let Some(is_last) = connector {
+                child_prefix.push(!is_last);
+            }
+
+            let child_count = sorted_kids.len();
+            // Push children in REVERSE so the leftmost child is popped first.
+            for (i, child) in sorted_kids.into_iter().enumerate().rev() {
+                let child_connector = if child_count > 1 {
+                    Some(i == child_count - 1)
+                } else {
+                    None
+                };
+                stack.push((child, child_prefix.clone(), child_connector));
+            }
         }
 
         self.rows = rows;
@@ -337,89 +402,27 @@ impl SessionTree {
         None
     }
 
-    /// DFS traversal to build flat TreeRow list with graph symbols.
-    fn dfs_flatten(
-        &self,
-        uuid: &str,
-        prefix_lanes: &[bool],
-        connector: Option<bool>,
-        display_children: &HashMap<String, Vec<String>>,
-        rows: &mut Vec<TreeRow>,
-    ) {
-        let node = match self.nodes.get(uuid) {
-            Some(n) => n,
-            None => return,
-        };
-
-        let kids = display_children.get(uuid).cloned().unwrap_or_default();
-        let is_branch_point = kids.len() > 1;
-        let is_on_latest = self.latest_chain.contains(uuid);
-
-        // Build graph symbols
-        let graph = build_graph_symbols(prefix_lanes, connector);
-
-        let is_compaction = node.role.as_deref() == Some("compaction")
-            || is_context_loss_message(&node.content_preview);
-
-        rows.push(TreeRow {
-            uuid: uuid.to_string(),
-            role: node.role.clone().unwrap_or_else(|| "?".to_string()),
-            timestamp: node.timestamp.unwrap_or_else(Utc::now),
-            content_preview: node.content_preview.clone().unwrap_or_default(),
-            graph_symbols: graph,
-            is_on_latest_chain: is_on_latest,
-            is_branch_point,
-            is_compaction,
-        });
-
-        // Sort children: latest chain first, then by line_index
-        let mut sorted_kids = kids;
-        sorted_kids.sort_by(|a, b| {
-            let a_latest = self.is_descendant_of_latest(a, display_children);
-            let b_latest = self.is_descendant_of_latest(b, display_children);
-            // Latest chain first (true > false when reversed)
-            b_latest.cmp(&a_latest).then_with(|| {
-                let a_idx = self.nodes.get(a).map(|n| n.line_index).unwrap_or(0);
-                let b_idx = self.nodes.get(b).map(|n| n.line_index).unwrap_or(0);
-                a_idx.cmp(&b_idx)
-            })
-        });
-
-        let mut child_prefix = prefix_lanes.to_vec();
-        if let Some(is_last) = connector {
-            child_prefix.push(!is_last);
-        }
-
-        let child_count = sorted_kids.len();
-        for (i, child) in sorted_kids.into_iter().enumerate() {
-            let child_connector = if child_count > 1 {
-                Some(i == child_count - 1)
-            } else {
-                None
-            };
-            self.dfs_flatten(
-                &child,
-                &child_prefix,
-                child_connector,
-                display_children,
-                rows,
-            );
-        }
-    }
-
     /// Check if a node or any of its descendants is on the latest chain.
+    ///
+    /// Iterative DFS — recursion would blow the thread stack on very deep
+    /// (mostly-linear) sessions, mirroring the issue in `flatten_to_rows`.
     fn is_descendant_of_latest(
         &self,
         uuid: &str,
         display_children: &HashMap<String, Vec<String>>,
     ) -> bool {
-        if self.latest_chain.contains(uuid) {
-            return true;
-        }
-        if let Some(kids) = display_children.get(uuid) {
-            for kid in kids {
-                if self.is_descendant_of_latest(kid, display_children) {
-                    return true;
+        let mut stack: Vec<&str> = vec![uuid];
+        let mut visited: HashSet<&str> = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if self.latest_chain.contains(current) {
+                return true;
+            }
+            if let Some(kids) = display_children.get(current) {
+                for kid in kids {
+                    stack.push(kid.as_str());
                 }
             }
         }
@@ -558,6 +561,44 @@ mod tests {
                 "All linear messages should be on latest chain"
             );
         }
+    }
+
+    #[test]
+    fn test_deep_linear_chain_does_not_overflow_stack() {
+        // Long linear sessions used to overflow the background thread's
+        // default ~2 MB stack via recursive `dfs_flatten` /
+        // `is_descendant_of_latest`. Run from_file on a worker thread with
+        // an explicitly small stack to lock in the iterative implementation.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("deep_linear.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+
+        let depth = 5000;
+        let mut prev: Option<String> = None;
+        for i in 0..depth {
+            let uuid = format!("u{}", i);
+            let parent = match &prev {
+                Some(p) => format!(r#","parentUuid":"{}""#, p),
+                None => String::new(),
+            };
+            writeln!(
+                f,
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"m{}"}}]}},"uuid":"{}"{},"sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}}"#,
+                i, uuid, parent
+            )
+            .unwrap();
+            prev = Some(uuid);
+        }
+        drop(f);
+
+        let path_str = path.to_str().unwrap().to_string();
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024) // 512 KB — well under what recursion at depth=5000 needs
+            .spawn(move || SessionTree::from_file(&path_str))
+            .expect("spawn worker thread");
+
+        let tree = handle.join().expect("worker did not panic").unwrap();
+        assert_eq!(tree.rows.len(), depth);
     }
 
     #[test]
