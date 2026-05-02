@@ -632,7 +632,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         }
 
         // Group header
-        let header = render_group_header(group, is_selected, is_expanded);
+        let header = render_group_header(group, is_selected, is_expanded, area_width);
         items.push(header);
 
         // Preview line for collapsed groups (like recent sessions show summaries)
@@ -745,7 +745,9 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
 const RECENT_LINES_PER_SESSION: usize = 2;
 
 /// Shared header layout used by both collapsed search groups and recent
-/// sessions: `<caret> <agent> [source] date | project | branch | sid (count)[ [A]]`.
+/// sessions: left side carries the primary scan path
+/// `<caret> <date> · <project> <branch> · <sid> (count)[ [A]]`; agent +
+/// transport render as a dim right-side badge when width allows.
 /// `session_id` is truncated to 8 chars here so callers don't have to.
 struct SessionHeaderParts<'a> {
     caret: &'a str,
@@ -774,6 +776,14 @@ fn provider_badge_style(provider: SessionProvider, _selected: bool, _base: Style
     Style::default().fg(fg).add_modifier(Modifier::BOLD)
 }
 
+fn right_badge_text(provider: SessionProvider, source: &str) -> String {
+    format!(
+        "{} · {}",
+        provider_badge_label(provider),
+        source.to_ascii_lowercase()
+    )
+}
+
 #[cfg(test)]
 fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     let sid = if p.session_id.len() > 8 {
@@ -783,16 +793,15 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     };
     let auto_tag = if p.has_automation { " [A]" } else { "" };
     format!(
-        "{} {} [{}] {} | {} | {} | {} ({}){}",
+        "{} {} · {}  ⎇ {} · {} ({}){} {}",
         p.caret,
-        provider_badge_label(p.provider),
-        p.source,
         p.date,
         p.project,
         p.branch,
         sid,
         p.count,
-        auto_tag
+        auto_tag,
+        right_badge_text(p.provider, p.source)
     )
 }
 
@@ -820,23 +829,23 @@ fn preview_content_style(selected: bool) -> Style {
     Style::default().fg(fg)
 }
 
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.content.chars().count()).sum()
+}
+
 /// Styled header line used by search results and recent sessions. It keeps
 /// the same text grammar as `format_session_header_line`, but gives the
-/// scannable fields their own visual hierarchy: source, project, branch, and
-/// count no longer blend into the timestamp/session-id scaffolding.
+/// scannable fields their own visual hierarchy: date leads the row, project
+/// and branch stay prominent, and agent/source metadata moves to the right edge.
 fn render_session_header_line(
     prefix: &str,
     p: SessionHeaderParts<'_>,
     base_style: Style,
     selected: bool,
+    available_width: usize,
 ) -> Line<'static> {
     let row_bg = base_style.bg;
     let base = base_style;
-    let accent = if selected {
-        base
-    } else {
-        Style::default().fg(Color::Magenta)
-    };
     let provider = provider_badge_style(p.provider, selected, base);
     let project = if selected {
         Style::default()
@@ -861,34 +870,24 @@ fn render_session_header_line(
     } else {
         Style::default().fg(Color::Green)
     };
+    let right_meta = if selected {
+        base
+    } else {
+        Style::default().fg(DIM_FG)
+    };
 
     let mut spans = vec![
         Span::styled(prefix.to_string(), base),
         Span::styled(p.caret.to_string(), base),
         Span::styled(" ".to_string(), base),
-        Span::styled(
-            format!("{} ", provider_badge_label(p.provider)),
-            style_with_bg(provider, row_bg),
-        ),
-        Span::styled(format!("[{}]", p.source), style_with_bg(accent, row_bg)),
-        Span::styled(format!(" {} | ", p.date), base),
+        Span::styled(p.date.to_string(), base),
+        Span::styled(" · ".to_string(), base),
         Span::styled(p.project.to_string(), project),
-        Span::styled(" | ".to_string(), base),
-    ];
-
-    if p.branch == "-" {
-        spans.push(Span::styled("-".to_string(), base));
-    } else {
-        spans.push(Span::styled(
-            format!("⎇ {}", p.branch),
-            style_with_bg(branch, row_bg),
-        ));
-    }
-
-    spans.extend([
-        Span::styled(format!(" | {} ", truncated_session_id(p.session_id)), base),
+        Span::styled("  ".to_string(), base),
+        Span::styled(format!("⎇ {}", p.branch), style_with_bg(branch, row_bg)),
+        Span::styled(format!(" · {} ", truncated_session_id(p.session_id)), base),
         Span::styled(format!("({})", p.count), style_with_bg(count, row_bg)),
-    ]);
+    ];
 
     if p.has_automation {
         let automation = if selected {
@@ -899,6 +898,22 @@ fn render_session_header_line(
         spans.push(Span::styled(
             " [A]".to_string(),
             style_with_bg(automation, row_bg),
+        ));
+    }
+
+    let badge = right_badge_text(p.provider, p.source);
+    let left_width = spans_width(&spans);
+    let badge_width = badge.chars().count();
+    if available_width > left_width + badge_width + 1 {
+        let gap = available_width - left_width - badge_width;
+        spans.push(Span::styled(" ".repeat(gap), base));
+        spans.push(Span::styled(
+            provider_badge_label(p.provider).to_string(),
+            style_with_bg(provider, row_bg),
+        ));
+        spans.push(Span::styled(
+            format!(" · {}", p.source.to_ascii_lowercase()),
+            style_with_bg(right_meta, row_bg),
         ));
     }
 
@@ -994,6 +1009,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
             },
             header_style,
             is_selected,
+            available_width,
         );
         items.push(ListItem::new(header).style(header_style));
 
@@ -1076,7 +1092,12 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
     })
 }
 
-fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool) -> ListItem<'a> {
+fn render_group_header<'a>(
+    group: &SessionGroup,
+    selected: bool,
+    expanded: bool,
+    available_width: usize,
+) -> ListItem<'a> {
     // No BOLD on selected+collapsed — see `render_recent_sessions` for the
     // Iosevka ▶ clipping rationale; both screens must stay in sync.
     let style = if selected && !expanded {
@@ -1134,6 +1155,7 @@ fn render_group_header<'a>(group: &SessionGroup, selected: bool, expanded: bool)
         },
         style,
         selected,
+        available_width,
     );
 
     ListItem::new(header).style(style)
@@ -2686,13 +2708,13 @@ mod tests {
 
         let text = build_group_header_text(&group, false);
         assert!(
-            text.contains("[CLI]"),
-            "Header should contain [CLI] indicator, got: {}",
+            text.contains("CC · cli"),
+            "Header should contain right-side CC cli indicator, got: {}",
             text
         );
         assert!(
-            text.contains("CC [CLI]"),
-            "Header should contain CC agent indicator, got: {}",
+            !text.contains("CC [CLI]"),
+            "Header should not contain left-side agent/source indicator, got: {}",
             text
         );
     }
@@ -2726,13 +2748,13 @@ mod tests {
 
         let text = build_group_header_text(&group, false);
         assert!(
-            text.contains("[Desktop]"),
-            "Header should contain [Desktop] indicator, got: {}",
+            text.contains("CC · desktop"),
+            "Header should contain right-side CC desktop indicator, got: {}",
             text
         );
         assert!(
-            text.contains("CC [Desktop]"),
-            "Header should contain CC agent indicator, got: {}",
+            !text.contains("CC [Desktop]"),
+            "Header should not contain left-side agent/source indicator, got: {}",
             text
         );
     }
@@ -2768,8 +2790,8 @@ mod tests {
 
         let text = build_group_header_text(&group, false);
         assert!(
-            text.contains("CX [CLI]"),
-            "Header should contain CX agent indicator, got: {}",
+            text.contains("CX · cli"),
+            "Header should contain right-side CX cli indicator, got: {}",
             text
         );
     }
@@ -2919,7 +2941,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ CC [CLI] {date} | avito-android | MBSA-2197 | b701e752 (3613 msgs) [A]")
+            format!("▶ {date} · avito-android  ⎇ MBSA-2197 · b701e752 (3613 msgs) [A] CC · cli")
         );
     }
 
@@ -2947,7 +2969,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ CC [Desktop] {date} | ~ | - | short-id (42 msgs)")
+            format!("▶ {date} · ~  ⎇ - · short-id (42 msgs) CC · desktop")
         );
     }
 
@@ -2975,7 +2997,7 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ CX [CLI] {date} | myapp | - | 019f-cod (3 msgs)")
+            format!("▶ {date} · myapp  ⎇ - · 019f-cod (3 msgs) CX · cli")
         );
     }
 
@@ -3021,7 +3043,7 @@ mod tests {
                 line.push_str(buffer.cell((x, y)).unwrap().symbol());
             }
             let trimmed = line.trim_end();
-            if trimmed.contains("▶ CC [CLI]") {
+            if trimmed.contains("▶ ") && trimmed.contains("avito-android") {
                 header_line = Some(trimmed.to_string());
             } else if trimmed.contains("User: ") {
                 preview_line = Some(trimmed.to_string());
@@ -3029,10 +3051,15 @@ mod tests {
         }
         let header = header_line.expect("header line should render");
         let expected_header =
-            format!("CC [CLI] {expected_date} | avito-android | ⎇ main | b701e752 (17 msgs)");
+            format!("{expected_date} · avito-android  ⎇ main · b701e752 (17 msgs)");
         assert!(
             header.contains(&expected_header),
             "unexpected header: {:?}",
+            header
+        );
+        assert!(
+            header.contains("CC · cli"),
+            "right-side badge should render in header: {:?}",
             header
         );
         let preview = preview_line.expect("preview line should render");
@@ -3137,6 +3164,28 @@ mod tests {
     }
 
     #[test]
+    fn test_render_search_header_right_aligns_agent_source_badge() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = make_test_app_with_groups();
+        app.search.group_cursor = 99; // keep the only rendered row unselected
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let badge = "CC · cli";
+        let (badge_x, _) = find_cell_for_text(terminal.backend().buffer(), 120, 24, badge)
+            .expect("right-side agent/source badge should render");
+        assert_eq!(
+            badge_x,
+            120 - badge.chars().count() as u16,
+            "badge should align to the right edge"
+        );
+    }
+
+    #[test]
     fn test_render_recent_header_highlights_project_and_branch() {
         use crate::recent::RecentSession;
         use chrono::TimeZone;
@@ -3188,7 +3237,7 @@ mod tests {
     fn assert_selected_caret_layout(buffer: &ratatui::buffer::Buffer, label: &str) {
         let y = find_selected_header_y(buffer, label);
 
-        let expected: &[&str] = &[">", " ", "▶", " ", "C", "C", " ", "[", "C", "L", "I", "]"];
+        let expected: &[&str] = &[">", " ", "▶", " "];
         for (i, &want) in expected.iter().enumerate() {
             let got = buffer.cell((i as u16, y)).unwrap().symbol();
             assert_eq!(
@@ -3197,7 +3246,7 @@ mod tests {
                 label, i, want, got
             );
         }
-        for x in 0..12u16 {
+        for x in 0..4u16 {
             let cell = buffer.cell((x, y)).unwrap();
             assert_eq!(
                 cell.bg, SELECTION_BG,

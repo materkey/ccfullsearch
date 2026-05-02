@@ -99,12 +99,12 @@ fn snapshot_search_with_results() {
         "Should show match count. Lines: {:?}",
         lines
     );
-    // Group header should contain CLI indicator, date, project
+    // Group header should contain the right-side agent/source badge, date, project
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("[CLI]") && l.contains("2025-06-15")),
-        "Group header should contain source and date. Lines: {:?}",
+            .any(|l| l.contains("CC · cli") && l.contains("2025-06-15")),
+        "Group header should contain source badge and date. Lines: {:?}",
         lines
     );
     // Group header should contain project name extracted from path
