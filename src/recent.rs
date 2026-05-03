@@ -6,8 +6,8 @@ use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
-use crate::search::extract_project_from_path;
-use crate::session::record::{render_text_content, MessageRole, SessionRecord};
+use crate::search::{count_session_messages, extract_project_from_path};
+use crate::session::record::{render_text_content, ContentMode, MessageRole, SessionRecord};
 use crate::session::{self, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
@@ -46,10 +46,6 @@ pub(crate) fn truncate_summary(s: &str, max_len: usize) -> String {
 }
 
 pub(crate) fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
-    if session::extract_record_type(json) != Some("user") {
-        return None;
-    }
-
     if json
         .get("isMeta")
         .and_then(|v| v.as_bool())
@@ -58,25 +54,45 @@ pub(crate) fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<Str
         return None;
     }
 
-    let message = json.get("message")?;
-    let content = message.get("content")?;
-    render_text_content(content)
+    match SessionRecord::from_value(json)? {
+        SessionRecord::Message {
+            role: MessageRole::User,
+            content_blocks,
+            ..
+        } => {
+            let text = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn is_real_user_prompt(text: &str) -> bool {
-    !text.starts_with("<system-reminder>")
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("<system-reminder>") || trimmed.starts_with("<environment_context>") {
+        return false;
+    }
+
+    // Codex records initial repository instructions as a `role=user` item.
+    // It is bootstrap context, not the user's first request, so do not use it
+    // as the recent-session title.
+    if trimmed.starts_with("# AGENTS.md instructions for ") && trimmed.contains("<INSTRUCTIONS>") {
+        return false;
+    }
+
+    true
 }
 
 /// Extract text from user or assistant messages for automation detection.
 /// Ralphex markers appear in assistant responses, so we need to check both roles.
 fn extract_text_for_automation(json: &serde_json::Value) -> Option<String> {
-    let record_type = session::extract_record_type(json)?;
-    if record_type != "user" && record_type != "assistant" {
-        return None;
+    match SessionRecord::from_value(json)? {
+        SessionRecord::Message { content_blocks, .. } => {
+            let text = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
     }
-    let message = json.get("message")?;
-    let content = message.get("content")?;
-    render_text_content(content)
 }
 
 #[derive(Default)]
@@ -156,16 +172,14 @@ fn scan_head(
             scan.branch = session::extract_branch(&json);
         }
 
-        if session::extract_record_type(&json) == Some("summary") {
-            if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
-                let trimmed = summary_text.trim();
-                if !trimmed.is_empty() {
-                    if summary_is_on_latest_chain(&json, latest_chain) {
-                        scan.last_summary = Some(truncate_summary(trimmed, 100));
-                        scan.last_summary_sid = session::extract_session_id(&json);
-                    } else {
-                        scan.saw_off_chain_summary = true;
-                    }
+        if let Some(SessionRecord::Summary { text, .. }) = SessionRecord::from_value(&json) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                if summary_is_on_latest_chain(&json, latest_chain) {
+                    scan.last_summary = Some(truncate_summary(trimmed, 100));
+                    scan.last_summary_sid = session::extract_session_id(&json);
+                } else {
+                    scan.saw_off_chain_summary = true;
                 }
             }
         }
@@ -422,12 +436,16 @@ fn scan_middle(
             continue;
         }
 
-        let could_be_summary = needs.summary && !in_tail_region && line.contains("\"summary\"");
+        let could_be_summary = needs.summary
+            && !in_tail_region
+            && (line.contains("\"summary\"") || line.contains("\"compacted\""));
         let could_be_user = still_need_user_msg && line.contains("\"user\"");
         let could_be_msg =
             still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
-        let could_have_sid =
-            still_need_sid && (line.contains("\"sessionId\"") || line.contains("\"session_id\""));
+        let could_have_sid = still_need_sid
+            && (line.contains("\"sessionId\"")
+                || line.contains("\"session_id\"")
+                || line.contains("\"session_meta\""));
         let could_have_branch =
             still_need_branch && (line.contains("\"branch\"") || line.contains("\"gitBranch\""));
 
@@ -460,16 +478,17 @@ fn scan_middle(
             }
         }
 
-        if could_be_summary && session::extract_record_type(&json) == Some("summary") {
-            if let Some(summary_text) = json.get("summary").and_then(|v| v.as_str()) {
-                let trimmed = summary_text.trim();
-                if !trimmed.is_empty() {
-                    if summary_is_on_latest_chain(&json, latest_chain) {
-                        result.last_summary = Some(truncate_summary(trimmed, 100));
-                        result.last_summary_sid = session::extract_session_id(&json);
-                    } else {
-                        result.saw_off_chain_summary = true;
-                    }
+        if could_be_summary {
+            if let Some(SessionRecord::Summary { text, .. }) = SessionRecord::from_value(&json) {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if summary_is_on_latest_chain(&json, latest_chain) {
+                    result.last_summary = Some(truncate_summary(trimmed, 100));
+                    result.last_summary_sid = session::extract_session_id(&json);
+                } else {
+                    result.saw_off_chain_summary = true;
                 }
             }
         }
@@ -541,7 +560,7 @@ fn extract_latest_user_message_on_chain(
         let Some(text) = render_text_content(content) else {
             continue;
         };
-        if text.starts_with("<system-reminder>") {
+        if !is_real_user_prompt(&text) {
             continue;
         }
 
@@ -695,7 +714,10 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         .into_iter()
         .flatten()
         .max();
-    let message_count = latest_chain.as_ref().map(|c| c.len());
+    let message_count = latest_chain.as_ref().map(|c| c.len()).or_else(|| {
+        let count = count_session_messages(path_str).0;
+        (count > 0).then_some(count)
+    });
 
     // Apply title priority: metadata_title > summary > lastPrompt > firstUserMessage
     if let Some(title) = tail.metadata_title {
@@ -949,7 +971,7 @@ mod tests {
     use chrono::TimeZone;
     use filetime::{set_file_mtime, FileTime};
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, TempDir};
 
     #[test]
     fn test_recent_session_creation() {
@@ -1005,6 +1027,69 @@ mod tests {
         let result = extract_summary(f.path()).unwrap();
         assert_eq!(result.summary, "How do I sort a list in Python?");
         assert_eq!(result.session_id, "sess-001");
+    }
+
+    #[test]
+    fn test_is_real_user_prompt_skips_codex_bootstrap_context() {
+        assert!(!is_real_user_prompt(
+            "<environment_context>\n  <cwd>/tmp</cwd>"
+        ));
+        assert!(!is_real_user_prompt(
+            "# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\n# CLAUDE.md\n</INSTRUCTIONS>"
+        ));
+        assert!(is_real_user_prompt(
+            "# AGENTS.md should mention the new test command"
+        ));
+    }
+
+    #[test]
+    fn test_extract_summary_skips_codex_bootstrap_prompt() {
+        let dir = TempDir::new().unwrap();
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_id = "019f0000-0000-7000-8000-000000000001";
+        let path = session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+
+        std::fs::write(
+            &path,
+            format!(
+                r##"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{session_id}","cwd":"/Users/test/projects/recog","source":"cli"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"# AGENTS.md instructions for /Users/test/projects/recog\n\n<INSTRUCTIONS>\n# CLAUDE.md\nThis file provides guidance.\n</INSTRUCTIONS>"}}]}}}}
+{{"timestamp":"2026-05-03T10:00:02Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/test/projects/recog</cwd>\n</environment_context>"}}]}}}}
+{{"timestamp":"2026-05-03T10:00:03Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Implement channel scaffolding for KTalk copilot"}}]}}}}
+{{"timestamp":"2026-05-03T10:00:04Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"Done"}}],"phase":"final_answer"}}}}"##
+            ),
+        )
+        .unwrap();
+
+        let result = extract_summary(&path).unwrap();
+        assert_eq!(
+            result.summary,
+            "Implement channel scaffolding for KTalk copilot"
+        );
+        assert_eq!(result.preview_role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_extract_summary_supports_codex_rollout() {
+        let dir = TempDir::new().unwrap();
+        let session_dir = dir.path().join(".codex/sessions/2026/05/01");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let path = session_dir
+            .join("rollout-2026-05-01T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl");
+        std::fs::write(
+            &path,
+            std::fs::read_to_string("tests/fixtures/codex_session.jsonl").unwrap(),
+        )
+        .unwrap();
+
+        let result = extract_summary(&path).unwrap();
+        assert_eq!(result.session_id, "019f0000-0000-7000-8000-000000000001");
+        assert_eq!(result.project, "codex-demo");
+        assert_eq!(result.summary, "Please debug the codex needle parser");
+        assert_eq!(result.branch.as_deref(), Some("codex-main"));
+        assert_eq!(result.message_count, Some(2));
+        assert_eq!(result.preview_role, MessageRole::User);
     }
 
     #[test]
@@ -1915,6 +2000,50 @@ mod tests {
             files[0].file_name().unwrap().to_str().unwrap(),
             "session.jsonl"
         );
+    }
+
+    #[test]
+    fn test_recent_skips_codex_subagent_rollouts() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let session_dir = temp_dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let parent_id = "019f0000-0000-7000-8000-000000000001";
+        let child_id = "019f0000-0000-7000-8000-000000000002";
+        let parent_path =
+            session_dir.join(format!("rollout-2026-05-03T10-00-00-{parent_id}.jsonl"));
+        let child_path = session_dir.join(format!("rollout-2026-05-03T10-01-00-{child_id}.jsonl"));
+
+        std::fs::write(
+            &parent_path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{parent_id}","cwd":"/tmp/codex-demo","source":"cli"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Parent Codex prompt"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child_path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:01:00Z","type":"session_meta","payload":{{"id":"{child_id}","cwd":"/tmp/codex-demo","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent_id}","depth":1}}}}}}}}}}
+{{"timestamp":"2026-05-03T10:01:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Child Codex prompt"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let sessions = collect_recent_sessions(
+            &[temp_dir
+                .path()
+                .join(".codex/sessions")
+                .to_string_lossy()
+                .to_string()],
+            10,
+        );
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, parent_id);
+        assert_eq!(sessions[0].file_path, parent_path.to_string_lossy());
+        assert_eq!(sessions[0].summary, "Parent Codex prompt");
     }
 
     fn write_test_session_with_ts(

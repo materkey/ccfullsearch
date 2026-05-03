@@ -2,6 +2,8 @@ pub mod record;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 /// Source of the Claude session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,10 +45,14 @@ pub enum SessionProvider {
 impl SessionProvider {
     /// Detect the session provider from the transcript path.
     pub fn from_path(path: &str) -> Self {
-        let normalized = path.replace('\\', "/");
-        if normalized.contains("/.codex/sessions/")
-            || normalized.contains("/.codex/archived_sessions/")
-        {
+        let is_codex = if path.contains('\\') {
+            let normalized = path.replace('\\', "/");
+            normalized.contains("/.codex/sessions/")
+                || normalized.contains("/.codex/archived_sessions/")
+        } else {
+            path.contains("/.codex/sessions/") || path.contains("/.codex/archived_sessions/")
+        };
+        if is_codex {
             SessionProvider::Codex
         } else {
             SessionProvider::Claude
@@ -62,20 +68,160 @@ impl SessionProvider {
     }
 }
 
+/// Return true when a transcript path belongs to Codex rollout storage.
+pub fn is_codex_session_path(path: &str) -> bool {
+    SessionProvider::from_path(path) == SessionProvider::Codex
+}
+
+/// Extract a Codex thread/session id from a rollout filename.
+///
+/// Codex response-item lines do not repeat the session id; it is stored in the
+/// initial `session_meta` record and in filenames shaped as
+/// `rollout-YYYY-MM-DDTHH-MM-SS-<thread-id>.jsonl`.
+pub fn extract_codex_session_id_from_path(path: &str) -> Option<String> {
+    let file_stem = Path::new(path).file_stem()?.to_str()?;
+    let rest = file_stem.strip_prefix("rollout-")?;
+    if rest.len() <= 20 || rest.as_bytes().get(19) != Some(&b'-') {
+        return None;
+    }
+    let id = &rest[20..];
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 /// Extract session ID from a JSON record.
-/// Supports both CLI format (`sessionId`) and Desktop format (`session_id`).
+/// Supports Claude CLI (`sessionId`), Claude Desktop (`session_id`), and Codex
+/// rollout `session_meta` (`payload.id`) records.
 pub fn extract_session_id(json: &serde_json::Value) -> Option<String> {
     json.get("sessionId")
         .or_else(|| json.get("session_id"))
+        .or_else(|| {
+            (json.get("type").and_then(|v| v.as_str()) == Some("session_meta"))
+                .then(|| json.get("payload")?.get("id"))
+                .flatten()
+        })
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
 
+/// Extract the parent thread id from a Codex subagent `session_meta` record.
+///
+/// Codex stores spawned subagents as normal rollout files. The only reliable
+/// parent link is in `payload.source.subagent.thread_spawn.parent_thread_id`.
+pub fn extract_codex_parent_thread_id(json: &serde_json::Value) -> Option<String> {
+    (json.get("type").and_then(|v| v.as_str()) == Some("session_meta"))
+        .then(|| {
+            json.get("payload")?
+                .get("source")?
+                .get("subagent")?
+                .get("thread_spawn")?
+                .get("parent_thread_id")
+        })
+        .flatten()
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Read a Codex rollout's first few records and return the parent thread id
+/// when the file represents a spawned subagent.
+pub fn codex_parent_thread_id_from_file(path: &Path) -> Option<String> {
+    let path_str = path.to_str()?;
+    if !is_codex_session_path(path_str) {
+        return None;
+    }
+
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines().take(10).flatten() {
+        let json: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(parent_id) = extract_codex_parent_thread_id(&json) {
+            return Some(parent_id);
+        }
+        if extract_record_type(&json) == Some("session_meta") {
+            break;
+        }
+    }
+
+    None
+}
+
+fn codex_rollout_matches_session_id(path: &Path, session_id: &str) -> bool {
+    path.to_str()
+        .and_then(extract_codex_session_id_from_path)
+        .as_deref()
+        == Some(session_id)
+}
+
+fn codex_session_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors().find_map(|ancestor| {
+        let name = ancestor.file_name()?.to_str()?;
+        matches!(name, "sessions" | "archived_sessions").then(|| ancestor.to_path_buf())
+    })
+}
+
+fn find_codex_rollout_in_tree(root: &Path, session_id: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            if let Some(found) = find_codex_rollout_in_tree(&path, session_id) {
+                return Some(found);
+            }
+        } else if file_type.is_file() && codex_rollout_matches_session_id(&path, session_id) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_codex_rollout_near(path: &Path, session_id: &str) -> Option<PathBuf> {
+    if let Some(parent) = path.parent() {
+        if let Some(found) = find_codex_rollout_in_tree(parent, session_id) {
+            return Some(found);
+        }
+    }
+
+    let root = codex_session_root(path)?;
+    if let Some(found) = find_codex_rollout_in_tree(&root, session_id) {
+        return Some(found);
+    }
+
+    let sibling_root = root.parent().and_then(|codex_home| {
+        let root_name = root.file_name()?.to_str()?;
+        match root_name {
+            "sessions" => Some(codex_home.join("archived_sessions")),
+            "archived_sessions" => Some(codex_home.join("sessions")),
+            _ => None,
+        }
+    });
+    sibling_root
+        .filter(|p| p.is_dir())
+        .and_then(|p| find_codex_rollout_in_tree(&p, session_id))
+}
+
+/// Resolve a Codex spawned-subagent rollout to its parent rollout.
+pub fn resolve_codex_subagent_session(path: &Path) -> Option<(String, String)> {
+    let parent_id = codex_parent_thread_id_from_file(path)?;
+    let parent_path =
+        find_codex_rollout_near(path, &parent_id).unwrap_or_else(|| path.to_path_buf());
+    Some((parent_id, parent_path.to_string_lossy().to_string()))
+}
+
 /// Extract timestamp from a JSON record.
-/// Supports both CLI format (`timestamp`) and Desktop format (`_audit_timestamp`).
+/// Supports Claude CLI/Codex rollout (`timestamp`), Claude Desktop
+/// (`_audit_timestamp`), and Codex `session_meta.payload.timestamp`.
 pub fn extract_timestamp(json: &serde_json::Value) -> Option<DateTime<Utc>> {
     json.get("timestamp")
         .or_else(|| json.get("_audit_timestamp"))
+        .or_else(|| json.get("payload").and_then(|p| p.get("timestamp")))
         .and_then(|v| v.as_str())
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc))
@@ -123,10 +269,45 @@ pub fn extract_record_type(json: &serde_json::Value) -> Option<&str> {
 pub fn extract_branch(json: &serde_json::Value) -> Option<String> {
     json.get("branch")
         .or_else(|| json.get("gitBranch"))
+        .or_else(|| {
+            json.get("payload")
+                .and_then(|p| p.get("git")?.get("branch"))
+        })
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+/// Extract the working directory from formats that persist it as metadata.
+pub fn extract_cwd(json: &serde_json::Value) -> Option<String> {
+    json.get("cwd")
+        .or_else(|| json.get("payload").and_then(|p| p.get("cwd")))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Read a Codex rollout's first records and return the recorded `cwd`.
+///
+/// Codex stores it in the initial `session_meta` record; scanning the prefix
+/// is enough and avoids loading large rollouts.
+pub fn read_codex_session_cwd(path: &str) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines().take(50).flatten() {
+        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(cwd) = extract_cwd(&json) {
+            return Some(cwd);
+        }
+    }
+
+    None
 }
 
 /// Returns true if the JSON record has `isSidechain: true`.
@@ -158,11 +339,11 @@ fn matches_claude_mem_content_marker(content: &str) -> bool {
 
 /// Recursively collect session JSONL files from the given search roots.
 ///
-/// Skips `subagents/` directories and `agent-*.jsonl` files because they either
-/// duplicate parent session data or are auxiliary files that should not appear
-/// in recent-session and session-list views.
-pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<std::path::PathBuf> {
-    fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+/// Skips Claude `subagents/` directories / `agent-*.jsonl` files and Codex
+/// subagent rollout files because they are auxiliary child sessions that
+/// should not appear in recent-session and session-list views.
+pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<PathBuf> {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(_) => return,
@@ -187,6 +368,9 @@ pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<std::path::Pa
                 continue;
             };
             if name.ends_with(".jsonl") && !name.starts_with("agent-") {
+                if codex_parent_thread_id_from_file(&path).is_some() {
+                    continue;
+                }
                 files.push(path);
             }
         }
@@ -194,7 +378,7 @@ pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<std::path::Pa
 
     let mut files = Vec::new();
     for search_path in search_paths {
-        let root = std::path::Path::new(search_path);
+        let root = Path::new(search_path);
         if root.is_dir() {
             walk(root, &mut files);
         }
@@ -217,7 +401,10 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
             continue;
         };
 
-        if name == target_filename {
+        if name == target_filename
+            || (is_codex_session_path(&path.to_string_lossy())
+                && codex_rollout_matches_session_id(&path, session_id))
+        {
             return Some(path.to_string_lossy().to_string());
         }
 
@@ -249,16 +436,25 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
 /// But search results may come from auxiliary files (agent files, metadata files)
 /// whose filename doesn't match the `sessionId` in their content.
 ///
-/// This function handles three cases:
-/// 1. **Subagent file** (`../session-id/subagents/agent-xxx.jsonl`):
+/// This function handles four cases:
+/// 1. **Codex spawned-subagent rollout**:
+///    reads `session_meta.payload.source.subagent.thread_spawn.parent_thread_id`
+///    and resolves to the parent rollout file when available
+/// 2. **Claude subagent file** (`../session-id/subagents/agent-xxx.jsonl`):
 ///    resolves to the parent `session-id.jsonl`
-/// 2. **Mismatched filename** (file's stem != session_id):
+/// 3. **Mismatched filename** (file's stem != session_id):
 ///    looks for `<session_id>.jsonl` in the same directory
-/// 3. **Normal file**: returns as-is
+/// 4. **Normal file**: returns as-is
 pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
     let path = std::path::Path::new(file_path);
 
-    // Case 1: subagent file under .../session-id/subagents/
+    // Case 1: Codex spawned-subagent rollout. Codex stores child sessions as
+    // normal rollout files and records the parent in session_meta.payload.source.
+    if let Some((parent_id, parent_path)) = resolve_codex_subagent_session(path) {
+        return (parent_id, parent_path);
+    }
+
+    // Case 2: subagent file under .../session-id/subagents/
     if let Some(parent) = path.parent() {
         if parent.file_name().and_then(|n| n.to_str()) == Some("subagents") {
             if let Some(session_dir) = parent.parent() {
@@ -277,7 +473,7 @@ pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, Str
         }
     }
 
-    // Case 2: filename stem doesn't match session_id — find the correct file
+    // Case 3: filename stem doesn't match session_id — find the correct file
     let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if file_stem != session_id {
         if let Some(parent_dir) = path.parent() {
@@ -291,7 +487,7 @@ pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, Str
         }
     }
 
-    // Case 3: normal file
+    // Case 4: normal file
     (session_id.to_string(), file_path.to_string())
 }
 
@@ -373,6 +569,52 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_codex_session_id_from_rollout_path() {
+        let path =
+            "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl";
+        assert_eq!(
+            extract_codex_session_id_from_path(path),
+            Some("019f0000-0000-7000-8000-000000000001".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_session_id_codex_session_meta() {
+        let json: serde_json::Value = serde_json::json!({
+            "type": "session_meta",
+            "payload": {"id": "codex-thread-id"}
+        });
+        assert_eq!(
+            extract_session_id(&json),
+            Some("codex-thread-id".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_parent_thread_id() {
+        let json: serde_json::Value = serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "codex-child-thread",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "codex-parent-thread",
+                            "depth": 1,
+                            "agent_nickname": "Sagan",
+                            "agent_role": "default"
+                        }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            extract_codex_parent_thread_id(&json),
+            Some("codex-parent-thread".to_string())
+        );
+    }
+
+    #[test]
     fn test_extract_session_id_cli_format() {
         let json: serde_json::Value = serde_json::json!({"sessionId": "abc123", "type": "user"});
         assert_eq!(extract_session_id(&json), Some("abc123".to_string()));
@@ -404,6 +646,15 @@ mod tests {
         let json: serde_json::Value =
             serde_json::json!({"_audit_timestamp": "2025-01-09T10:00:00.000Z"});
         assert!(extract_timestamp(&json).is_some());
+    }
+
+    #[test]
+    fn test_extract_branch_codex_session_meta() {
+        let json: serde_json::Value = serde_json::json!({
+            "type": "session_meta",
+            "payload": {"git": {"branch": "main"}}
+        });
+        assert_eq!(extract_branch(&json), Some("main".to_string()));
     }
 
     #[test]
@@ -565,6 +816,41 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_parent_for_codex_subagent_rollout() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        fs::create_dir_all(&session_dir).unwrap();
+
+        let parent_id = "019f0000-0000-7000-8000-000000000001";
+        let child_id = "019f0000-0000-7000-8000-000000000002";
+        let parent_file =
+            session_dir.join(format!("rollout-2026-05-03T10-00-00-{parent_id}.jsonl"));
+        let child_file = session_dir.join(format!("rollout-2026-05-03T10-01-00-{child_id}.jsonl"));
+
+        fs::write(
+            &parent_file,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{parent_id}","source":"cli","cwd":"/tmp/project"}}}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &child_file,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{child_id}","cwd":"/tmp/project","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent_id}","depth":1,"agent_nickname":"Sagan","agent_role":"default"}}}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let (sid, fpath) = resolve_parent_session(child_id, child_file.to_str().unwrap());
+        assert_eq!(sid, parent_id);
+        assert_eq!(fpath, parent_file.to_string_lossy());
+    }
+
+    #[test]
     fn test_resolve_parent_for_top_level_agent_uses_filename_session_id() {
         use std::fs;
         use tempfile::TempDir;
@@ -672,6 +958,40 @@ mod tests {
         assert!(names.contains("audit.jsonl"));
         assert!(!names.contains("agent-task.jsonl"));
         assert!(!names.contains("agent-child.jsonl"));
+    }
+
+    #[test]
+    fn test_collect_session_jsonl_files_skips_codex_subagent_rollouts() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join(".codex/sessions");
+        let day = root.join("2026/05/03");
+        fs::create_dir_all(&day).unwrap();
+
+        let parent_id = "019f0000-0000-7000-8000-000000000001";
+        let child_id = "019f0000-0000-7000-8000-000000000002";
+        let parent_file = day.join(format!("rollout-2026-05-03T10-00-00-{parent_id}.jsonl"));
+        let child_file = day.join(format!("rollout-2026-05-03T10-01-00-{child_id}.jsonl"));
+
+        fs::write(
+            &parent_file,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{parent_id}","source":"cli","cwd":"/tmp/project"}}}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &child_file,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{child_id}","cwd":"/tmp/project","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent_id}","depth":1}}}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let files = collect_session_jsonl_files(&[root.to_string_lossy().to_string()]);
+        assert_eq!(files, vec![parent_file]);
     }
 
     #[test]

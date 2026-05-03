@@ -38,6 +38,20 @@ pub fn get_search_paths() -> Vec<String> {
             search_paths.push(cli_path);
         }
 
+        // Codex rollout sessions — respect CODEX_HOME env var.
+        let codex_base = std::env::var("CODEX_HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        for subdir in ["sessions", "archived_sessions"] {
+            let path = codex_base.join(subdir);
+            if path.exists() {
+                if let Some(p) = path.to_str().map(|s| s.to_string()) {
+                    search_paths.push(p);
+                }
+            }
+        }
+
         // Claude Desktop sessions (macOS)
         let macos_desktop =
             home.join("Library/Application Support/Claude/local-agent-mode-sessions");
@@ -134,6 +148,40 @@ mod tests {
         );
 
         // Restore env
+        if let Some(v) = prev_config {
+            unsafe { env::set_var("CLAUDE_CONFIG_DIR", v) };
+        }
+        if let Some(v) = prev_ccfs {
+            unsafe { env::set_var("CCFS_SEARCH_PATH", v) };
+        }
+    }
+
+    #[test]
+    fn test_search_paths_includes_codex_home_sessions() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
+        let prev_config = env::var("CLAUDE_CONFIG_DIR").ok();
+        let prev_codex = env::var("CODEX_HOME").ok();
+        unsafe { env::remove_var("CCFS_SEARCH_PATH") };
+        unsafe { env::remove_var("CLAUDE_CONFIG_DIR") };
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sessions = tmp.path().join("sessions");
+        let archived = tmp.path().join("archived_sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&archived).unwrap();
+        unsafe { env::set_var("CODEX_HOME", tmp.path()) };
+
+        let paths = get_search_paths();
+
+        assert!(paths.iter().any(|p| p == sessions.to_str().unwrap()));
+        assert!(paths.iter().any(|p| p == archived.to_str().unwrap()));
+
+        unsafe { env::remove_var("CODEX_HOME") };
+        if let Some(v) = prev_codex {
+            unsafe { env::set_var("CODEX_HOME", v) };
+        }
         if let Some(v) = prev_config {
             unsafe { env::set_var("CLAUDE_CONFIG_DIR", v) };
         }

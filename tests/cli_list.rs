@@ -27,6 +27,24 @@ fn setup_list_dir() -> TempDir {
     dir
 }
 
+fn setup_codex_list_dir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let session_dir = dir.path().join(".codex/sessions/2026/05/01");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::copy(
+        "tests/fixtures/codex_session.jsonl",
+        session_dir.join("rollout-2026-05-01T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl"),
+    )
+    .unwrap();
+    fs::write(
+        session_dir.join("rollout-2026-05-01T10-01-00-019f0000-0000-7000-8000-000000000002.jsonl"),
+        r#"{"timestamp":"2026-05-01T10:01:00Z","type":"session_meta","payload":{"id":"019f0000-0000-7000-8000-000000000002","cwd":"/Users/test/projects/codex-demo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019f0000-0000-7000-8000-000000000001","depth":1,"agent_nickname":"Sagan","agent_role":"default"}}}}}
+{"timestamp":"2026-05-01T10:01:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Subagent-only prompt"}]}}"#,
+    )
+    .unwrap();
+    dir
+}
+
 #[test]
 fn list_returns_json_lines() {
     let dir = setup_list_dir();
@@ -134,4 +152,37 @@ fn list_empty_directory_produces_empty_output() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn list_includes_codex_sessions() {
+    let dir = setup_codex_list_dir();
+    let search_path = dir.path().join(".codex/sessions");
+
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["list"])
+        .env("CCFS_SEARCH_PATH", search_path.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "list should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["provider"], "Codex");
+    assert_eq!(
+        rows[0]["session_id"],
+        "019f0000-0000-7000-8000-000000000001"
+    );
+    assert_eq!(rows[0]["project"], "codex-demo");
+    assert_eq!(rows[0]["message_count"], 2);
 }

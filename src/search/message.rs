@@ -21,6 +21,19 @@ impl Message {
     /// Supports both Claude Code CLI format (sessionId, timestamp) and
     /// Claude Desktop format (session_id, _audit_timestamp)
     pub fn from_jsonl(line: &str, line_number: usize) -> Option<Self> {
+        Self::from_jsonl_with_path(line, line_number, None)
+    }
+
+    /// Parse a JSONL line with optional transcript path context.
+    ///
+    /// Codex `response_item` records do not repeat the thread id on every line,
+    /// so callers that have the file path can recover it from the rollout
+    /// filename.
+    pub(crate) fn from_jsonl_with_path(
+        line: &str,
+        line_number: usize,
+        file_path: Option<&str>,
+    ) -> Option<Self> {
         use crate::session;
         use crate::session::record::{ContentMode, MessageRole, SessionRecord};
 
@@ -51,7 +64,8 @@ impl Message {
             return None;
         }
 
-        let session_id = session::extract_session_id(&json)?;
+        let session_id = session::extract_session_id(&json)
+            .or_else(|| file_path.and_then(session::extract_codex_session_id_from_path))?;
         let timestamp = session::extract_timestamp(&json)?;
 
         // Branch is CLI-only, Desktop doesn't have it
@@ -222,6 +236,33 @@ mod tests {
         assert_eq!(msg.session_id, "desktop-session-123");
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content, "Hello from Desktop");
+    }
+
+    #[test]
+    fn test_parse_codex_response_item_with_path_session_id() {
+        let jsonl = r#"{"timestamp":"2026-05-01T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello from Codex"}]}}"#;
+        let path = "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl";
+
+        let msg = Message::from_jsonl_with_path(jsonl, 1, Some(path))
+            .expect("Should parse Codex response item");
+
+        assert_eq!(msg.session_id, "019f0000-0000-7000-8000-000000000001");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "Hello from Codex");
+        assert_eq!(msg.text_content, "Hello from Codex");
+    }
+
+    #[test]
+    fn test_parse_codex_function_output_with_path_session_id() {
+        let jsonl = r#"{"timestamp":"2026-05-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"tool output with searchable text"}}"#;
+        let path = "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl";
+
+        let msg = Message::from_jsonl_with_path(jsonl, 1, Some(path))
+            .expect("Should parse Codex tool output");
+
+        assert_eq!(msg.session_id, "019f0000-0000-7000-8000-000000000001");
+        assert_eq!(msg.role, "assistant");
+        assert!(msg.content.contains("searchable text"));
     }
 
     #[test]

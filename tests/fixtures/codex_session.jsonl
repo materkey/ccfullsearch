@@ -1,0 +1,4 @@
+{"timestamp":"2026-05-01T10:00:00.000Z","type":"session_meta","payload":{"id":"019f0000-0000-7000-8000-000000000001","timestamp":"2026-05-01T09:59:59Z","cwd":"/Users/test/projects/codex-demo","originator":"codex-tui","cli_version":"0.128.0","source":"cli","model_provider":"openai","git":{"branch":"codex-main"}}}
+{"timestamp":"2026-05-01T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please debug the codex needle parser"}]}}
+{"timestamp":"2026-05-01T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The codex assistant answer mentions the needle"}],"phase":"final_answer"}}
+{"timestamp":"2026-05-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"tool output with codex needle from shell"}}

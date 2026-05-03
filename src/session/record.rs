@@ -97,6 +97,29 @@ impl SessionRecord {
         let record_type = session::extract_record_type(json)?;
 
         match record_type {
+            "response_item" => parse_codex_response_item(json).or_else(|| {
+                Some(SessionRecord::Other {
+                    uuid: session::extract_uuid(json),
+                    parent_uuid: session::extract_parent_uuid_or_logical(json),
+                    is_sidechain: session::is_sidechain(json),
+                })
+            }),
+            "compacted" => {
+                let text = json
+                    .get("payload")
+                    .and_then(|p| p.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(SessionRecord::Summary {
+                    text,
+                    is_compaction: true,
+                    uuid: session::extract_uuid(json),
+                    parent_uuid: session::extract_parent_uuid_or_logical(json),
+                    leaf_uuid: session::extract_leaf_uuid(json),
+                    is_sidechain: session::is_sidechain(json),
+                })
+            }
             "user" | "assistant" => {
                 let role = if record_type == "user" {
                     MessageRole::User
@@ -250,6 +273,185 @@ impl SessionRecord {
     }
 }
 
+fn parse_codex_response_item(json: &serde_json::Value) -> Option<SessionRecord> {
+    let payload = json.get("payload")?;
+    let payload_type = payload.get("type").and_then(|v| v.as_str())?;
+
+    match payload_type {
+        "message" => {
+            let role = match payload.get("role").and_then(|v| v.as_str())? {
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                // Developer/system rollout entries are context metadata, not user-visible
+                // conversation rows for search/recent summaries.
+                _ => return None,
+            };
+            let content_blocks = payload
+                .get("content")
+                .map(parse_content_blocks)
+                .unwrap_or_default();
+            Some(SessionRecord::Message {
+                role,
+                content_blocks,
+                uuid: session::extract_uuid(json),
+                parent_uuid: session::extract_parent_uuid_or_logical(json),
+                is_sidechain: session::is_sidechain(json),
+            })
+        }
+        "function_call" => {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function_call")
+                .to_string();
+            let input = payload
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| payload.get("arguments").map(json_to_string))
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name,
+                input,
+            }]))
+        }
+        "local_shell_call" => {
+            let input = payload
+                .get("action")
+                .map(json_to_string)
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name: "local_shell".to_string(),
+                input,
+            }]))
+        }
+        "custom_tool_call" => {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("custom_tool")
+                .to_string();
+            let input = payload
+                .get("input")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| payload.get("input").map(json_to_string))
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name,
+                input,
+            }]))
+        }
+        "function_call_output" | "custom_tool_call_output" => {
+            let content = payload
+                .get("output")
+                .map(render_codex_tool_output)
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolResult(
+                content,
+            )]))
+        }
+        "tool_search_call" => {
+            let input = payload
+                .get("arguments")
+                .map(json_to_string)
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name: "tool_search".to_string(),
+                input,
+            }]))
+        }
+        "tool_search_output" => {
+            let content = json_to_string(payload);
+            Some(codex_assistant_message(vec![ContentBlock::ToolResult(
+                content,
+            )]))
+        }
+        "web_search_call" => {
+            let input = payload
+                .get("action")
+                .map(json_to_string)
+                .unwrap_or_default();
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name: "web_search".to_string(),
+                input,
+            }]))
+        }
+        "image_generation_call" => {
+            let input = json_to_string(payload);
+            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+                name: "image_generation".to_string(),
+                input,
+            }]))
+        }
+        "reasoning" => {
+            let mut parts = Vec::new();
+            collect_codex_reasoning_text(payload.get("summary"), &mut parts);
+            collect_codex_reasoning_text(payload.get("content"), &mut parts);
+            if parts.is_empty() {
+                return None;
+            }
+            Some(codex_assistant_message(
+                parts.into_iter().map(ContentBlock::Thinking).collect(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn codex_assistant_message(content_blocks: Vec<ContentBlock>) -> SessionRecord {
+    SessionRecord::Message {
+        role: MessageRole::Assistant,
+        content_blocks,
+        uuid: None,
+        parent_uuid: None,
+        is_sidechain: false,
+    }
+}
+
+fn json_to_string(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+fn render_codex_tool_output(value: &serde_json::Value) -> String {
+    if let Some(s) = value.as_str() {
+        return s.to_string();
+    }
+    if value.as_array().is_some() {
+        let blocks = parse_content_blocks(value);
+        let rendered = SessionRecord::render_content(&blocks, &ContentMode::Full);
+        if !rendered.is_empty() {
+            return rendered;
+        }
+    }
+    json_to_string(value)
+}
+
+fn collect_codex_reasoning_text(value: Option<&serde_json::Value>, out: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(s) = value.as_str() {
+        if !s.trim().is_empty() {
+            out.push(s.to_string());
+        }
+        return;
+    }
+    if let Some(arr) = value.as_array() {
+        for item in arr {
+            if let Some(text) = item
+                .get("text")
+                .or_else(|| item.get("summary"))
+                .and_then(|v| v.as_str())
+            {
+                if !text.trim().is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+        }
+    }
+}
+
 /// Parse raw JSON content value into typed ContentBlocks.
 pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock> {
     if let Some(s) = raw.as_str() {
@@ -261,7 +463,7 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
         for item in arr {
             let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
             match item_type {
-                "text" => {
+                "text" | "input_text" | "output_text" => {
                     if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
                         blocks.push(ContentBlock::Text(text.to_string()));
                     }
@@ -313,7 +515,7 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
                         blocks.push(ContentBlock::Thinking(t.to_string()));
                     }
                 }
-                "image" => {
+                "image" | "input_image" => {
                     blocks.push(ContentBlock::Text("[image]".to_string()));
                 }
                 "document" => {

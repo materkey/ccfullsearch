@@ -1,4 +1,4 @@
-use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths, Message};
+use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths};
 use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -115,24 +115,25 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
 
     let mut session_id: Option<String> = None;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
-    let mut message_count: usize = 0;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
+    for line in reader.lines().map_while(Result::ok) {
+        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
             Err(_) => continue,
         };
 
-        if let Some(msg) = Message::from_jsonl(line.trim(), 0) {
-            if session_id.is_none() {
-                session_id = Some(msg.session_id.clone());
+        if session_id.is_none() {
+            session_id = crate::session::extract_session_id(&json)
+                .or_else(|| crate::session::extract_codex_session_id_from_path(path_str));
+        }
+        if let Some(ts) = crate::session::extract_timestamp(&json) {
+            if last_timestamp.is_none_or(|t| ts > t) {
+                last_timestamp = Some(ts);
             }
-            if last_timestamp.is_none_or(|t| msg.timestamp > t) {
-                last_timestamp = Some(msg.timestamp);
-            }
-            message_count += 1;
         }
     }
+
+    let message_count = crate::search::count_session_messages(path_str).0;
 
     let session_id = session_id?;
     let last_active = last_timestamp?.to_rfc3339();

@@ -1,4 +1,5 @@
 use super::path_codec::decode_project_path;
+use crate::session;
 use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -220,6 +221,15 @@ pub(super) fn prepare_resume(session_id: &str, file_path: &str) -> Result<String
     Ok(session_id.to_string())
 }
 
+fn fallback_working_dir(file_path: &str) -> String {
+    Path::new(file_path)
+        .parent()
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "/tmp".to_string())
+}
+
 /// Build the resume command arguments. Returns (working_dir, resume_arg).
 /// Extracted for testability.
 pub(super) fn build_resume_command(
@@ -235,18 +245,21 @@ pub(super) fn build_resume_command(
     // and could point to a wrong location.
     let working_dir = match decoded_project_dir {
         Some(ref dir) if Path::new(dir).exists() => dir.clone(),
-        _ => {
-            // Fallback: session file's parent dir (always exists) → $HOME → /tmp
-            Path::new(file_path)
-                .parent()
-                .filter(|p| p.exists())
-                .map(|p| p.to_string_lossy().to_string())
-                .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
-                .unwrap_or_else(|| "/tmp".to_string())
-        }
+        _ => fallback_working_dir(file_path),
     };
 
     Ok((working_dir, resume_arg))
+}
+
+pub(super) fn build_codex_resume_command(
+    session_id: &str,
+    file_path: &str,
+) -> Result<(String, String), String> {
+    let working_dir = session::read_codex_session_cwd(file_path)
+        .filter(|cwd| Path::new(cwd).exists())
+        .unwrap_or_else(|| fallback_working_dir(file_path));
+
+    Ok((working_dir, session_id.to_string()))
 }
 
 /// Resume a Claude Code CLI session using exec.
@@ -294,6 +307,51 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
         .args(["--resume", &resume_arg])
         .status()
         .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+
+    Ok(())
+}
+
+/// Resume a Codex CLI session using exec.
+pub fn resume_codex(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_codex_resume_command(session_id, file_path)?;
+
+    let codex_path =
+        which::which("codex").map_err(|_| "Codex binary not found in PATH".to_string())?;
+
+    ccs_debug!(
+        "[ccs:resume_codex] codex={} cwd={} resume -C {} {}",
+        codex_path.display(),
+        working_dir,
+        working_dir,
+        resume_arg
+    );
+
+    let mut cmd = Command::new(&codex_path);
+    cmd.current_dir(&working_dir)
+        .args(["resume", "-C", &working_dir, &resume_arg]);
+    exec_command(&mut cmd)
+}
+
+/// Resume a Codex CLI session as a child process.
+pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_codex_resume_command(session_id, file_path)?;
+
+    let codex_path =
+        which::which("codex").map_err(|_| "Codex binary not found in PATH".to_string())?;
+
+    ccs_debug!(
+        "[ccs:resume_codex_child] codex={} cwd={} resume -C {} {}",
+        codex_path.display(),
+        working_dir,
+        working_dir,
+        resume_arg
+    );
+
+    Command::new(&codex_path)
+        .current_dir(&working_dir)
+        .args(["resume", "-C", &working_dir, &resume_arg])
+        .status()
+        .map_err(|e| format!("Failed to spawn codex: {}", e))?;
 
     Ok(())
 }
@@ -504,6 +562,76 @@ mod tests {
             Path::new(&working_dir).canonicalize().unwrap(),
             dir.path().canonicalize().unwrap(),
             "Should fall back to session file parent dir"
+        );
+    }
+
+    #[test]
+    fn test_build_codex_resume_command_uses_session_cwd() {
+        let dir = TempDir::new().unwrap();
+        let project_dir = dir.path().join("codex-project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        fs::create_dir_all(&session_dir).unwrap();
+
+        let session_id = "019f0000-0000-7000-8000-000000000001";
+        let session_file =
+            session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+        let meta = serde_json::json!({
+            "timestamp": "2026-05-03T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": project_dir.to_string_lossy().to_string(),
+                "source": "cli"
+            }
+        });
+        fs::write(&session_file, format!("{meta}\n")).unwrap();
+
+        let (working_dir, resume_arg) =
+            build_codex_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
+
+        assert_eq!(resume_arg, session_id);
+        assert_eq!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            project_dir.canonicalize().unwrap(),
+            "Codex resume should start in the cwd from session_meta"
+        );
+    }
+
+    #[test]
+    fn test_build_codex_resume_command_falls_back_to_session_parent() {
+        let dir = TempDir::new().unwrap();
+        let ghost_dir = TempDir::new().unwrap();
+        let ghost_path = ghost_dir.path().to_path_buf();
+        drop(ghost_dir);
+        assert!(!ghost_path.exists());
+
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        fs::create_dir_all(&session_dir).unwrap();
+
+        let session_id = "019f0000-0000-7000-8000-000000000001";
+        let session_file =
+            session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+        let meta = serde_json::json!({
+            "timestamp": "2026-05-03T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": ghost_path.to_string_lossy().to_string(),
+                "source": "cli"
+            }
+        });
+        fs::write(&session_file, format!("{meta}\n")).unwrap();
+
+        let (working_dir, resume_arg) =
+            build_codex_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
+
+        assert_eq!(resume_arg, session_id);
+        assert_eq!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            session_dir.canonicalize().unwrap(),
+            "Codex resume should fall back to the rollout parent when cwd is gone"
         );
     }
 

@@ -106,7 +106,17 @@ pub fn count_session_messages(file_path: &str) -> (usize, bool) {
         };
         match json.get("type").and_then(|v| v.as_str()) {
             Some("user") | Some("assistant") => count += 1,
-            Some("summary") | Some("compact_boundary") => compacted = true,
+            Some("summary") | Some("compaction") | Some("compact_boundary") | Some("compacted") => {
+                compacted = true
+            }
+            Some("response_item") => {
+                let payload = json.get("payload");
+                let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
+                let role = payload.and_then(|p| p.get("role")).and_then(|v| v.as_str());
+                if payload_type == Some("message") && matches!(role, Some("user" | "assistant")) {
+                    count += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -482,6 +492,22 @@ mod tests {
 
         let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
         assert_eq!(count, 4);
+        assert!(compacted);
+    }
+
+    #[test]
+    fn test_count_session_messages_codex_response_items() {
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"timestamp":"2026-05-01T10:00:00.000Z","type":"session_meta","payload":{{"id":"codex-session"}}}}"#).unwrap();
+        writeln!(f, r#"{{"timestamp":"2026-05-01T10:00:01.000Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"q1"}}]}}}}"#).unwrap();
+        writeln!(f, r#"{{"timestamp":"2026-05-01T10:00:02.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"a1"}}]}}}}"#).unwrap();
+        writeln!(f, r#"{{"timestamp":"2026-05-01T10:00:03.000Z","type":"response_item","payload":{{"type":"function_call_output","call_id":"call_1","output":"tool output"}}}}"#).unwrap();
+        writeln!(f, r#"{{"timestamp":"2026-05-01T10:00:04.000Z","type":"compacted","payload":{{"message":"summary"}}}}"#).unwrap();
+
+        let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
+        assert_eq!(count, 2);
         assert!(compacted);
     }
 

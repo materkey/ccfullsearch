@@ -786,11 +786,7 @@ fn right_badge_text(provider: SessionProvider, source: &str) -> String {
 
 #[cfg(test)]
 fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
-    let sid = if p.session_id.len() > 8 {
-        &p.session_id[..8]
-    } else {
-        p.session_id
-    };
+    let sid = display_session_id(p.session_id, p.provider);
     let auto_tag = if p.has_automation { " [A]" } else { "" };
     format!(
         "{} {} · {}  ⎇ {} · {} ({}){} {}",
@@ -805,9 +801,17 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     )
 }
 
-fn truncated_session_id(session_id: &str) -> &str {
-    if session_id.len() > 8 {
-        &session_id[..8]
+fn display_session_id(session_id: &str, provider: SessionProvider) -> &str {
+    let max_len = match provider {
+        // Codex uses UUIDv7 rollout IDs, where the first 8 chars are mostly a
+        // timestamp prefix. Include the next UUID segment to distinguish
+        // sessions created in the same second.
+        SessionProvider::Codex if session_id.as_bytes().get(8) == Some(&b'-') => 13,
+        _ => 8,
+    };
+
+    if session_id.len() > max_len {
+        &session_id[..max_len]
     } else {
         session_id
     }
@@ -885,7 +889,10 @@ fn render_session_header_line(
         Span::styled(p.project.to_string(), project),
         Span::styled("  ".to_string(), base),
         Span::styled(format!("⎇ {}", p.branch), style_with_bg(branch, row_bg)),
-        Span::styled(format!(" · {} ", truncated_session_id(p.session_id)), base),
+        Span::styled(
+            format!(" · {} ", display_session_id(p.session_id, p.provider)),
+            base,
+        ),
         Span::styled(format!("({})", p.count), style_with_bg(count, row_bg)),
     ];
 
@@ -2984,8 +2991,8 @@ mod tests {
             .format("%Y-%m-%d %H:%M")
             .to_string();
         let session = RecentSession {
-            session_id: "019f-codex-session".to_string(),
-            file_path: "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f-codex-session.jsonl".to_string(),
+            session_id: "019f0000-0000-7000-8000-000000000001".to_string(),
+            file_path: "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl".to_string(),
             project: "myapp".to_string(),
             source: SessionSource::ClaudeCodeCLI,
             timestamp: ts,
@@ -2997,8 +3004,54 @@ mod tests {
         };
         assert_eq!(
             build_recent_session_header_text(&session),
-            format!("▶ {date} · myapp  ⎇ - · 019f-cod (3 msgs) CX · cli")
+            format!("▶ {date} · myapp  ⎇ - · 019f0000-0000 (3 msgs) CX · cli")
         );
+    }
+
+    #[test]
+    fn test_codex_recent_header_disambiguates_uuidv7_prefix() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        fn make_session(ts: chrono::DateTime<Utc>, session_id: &str) -> RecentSession {
+            RecentSession {
+                session_id: session_id.to_string(),
+                file_path: format!(
+                    "/Users/test/.codex/sessions/2026/05/03/rollout-2026-05-03T10-43-24-{session_id}.jsonl"
+                ),
+                project: "kmux".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: ts,
+                summary: "hello".to_string(),
+                automation: None,
+                branch: Some("main".to_string()),
+                message_count: Some(6),
+                preview_role: MessageRole::User,
+            }
+        }
+
+        let ts = Utc.with_ymd_and_hms(2026, 5, 3, 10, 43, 24).unwrap();
+        let date = ts
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+
+        let first = build_recent_session_header_text(&make_session(
+            ts,
+            "019decca-c250-7652-bd0e-6400664d8ec8",
+        ));
+        let second = build_recent_session_header_text(&make_session(
+            ts,
+            "019decca-c232-7391-9bee-ad5eba0db2d5",
+        ));
+
+        assert!(first.contains(&format!(
+            "▶ {date} · kmux  ⎇ main · 019decca-c250 (6 msgs) CX · cli"
+        )));
+        assert!(second.contains(&format!(
+            "▶ {date} · kmux  ⎇ main · 019decca-c232 (6 msgs) CX · cli"
+        )));
+        assert_ne!(first, second);
     }
 
     #[test]

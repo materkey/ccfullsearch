@@ -5,7 +5,7 @@ pub mod path_codec;
 pub use fork::build_chain_from_tip;
 pub use path_codec::encode_path_for_claude;
 
-use crate::session::{resolve_parent_session, SessionSource};
+use crate::session::{resolve_parent_session, SessionProvider, SessionSource};
 
 #[doc(hidden)]
 pub fn test_resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
@@ -23,9 +23,9 @@ pub fn test_prepare_cli_resume_session_id(
 /// Whether to replace the current process (exec) or spawn a child and wait.
 #[derive(Clone, Copy)]
 enum ResumeMode {
-    /// Replace current process with claude (normal mode)
+    /// Normal mode: replace the current process via exec.
     Exec,
-    /// Spawn claude as child, return when it exits (overlay mode)
+    /// Overlay mode: spawn a child and return when it exits.
     Child,
 }
 
@@ -76,20 +76,22 @@ fn resume_inner(
     );
 
     let (session_id, resolved_file_path) = resolve_parent_session(session_id, file_path);
+    let provider = SessionProvider::from_path(&resolved_file_path);
     let file_changed = resolved_file_path != file_path;
     ccs_debug!(
-        "[ccs:{}] resolved: session_id={}, file_path={}, file_changed={}",
+        "[ccs:{}] resolved: provider={:?}, session_id={}, file_path={}, file_changed={}",
         label,
+        provider,
         session_id,
         resolved_file_path,
         file_changed
     );
 
-    // Only attempt fork if the file wasn't redirected.
-    // When resolve_parent_session changes the file, the message UUID belongs to the
-    // original (auxiliary/agent) file and won't exist in the parent session file.
+    // When resolve_parent_session changes the file, the message UUID belongs to
+    // the original (auxiliary/agent) file and won't exist in the parent session.
     if let Some(uuid) = message_uuid {
         if !file_changed
+            && provider == SessionProvider::Claude
             && source == SessionSource::ClaudeCodeCLI
             && fork::should_fork_for_resume(&resolved_file_path, uuid)
         {
@@ -107,19 +109,29 @@ fn resume_inner(
         }
     }
 
-    match (source, mode) {
-        (SessionSource::ClaudeCodeCLI, ResumeMode::Exec) => {
+    match (provider, source, mode) {
+        (SessionProvider::Codex, _, ResumeMode::Exec) => {
+            launcher::resume_codex(&session_id, &resolved_file_path)
+        }
+        (SessionProvider::Codex, _, ResumeMode::Child) => {
+            launcher::resume_codex_child(&session_id, &resolved_file_path)
+        }
+        (SessionProvider::Claude, SessionSource::ClaudeCodeCLI, ResumeMode::Exec) => {
             launcher::resume_cli(&session_id, &resolved_file_path)
         }
-        (SessionSource::ClaudeCodeCLI, ResumeMode::Child) => {
+        (SessionProvider::Claude, SessionSource::ClaudeCodeCLI, ResumeMode::Child) => {
             launcher::resume_cli_child(&session_id, &resolved_file_path)
         }
-        (SessionSource::ClaudeDesktop, ResumeMode::Exec) => launcher::resume_desktop(),
-        (SessionSource::ClaudeDesktop, ResumeMode::Child) => launcher::resume_desktop_child(),
+        (SessionProvider::Claude, SessionSource::ClaudeDesktop, ResumeMode::Exec) => {
+            launcher::resume_desktop()
+        }
+        (SessionProvider::Claude, SessionSource::ClaudeDesktop, ResumeMode::Child) => {
+            launcher::resume_desktop_child()
+        }
     }
 }
 
-/// Resume a Claude session based on its source.
+/// Resume a session based on its provider and source.
 /// If `message_uuid` is provided and the message is not the current resumable
 /// tip, creates a forked JSONL file and resumes from that instead.
 /// For subagent sessions, automatically resumes the parent session.
@@ -138,8 +150,8 @@ pub fn resume(
     )
 }
 
-/// Resume a Claude session as a child process (returns when claude exits).
-/// Used in overlay mode where TUI needs to regain control after claude exits.
+/// Resume a session as a child process.
+/// Used in overlay mode where TUI needs to regain control after the agent exits.
 pub fn resume_child(
     session_id: &str,
     file_path: &str,

@@ -1,9 +1,10 @@
 use super::Message;
 use crate::session::resolve_parent_session;
-use crate::session::SessionSource;
+use crate::session::{self, SessionProvider, SessionSource};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,6 +14,8 @@ use std::thread;
 use std::time::Duration;
 
 static DESKTOP_TITLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static CODEX_PROJECT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// A match from ripgrep search
@@ -356,6 +359,8 @@ fn search_single_path(
     let query_lower = query.to_lowercase();
     let mut resolve_cache: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
+    let mut codex_subagent_cache: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
 
     // Helper: take the child out of the mutex and reap it. Returns the
     // `Child` so the caller can call `wait()` on it directly without
@@ -403,8 +408,18 @@ fn search_single_path(
                 truncated = true;
             }
 
-            // Resolve agent/subagent files to their parent session
-            if is_agent_or_subagent_path(&m.file_path) {
+            // Resolve Claude agent/subagent files and Codex spawned-subagent
+            // rollout files to their parent session.
+            let needs_parent_resolution = if is_agent_or_subagent_path(&m.file_path) {
+                true
+            } else {
+                *codex_subagent_cache
+                    .entry(m.file_path.clone())
+                    .or_insert_with(|| {
+                        session::codex_parent_thread_id_from_file(Path::new(&m.file_path)).is_some()
+                    })
+            };
+            if needs_parent_resolution {
                 let Some(ref msg) = m.message else {
                     continue; // No message to resolve — skip
                 };
@@ -515,7 +530,7 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let line_text = data.get("lines")?.get("text")?.as_str()?;
     let line_number = data.get("line_number")?.as_u64()? as usize;
 
-    let message = Message::from_jsonl(line_text.trim(), line_number);
+    let message = Message::from_jsonl_with_path(line_text.trim(), line_number, Some(&file_path));
     let source = SessionSource::from_path(&file_path);
 
     Some(RipgrepMatch {
@@ -559,6 +574,12 @@ fn decode_dir_name_short(dir_name: &str) -> String {
 /// Desktop format: .../local-agent-mode-sessions/.../local_xxx/.claude/projects/-sessions-cool-name/xxx.jsonl
 /// Desktop audit: .../local-agent-mode-sessions/.../local_xxx/audit.jsonl
 pub fn extract_project_from_path(path: &str) -> String {
+    if SessionProvider::from_path(path) == SessionProvider::Codex {
+        if let Some(project) = read_codex_session_project(path) {
+            return project;
+        }
+    }
+
     // Check for Desktop session name in path (e.g., -sessions-wizardly-vibrant-dirac)
     if let Some(sessions_idx) = path.find("-sessions-") {
         let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
@@ -616,6 +637,37 @@ pub fn extract_project_from_path(path: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(".jsonl")
         .to_string()
+}
+
+fn read_codex_session_project(path: &str) -> Option<String> {
+    if let Ok(cache) = CODEX_PROJECT_CACHE.lock() {
+        if let Some(cached) = cache.get(path) {
+            return cached.clone();
+        }
+    }
+
+    let project = session::read_codex_session_cwd(path).map(|cwd| project_label_from_cwd(&cwd));
+
+    if let Ok(mut cache) = CODEX_PROJECT_CACHE.lock() {
+        cache.insert(path.to_string(), project.clone());
+    }
+
+    project
+}
+
+fn project_label_from_cwd(cwd: &str) -> String {
+    let path = std::path::Path::new(cwd);
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return "~".to_string();
+        }
+    }
+
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| cwd.to_string())
 }
 
 /// Read Desktop session title from the sibling JSON metadata file (cached).
@@ -1265,6 +1317,51 @@ mod tests {
                 !r.file_path.contains("/subagents/"),
                 "File path should not be the subagent file, got: {}",
                 r.file_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_resolves_codex_subagent_rollout_to_parent() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_dir = temp_dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let parent_id = "019f0000-0000-7000-8000-000000000001";
+        let child_id = "019f0000-0000-7000-8000-000000000002";
+        let parent_path =
+            session_dir.join(format!("rollout-2026-05-03T10-00-00-{parent_id}.jsonl"));
+        let child_path = session_dir.join(format!("rollout-2026-05-03T10-01-00-{child_id}.jsonl"));
+
+        std::fs::write(
+            &parent_path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{parent_id}","cwd":"/tmp/codex-demo","source":"cli"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Parent prompt"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child_path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:01:00Z","type":"session_meta","payload":{{"id":"{child_id}","cwd":"/tmp/codex-demo","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent_id}","depth":1,"agent_nickname":"Sagan","agent_role":"default"}}}}}}}}}}
+{{"timestamp":"2026-05-03T10:01:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Codex subagent unique content"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let results = search(
+            "Codex subagent unique content",
+            temp_dir.path().join(".codex/sessions").to_str().unwrap(),
+        )
+        .expect("Search should succeed");
+
+        assert!(!results.is_empty(), "Should find match from Codex subagent");
+        for r in &results {
+            assert_eq!(r.file_path, parent_path.to_string_lossy());
+            assert_eq!(
+                r.message.as_ref().map(|m| m.session_id.as_str()),
+                Some(parent_id)
             );
         }
     }
