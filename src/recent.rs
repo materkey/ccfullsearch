@@ -709,7 +709,6 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         (count > 0).then_some(count)
     });
 
-    // Apply title priority: metadata_title > summary > lastPrompt > firstUserMessage
     if let Some(title) = tail.metadata_title {
         let sid = last_summary_sid
             .or(session_id)
