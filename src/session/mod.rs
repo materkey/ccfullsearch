@@ -324,6 +324,8 @@ const CLAUDE_MEM_OBSERVER_PATH_SEGMENT: &str = "-claude-mem-observer-sessions";
 const CLAUDE_MEM_OBSERVER_PATH_RAW: &str = "/.claude-mem/observer-sessions/";
 const CLAUDE_MEM_CONTENT_MARKER: &str = "<observed_from_primary_session>";
 const CLAUDE_MEM_TAG: &str = "claude-mem";
+pub(crate) const RECOG_AUTOMATION_MARKER_PREFIX: &str = "<!-- ccs-automation:recog";
+const RECOG_TAG: &str = "recog";
 
 fn matches_scheduled_task_marker(content: &str) -> bool {
     content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
@@ -335,6 +337,12 @@ fn matches_ralphex_marker(content: &str) -> bool {
 
 fn matches_claude_mem_content_marker(content: &str) -> bool {
     content.trim_start().starts_with(CLAUDE_MEM_CONTENT_MARKER)
+}
+
+fn matches_recog_automation_marker(content: &str) -> bool {
+    content
+        .trim_start()
+        .starts_with(RECOG_AUTOMATION_MARKER_PREFIX)
 }
 
 /// Recursively collect session JSONL files from the given search roots.
@@ -494,6 +502,10 @@ pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, Str
 /// Detect whether message content was produced by a known automation tool.
 /// Returns the tool name if a marker is found, `None` otherwise.
 pub fn detect_automation(content: &str) -> Option<&'static str> {
+    if matches_recog_automation_marker(content) {
+        return Some(RECOG_TAG);
+    }
+
     if matches_scheduled_task_marker(content) {
         return Some("scheduled");
     }
@@ -706,6 +718,18 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_automation_recog_marker() {
+        let content = "<!-- ccs-automation:recog task=title -->\nПридумай короткое название";
+        assert_eq!(detect_automation(content), Some("recog"));
+    }
+
+    #[test]
+    fn test_detect_automation_recog_marker_with_leading_whitespace() {
+        let content = "\n  <!-- ccs-automation:recog task=increment -->\nПроанализируй транскрипт";
+        assert_eq!(detect_automation(content), Some("recog"));
+    }
+
+    #[test]
     fn test_detect_automation_no_marker() {
         let content = "How do I sort a list in Python?";
         assert_eq!(detect_automation(content), None);
@@ -722,6 +746,19 @@ mod tests {
         // scheduled-task must start the message (trim_start), not appear mid-text
         let content = r#"такие тоже надо детектить <scheduled-task name="chezmoi-sync">"#;
         assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_recog_marker_not_at_start() {
+        let content = "Обсуждаем маркер <!-- ccs-automation:recog task=title --> в переписке";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_priority_recog_over_embedded_markers() {
+        let content =
+            "<!-- ccs-automation:recog task=title -->\nTranscript mentions <<<RALPHEX:ALL_TASKS_DONE>>>";
+        assert_eq!(detect_automation(content), Some("recog"));
     }
 
     #[test]

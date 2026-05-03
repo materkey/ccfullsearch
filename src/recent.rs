@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::search::{count_session_messages, extract_project_from_path};
-use crate::session::record::{render_text_content, ContentMode, MessageRole, SessionRecord};
+use crate::session::record::{ContentMode, MessageRole, SessionRecord};
 use crate::session::{self, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
@@ -45,6 +45,18 @@ pub(crate) fn truncate_summary(s: &str, max_len: usize) -> String {
     }
 }
 
+fn strip_leading_recog_automation_marker(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with(session::RECOG_AUTOMATION_MARKER_PREFIX) {
+        return text;
+    }
+
+    trimmed
+        .split_once('\n')
+        .map(|(_, rest)| rest.trim_start())
+        .unwrap_or("")
+}
+
 pub(crate) fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<String> {
     if json
         .get("isMeta")
@@ -61,6 +73,7 @@ pub(crate) fn extract_non_meta_user_text(json: &serde_json::Value) -> Option<Str
             ..
         } => {
             let text = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
+            let text = strip_leading_recog_automation_marker(&text);
             (!text.is_empty()).then(|| text.to_string())
         }
         _ => None,
@@ -326,7 +339,7 @@ fn find_summary_from_tail_with_chain(
                     }
                 }
                 SessionRecord::LastPrompt(prompt) => {
-                    let trimmed = prompt.trim();
+                    let trimmed = strip_leading_recog_automation_marker(&prompt).trim();
                     if !trimmed.is_empty() {
                         last_prompt = Some(truncate_summary(trimmed, 100));
                     }
@@ -521,28 +534,11 @@ fn extract_latest_user_message_on_chain(
     let reader = BufReader::new(file);
     let mut latest_user_message: Option<String> = None;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-
+    for line in reader.lines().map_while(Result::ok) {
         let json: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
-
-        if session::extract_record_type(&json) != Some("user") {
-            continue;
-        }
-
-        let is_meta = json
-            .get("isMeta")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if is_meta {
-            continue;
-        }
 
         let Some(uuid) = session::extract_uuid(&json) else {
             continue;
@@ -551,13 +547,7 @@ fn extract_latest_user_message_on_chain(
             continue;
         }
 
-        let Some(message) = json.get("message") else {
-            continue;
-        };
-        let Some(content) = message.get("content") else {
-            continue;
-        };
-        let Some(text) = render_text_content(content) else {
+        let Some(text) = extract_non_meta_user_text(&json) else {
             continue;
         };
         if !is_real_user_prompt(&text) {
@@ -1043,6 +1033,15 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_leading_recog_automation_marker() {
+        let text = "<!-- ccs-automation:recog task=title -->\nПридумай короткое название";
+        assert_eq!(
+            strip_leading_recog_automation_marker(text),
+            "Придумай короткое название"
+        );
+    }
+
+    #[test]
     fn test_extract_summary_skips_codex_bootstrap_prompt() {
         let dir = TempDir::new().unwrap();
         let session_dir = dir.path().join(".codex/sessions/2026/05/03");
@@ -1089,6 +1088,30 @@ mod tests {
         assert_eq!(result.summary, "Please debug the codex needle parser");
         assert_eq!(result.branch.as_deref(), Some("codex-main"));
         assert_eq!(result.message_count, Some(2));
+        assert_eq!(result.preview_role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_extract_summary_detects_recog_marker_and_strips_preview() {
+        let dir = TempDir::new().unwrap();
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_id = "019f0000-0000-7000-8000-000000000002";
+        let path = session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{session_id}","cwd":"/Users/test/projects/recog","source":"exec","originator":"codex_exec"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<!-- ccs-automation:recog task=title -->\nПридумай короткое название"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let result = extract_summary(&path).unwrap();
+        assert_eq!(result.session_id, session_id);
+        assert_eq!(result.automation, Some("recog".to_string()));
+        assert_eq!(result.summary, "Придумай короткое название");
         assert_eq!(result.preview_role, MessageRole::User);
     }
 
