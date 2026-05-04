@@ -2,8 +2,12 @@ pub mod record;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+/// Codex stores rollout transcripts under one of these subdirectories of `CODEX_HOME`.
+pub(crate) const CODEX_SESSION_SUBDIRS: [&str; 2] = ["sessions", "archived_sessions"];
 
 /// Source of the Claude session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,13 +49,14 @@ pub enum SessionProvider {
 impl SessionProvider {
     /// Detect the session provider from the transcript path.
     pub fn from_path(path: &str) -> Self {
-        let is_codex = if path.contains('\\') {
-            let normalized = path.replace('\\', "/");
-            normalized.contains("/.codex/sessions/")
-                || normalized.contains("/.codex/archived_sessions/")
-        } else {
-            path.contains("/.codex/sessions/") || path.contains("/.codex/archived_sessions/")
-        };
+        let normalized = normalize_session_path(path);
+        let is_codex = normalized.contains("/.codex/sessions/")
+            || normalized.contains("/.codex/archived_sessions/")
+            || std::env::var("CODEX_HOME")
+                .ok()
+                .as_deref()
+                .map(|codex_home| path_is_under_codex_home(&normalized, codex_home))
+                .unwrap_or(false);
         if is_codex {
             SessionProvider::Codex
         } else {
@@ -66,6 +71,31 @@ impl SessionProvider {
             SessionProvider::Codex => "Codex",
         }
     }
+}
+
+fn normalize_session_path(path: &str) -> Cow<'_, str> {
+    if path.contains('\\') {
+        Cow::Owned(path.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(path)
+    }
+}
+
+fn path_is_under_codex_home(path: &str, codex_home: &str) -> bool {
+    let normalized_home = normalize_session_path(codex_home);
+    let home = normalized_home.trim_end_matches('/');
+    // Reject empty CODEX_HOME (or `"/"`): otherwise any path starting with `/sessions/` would match.
+    if home.is_empty() {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix(home).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    CODEX_SESSION_SUBDIRS.iter().any(|subdir| {
+        rest.strip_prefix(subdir)
+            .and_then(|r| r.strip_prefix('/'))
+            .is_some()
+    })
 }
 
 /// Return true when a transcript path belongs to Codex rollout storage.
@@ -572,6 +602,36 @@ mod tests {
     fn test_session_provider_from_codex_archived_sessions_path() {
         let path = "/Users/user/.codex/archived_sessions/rollout-2026-05-01T12-00-00-session.jsonl";
         assert_eq!(SessionProvider::from_path(path), SessionProvider::Codex);
+    }
+
+    #[test]
+    fn test_session_provider_from_custom_codex_home_path() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
+        let prev_codex = std::env::var("CODEX_HOME").ok();
+        unsafe { std::env::set_var("CODEX_HOME", "/Users/user/custom-codex") };
+
+        let session_path = "/Users/user/custom-codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-session.jsonl";
+        let archived_path =
+            "/Users/user/custom-codex/archived_sessions/rollout-2026-05-01T12-00-00-session.jsonl";
+        let sibling_path = "/Users/user/custom-codexish/sessions/2026/05/01/rollout-2026-05-01T12-00-00-session.jsonl";
+
+        assert_eq!(
+            SessionProvider::from_path(session_path),
+            SessionProvider::Codex
+        );
+        assert_eq!(
+            SessionProvider::from_path(archived_path),
+            SessionProvider::Codex
+        );
+        assert_eq!(
+            SessionProvider::from_path(sibling_path),
+            SessionProvider::Claude
+        );
+
+        unsafe { std::env::remove_var("CODEX_HOME") };
+        if let Some(v) = prev_codex {
+            unsafe { std::env::set_var("CODEX_HOME", v) };
+        }
     }
 
     #[test]

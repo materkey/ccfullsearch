@@ -22,6 +22,9 @@ pub mod update;
 
 pub use session::{SessionProvider, SessionSource};
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn get_search_paths() -> Vec<String> {
     let mut search_paths = Vec::new();
 
@@ -43,7 +46,7 @@ pub fn get_search_paths() -> Vec<String> {
             .ok()
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"));
-        for subdir in ["sessions", "archived_sessions"] {
+        for subdir in session::CODEX_SESSION_SUBDIRS {
             let path = codex_base.join(subdir);
             if path.exists() {
                 if let Some(p) = path.to_str().map(|s| s.to_string()) {
@@ -90,14 +93,10 @@ pub fn get_search_paths() -> Vec<String> {
 mod tests {
     use super::*;
     use std::env;
-    use std::sync::Mutex;
-
-    // Serialize env-var-mutating tests to prevent race conditions
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_search_paths_respects_claude_config_dir() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
 
         // Save and clear potentially interfering env vars
         let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
@@ -130,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_search_paths_default_without_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
 
         // Save and clear potentially interfering env vars
         let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
@@ -158,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_search_paths_includes_codex_home_sessions() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
 
         let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
         let prev_config = env::var("CLAUDE_CONFIG_DIR").ok();
