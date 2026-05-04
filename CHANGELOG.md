@@ -3,9 +3,14 @@
 ## v0.13.0 - 2026-05-04
 
 ### New Features
-- Codex session support — index `~/.codex/sessions` and `~/.codex/archived_sessions`, parse Codex JSONL alongside Claude formats, and surface them in search, recent, list, and resume flows
-- Recognize a custom Codex home via `CODEX_HOME` so non-default installs are picked up alongside `~/.codex`
-- Detect the `recog` automation marker (`<!-- ccs-automation:recog -->`) so recog-driven sessions hide behind the Ctrl+H automation filter like other automation tools
+- Full Codex session support across all UI surfaces:
+  - Discover `~/.codex/sessions` and `~/.codex/archived_sessions` rollouts as a third source alongside Claude Code CLI and Claude Desktop
+  - Parse Codex JSONL records — `session_meta` (cwd, timestamp, branch, parent thread for spawned subagents) and `response_item` (user/assistant messages, reasoning text, tool calls and their outputs)
+  - List/search/recent/TUI render Codex sessions with the same `▶ [src] date | project | branch | sid (count)` grammar; `cli list` and `cli search` work for Codex too (message counts via `count_session_messages`, session ID falls back to filename when the JSONL doesn't repeat it)
+  - Resume Codex sessions with `codex resume -C <cwd> <session_id>`; working dir comes from `session_meta.payload.cwd` and falls back to the rollout's parent dir → `$HOME` → `/tmp` when the recorded cwd no longer exists
+  - Codex spawned-subagent rollouts resolve back to their parent thread (so they don't appear as orphan sessions); standalone subagent rollouts are skipped during the file walk, matching how Claude `subagents/` and `agent-*.jsonl` are handled
+- Recognize a custom Codex home via `CODEX_HOME` — both path discovery (`get_search_paths`) and provider classification (`SessionProvider::from_path`) now honor the env var, so Codex installs outside `~/.codex` are surfaced and not misclassified as Claude
+- Detect the `recog` automation marker (`<!-- ccs-automation:recog -->`) so recog-driven sessions hide behind the Ctrl+H automation filter like `scheduled` and `claude-mem` markers
 
 ## v0.12.0 - 2026-05-01
 
