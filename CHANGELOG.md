@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.13.0 - 2026-05-04
+
+### New Features
+- Codex session support — index `~/.codex/sessions` and `~/.codex/archived_sessions`, parse Codex JSONL alongside Claude formats, and surface them in search, recent, list, and resume flows
+- Recognize a custom Codex home via `CODEX_HOME` so non-default installs are picked up alongside `~/.codex`
+- Detect the `recog` automation marker (`<!-- ccs-automation:recog -->`) so recog-driven sessions hide behind the Ctrl+H automation filter like other automation tools
+
 ## v0.12.0 - 2026-05-01
 
 ### New Features
