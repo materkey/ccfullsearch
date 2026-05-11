@@ -164,7 +164,9 @@ impl App {
     }
 
     pub fn toggle_project_filter(&mut self) {
-        if self.current_project_paths.is_empty() {
+        let can_filter_by_codex_cwd = self.can_filter_by_codex_cwd();
+        if !self.project_filter && self.current_project_paths.is_empty() && !can_filter_by_codex_cwd
+        {
             return;
         }
         if self.ai.active {
@@ -172,15 +174,16 @@ impl App {
         }
         self.project_filter = !self.project_filter;
         self.search_paths = if self.project_filter {
-            self.current_project_paths.clone()
+            self.project_scoped_search_paths()
         } else {
             self.all_search_paths.clone()
         };
-        if self.project_filter {
+        if self.project_filter && !self.current_project_paths.is_empty() {
             self.recent
                 .start_project_load(self.current_project_paths.clone());
         }
         self.apply_recent_sessions_filter();
+        self.apply_groups_filter();
         if !self.input.is_empty() {
             self.last_keystroke = Some(Instant::now());
             self.typing = true;
@@ -304,6 +307,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         }
     }
 
@@ -375,15 +379,48 @@ mod tests {
     #[test]
     fn test_toggle_project_filter_no_current_project() {
         let mut app = App::new(vec!["/test".to_string()]);
+        // App::new now captures the process cwd into `current_cwd`. To keep
+        // exercising the early-return path, clear it explicitly here.
+        app.current_cwd = None;
         assert!(!app.project_filter);
         app.toggle_project_filter();
         assert!(!app.project_filter); // unchanged — no current project detected
     }
 
     #[test]
+    fn test_toggle_project_filter_claude_only_cwd_without_project_scope_is_noop() {
+        let mut app = App::new(vec!["/claude-only".to_string()]);
+        app.current_project_paths = vec![];
+        app.current_cwd = Some("/Users/test/project".to_string());
+
+        app.toggle_project_filter();
+
+        assert!(!app.project_filter);
+        assert_eq!(app.search_paths, vec!["/claude-only".to_string()]);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_codex_only_project() {
+        let mut app = App::new(vec!["/home/u/.codex/sessions".to_string()]);
+        app.current_project_paths = vec![];
+        app.current_cwd = Some("/codex-only".to_string());
+
+        assert!(!app.project_filter);
+        assert_eq!(
+            app.search_paths,
+            vec!["/home/u/.codex/sessions".to_string()]
+        );
+
+        app.toggle_project_filter();
+        assert!(app.project_filter);
+        assert_eq!(app.search_paths, app.all_search_paths);
+    }
+
+    #[test]
     fn test_toggle_project_filter_switches_paths() {
         let mut app = App::new(vec!["/all".to_string()]);
         app.current_project_paths = vec!["/all/-Users-test-project".to_string()];
+        app.current_cwd = None;
 
         assert!(!app.project_filter);
         assert_eq!(app.search_paths, vec!["/all".to_string()]);
@@ -401,9 +438,61 @@ mod tests {
     }
 
     #[test]
+    fn test_toggle_project_filter_uses_project_paths_when_only_claude_scope_available() {
+        let mut app = App::new(vec!["/claude".to_string()]);
+        app.current_project_paths = vec!["/claude/-Users-test-project".to_string()];
+        app.current_cwd = Some("/Users/test/project".to_string());
+
+        app.toggle_project_filter();
+
+        assert!(app.project_filter);
+        assert_eq!(
+            app.search_paths,
+            vec!["/claude/-Users-test-project".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_toggle_project_filter_uses_all_paths_when_only_codex_cwd_scope_available() {
+        let mut app = App::new(vec![
+            "/claude".to_string(),
+            "/home/u/.codex/sessions".to_string(),
+        ]);
+        app.current_project_paths = vec![];
+        app.current_cwd = Some("/Users/test/project".to_string());
+
+        app.toggle_project_filter();
+
+        assert!(app.project_filter);
+        assert_eq!(app.search_paths, app.all_search_paths);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_keeps_claude_paths_scoped_when_codex_cwd_scope_available() {
+        let mut app = App::new(vec![
+            "/claude".to_string(),
+            "/home/u/.codex/sessions".to_string(),
+        ]);
+        app.current_project_paths = vec!["/claude/-Users-test-project".to_string()];
+        app.current_cwd = Some("/Users/test/project".to_string());
+
+        app.toggle_project_filter();
+
+        assert!(app.project_filter);
+        assert_eq!(
+            app.search_paths,
+            vec![
+                "/claude/-Users-test-project".to_string(),
+                "/home/u/.codex/sessions".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn test_toggle_project_filter_triggers_research() {
         let mut app = App::new(vec!["/all".to_string()]);
         app.current_project_paths = vec!["/all/-Users-test".to_string()];
+        app.current_cwd = None;
         app.input.set_text_and_cursor("query", 5);
         app.last_query = "query".to_string();
 
@@ -414,6 +503,27 @@ mod tests {
         assert!(app.is_searching());
         assert_eq!(app.search.search_seq, 1);
         assert_eq!(app.last_search_paths, vec!["/all/-Users-test".to_string()]);
+    }
+
+    #[test]
+    fn test_toggle_project_filter_triggers_research_when_paths_unchanged() {
+        let mut app = App::new(vec!["/home/u/.codex/sessions".to_string()]);
+        app.current_project_paths = vec![];
+        app.current_cwd = Some("/codex-only".to_string());
+        app.input.set_text_and_cursor("query", 5);
+        app.last_query = "query".to_string();
+
+        app.toggle_project_filter();
+        app.last_keystroke = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS + 1));
+        app.tick();
+
+        assert!(app.is_searching());
+        assert_eq!(app.search.search_seq, 1);
+        assert_eq!(
+            app.last_search_paths,
+            vec!["/home/u/.codex/sessions".to_string()]
+        );
+        assert!(app.last_project_filter);
     }
 
     #[test]

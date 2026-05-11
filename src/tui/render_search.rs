@@ -224,22 +224,32 @@ fn recent_sessions_status_text(app: &AppView) -> Option<String> {
 
     let total = app.recent.total_count(app.project_filter);
     let shown = app.recent.filtered.len();
-    if shown > 0 {
+    let mut text = if shown > 0 {
         if shown < total {
-            return Some(format!(
+            format!(
                 "{} recent sessions ({} hidden by filter)",
                 shown,
                 total - shown
-            ));
+            )
+        } else {
+            format!("{} recent sessions", shown)
         }
-        return Some(format!("{} recent sessions", shown));
+    } else if total > 0 {
+        format!("0 recent sessions ({} hidden by filter)", total)
+    } else {
+        "No recent sessions found".to_string()
+    };
+
+    if app.project_filter && app.current_cwd.is_some() {
+        // start_project_load scans only Claude paths, so Codex sessions
+        // for the current project are visible to the filter only while
+        // they fit in the global top-RECENT_SESSIONS_LIMIT (= 100) by
+        // mtime. Make the limit visible so missing Codex sessions don't
+        // look like a bug.
+        text.push_str(" · Codex: ≤100 by recency");
     }
 
-    if total > 0 {
-        return Some(format!("0 recent sessions ({} hidden by filter)", total));
-    }
-
-    Some("No recent sessions found".to_string())
+    Some(text)
 }
 
 pub fn render(frame: &mut Frame, view: &AppView) {
@@ -1641,6 +1651,7 @@ mod tests {
                 branch: Some("main".to_string()),
                 message_count: Some(i + 1),
                 preview_role: MessageRole::User,
+                cwd: None,
             })
             .collect();
         app
@@ -2889,6 +2900,7 @@ mod tests {
                 branch: Some("main".to_string()),
                 message_count: Some(42),
                 preview_role: crate::session::record::MessageRole::User,
+                cwd: None,
             },
             RecentSession {
                 session_id: "sess-2".to_string(),
@@ -2901,6 +2913,7 @@ mod tests {
                 branch: None,
                 message_count: Some(12),
                 preview_role: crate::session::record::MessageRole::Assistant,
+                cwd: None,
             },
         ];
 
@@ -2953,6 +2966,7 @@ mod tests {
             branch: Some("MBSA-2197".to_string()),
             message_count: Some(3613),
             preview_role: MessageRole::User,
+            cwd: None,
         };
         assert_eq!(
             build_recent_session_header_text(&session),
@@ -2981,6 +2995,7 @@ mod tests {
             branch: None,
             message_count: Some(42),
             preview_role: MessageRole::Assistant,
+            cwd: None,
         };
         assert_eq!(
             build_recent_session_header_text(&session),
@@ -3009,6 +3024,7 @@ mod tests {
             branch: None,
             message_count: Some(3),
             preview_role: MessageRole::User,
+            cwd: None,
         };
         assert_eq!(
             build_recent_session_header_text(&session),
@@ -3035,6 +3051,7 @@ mod tests {
                 branch: Some("main".to_string()),
                 message_count: Some(6),
                 preview_role: MessageRole::User,
+                cwd: None,
             }
         }
 
@@ -3089,6 +3106,7 @@ mod tests {
             branch: Some("main".to_string()),
             message_count: Some(17),
             preview_role: MessageRole::User,
+            cwd: None,
         }];
 
         terminal
@@ -3277,6 +3295,7 @@ mod tests {
             branch: Some("recent-branch".to_string()),
             message_count: Some(8),
             preview_role: MessageRole::User,
+            cwd: None,
         }];
         app.recent.cursor = 99; // keep the only rendered row unselected
 
@@ -3371,6 +3390,7 @@ mod tests {
             branch: Some("main".to_string()),
             message_count: Some(360),
             preview_role: MessageRole::User,
+            cwd: None,
         }];
         app.recent.cursor = 0;
 
@@ -3443,6 +3463,7 @@ mod tests {
             branch: Some("main".to_string()),
             message_count: Some(360),
             preview_role: MessageRole::User,
+            cwd: None,
         }];
         app.recent.cursor = 0;
 
@@ -3482,6 +3503,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         }];
 
         terminal
@@ -3654,6 +3676,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         }];
         app.recent.filtered = vec![];
 
@@ -3667,6 +3690,84 @@ mod tests {
             24,
             "0 recent sessions (1 hidden by filter)"
         ));
+    }
+
+    #[test]
+    fn test_recent_sessions_status_text_includes_hidden_by_filter_when_some_filtered_out() {
+        use crate::recent::RecentSession;
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.all = vec![
+            RecentSession {
+                session_id: "a".to_string(),
+                file_path: "/test/a.jsonl".to_string(),
+                project: "p".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+                summary: "a".to_string(),
+                automation: None,
+                branch: None,
+                message_count: None,
+                preview_role: crate::session::record::MessageRole::User,
+                cwd: None,
+            },
+            RecentSession {
+                session_id: "b".to_string(),
+                file_path: "/test/b.jsonl".to_string(),
+                project: "p".to_string(),
+                source: SessionSource::ClaudeCodeCLI,
+                timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+                summary: "b".to_string(),
+                automation: None,
+                branch: None,
+                message_count: None,
+                preview_role: crate::session::record::MessageRole::User,
+                cwd: None,
+            },
+        ];
+        app.recent.filtered = vec![app.recent.all[0].clone()];
+
+        let view = app.view();
+        let text = recent_sessions_status_text(&view).expect("status text");
+        assert!(
+            text.contains("1 recent sessions") && text.contains("1 hidden by filter"),
+            "expected hidden-by-filter text, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_recent_sessions_status_text_appends_codex_top100_hint_when_project_filter_and_cwd_set()
+    {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.project_filter = true;
+        app.current_cwd = Some("/proj".to_string());
+
+        let view = app.view();
+        let text = recent_sessions_status_text(&view).expect("status text");
+        assert!(
+            text.contains("· Codex: ≤100 by recency"),
+            "expected Codex hint suffix, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_recent_sessions_status_text_no_codex_hint_when_project_filter_off() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.project_filter = false;
+        app.current_cwd = Some("/proj".to_string());
+
+        let view = app.view();
+        let text = recent_sessions_status_text(&view).expect("status text");
+        assert!(
+            !text.contains("Codex"),
+            "Codex hint must not appear when project_filter is off, got: {text}"
+        );
     }
 
     #[test]

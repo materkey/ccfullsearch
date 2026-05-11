@@ -1,7 +1,7 @@
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
 use crate::resume::encode_path_for_claude;
 use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
-use crate::session::SessionSource;
+use crate::session::{SessionProvider, SessionSource};
 use crate::tree::SessionTree;
 use crate::tui::dispatch::{KeyAction, KeyContext};
 use std::collections::{HashMap, HashSet};
@@ -233,12 +233,156 @@ fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+fn search_path_is_within_claude_project(search_path: &str, encoded_cwd: &str) -> bool {
+    let search_path = normalize_path_for_prefix_check(search_path);
+    let parts: Vec<&str> = search_path.split('/').filter(|p| !p.is_empty()).collect();
+
+    parts
+        .windows(2)
+        .any(|window| window[0] == "projects" && window[1] == encoded_cwd)
+}
+
+fn derive_current_project_paths(
+    search_paths: &[String],
+    current_dir: Option<&Path>,
+) -> Vec<String> {
+    let Some(encoded_cwd) = current_dir
+        .and_then(|cwd| cwd.to_str())
+        .map(encode_path_for_claude)
+    else {
+        return Vec::new();
+    };
+
+    search_paths
+        .iter()
+        .filter_map(|base| {
+            if Path::new(base).is_dir() && search_path_is_within_claude_project(base, &encoded_cwd)
+            {
+                return Some(normalize_path_for_prefix_check(base));
+            }
+
+            let candidate = Path::new(base).join(&encoded_cwd);
+            if candidate.is_dir() {
+                candidate.to_str().map(normalize_path_for_prefix_check)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn search_path_is_standard_codex_scope(search_path: &str) -> bool {
+    let parts: Vec<&str> = search_path.split('/').filter(|p| !p.is_empty()).collect();
+
+    parts.iter().enumerate().any(|(idx, part)| {
+        *part == ".codex"
+            && parts
+                .get(idx + 1)
+                .is_some_and(|next| crate::session::CODEX_SESSION_SUBDIRS.contains(next))
+    })
+}
+
+fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
+    let search_path = normalize_path_for_prefix_check(search_path);
+    if search_path_is_standard_codex_scope(&search_path) {
+        return true;
+    }
+    if let Some(default_codex_home) = dirs::home_dir()
+        .and_then(|home| home.to_str().map(|s| format!("{s}/.codex")))
+        .map(|home| normalize_path_for_prefix_check(&home))
+    {
+        if search_path == default_codex_home {
+            return true;
+        }
+    }
+
+    let Ok(codex_home) = std::env::var("CODEX_HOME") else {
+        return false;
+    };
+    let codex_home = normalize_path_for_prefix_check(&codex_home);
+    if codex_home.is_empty() || codex_home == "/" {
+        return false;
+    }
+    if search_path == codex_home {
+        return true;
+    }
+
+    crate::session::CODEX_SESSION_SUBDIRS.iter().any(|subdir| {
+        let codex_session_root = format!("{codex_home}/{subdir}");
+        path_is_within_project(&search_path, &codex_session_root)
+    })
+}
+
+fn canonicalize_path_to_string(path: &Path) -> Option<String> {
+    std::fs::canonicalize(path)
+        .ok()
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_str()
+        .map(String::from)
+}
+
+/// Decide whether `session` belongs to the project the user is currently
+/// in. Combines the Claude-style file_path check (session file lives
+/// inside one of `project_paths`) with an asymmetric Codex cwd check:
+/// Codex `session.cwd` must be inside (or equal to) `current_cwd`. The
+/// asymmetry is intentional — symmetric matching would let a Codex
+/// session recorded at `$HOME` falsely match every project under
+/// `$HOME`, which was observed in the wild.
+fn session_matches_project(
+    session: &RecentSession,
+    project_paths: &[String],
+    current_cwd: Option<&str>,
+) -> bool {
+    if project_paths
+        .iter()
+        .any(|p| path_is_within_project(&session.file_path, p))
+    {
+        return true;
+    }
+    if SessionProvider::from_path(&session.file_path) != SessionProvider::Codex {
+        return false;
+    }
+    match (session.cwd.as_deref(), current_cwd) {
+        (Some(session_cwd), Some(cwd)) => path_is_within_project(session_cwd, cwd),
+        _ => false,
+    }
+}
+
+fn group_matches_project(
+    group: &SessionGroup,
+    project_paths: &[String],
+    current_cwd: Option<&str>,
+) -> bool {
+    if project_paths
+        .iter()
+        .any(|p| path_is_within_project(&group.file_path, p))
+    {
+        return true;
+    }
+
+    if SessionProvider::from_path(&group.file_path) != SessionProvider::Codex {
+        return false;
+    }
+
+    let Some(cwd) = current_cwd else {
+        return false;
+    };
+
+    crate::session::read_codex_session_cwd(&group.file_path)
+        .map(|session_cwd| {
+            canonicalize_path_to_string(Path::new(&session_cwd)).unwrap_or(session_cwd)
+        })
+        .is_some_and(|session_cwd| path_is_within_project(&session_cwd, cwd))
+}
+
 /// Recent sessions sub-state: encapsulates global/project data sources,
 /// filtered view, background loaders, and navigation cursor.
 pub struct RecentState {
-    /// Unfiltered global sessions (loaded once at startup)
+    /// Unfiltered global sessions (loaded once at startup).
+    /// Invariant: sorted newest-first by `sort_recent_sessions_desc`.
     pub(crate) all: Vec<RecentSession>,
-    /// Project-specific sessions (loaded when project filter is activated)
+    /// Project-specific sessions (loaded when project filter is activated).
+    /// Invariant: sorted newest-first by `sort_recent_sessions_desc`.
     pub(crate) project: Option<Vec<RecentSession>>,
     pub(crate) filtered: Vec<RecentSession>,
     pub(crate) cursor: usize,
@@ -310,26 +454,60 @@ impl RecentState {
     }
 
     /// Rebuild `filtered` from source sessions based on current filters.
+    ///
+    /// When `project_filter` is on, the source is a union of the
+    /// Claude-specific project load (`self.project`) and any Codex sessions
+    /// already discovered in `self.all`. Codex sessions never appear in
+    /// `self.project` because `start_project_load` only scans Claude paths,
+    /// so without the union they would silently drop out the moment the
+    /// project load resolves. Dedup is by `session_id` to handle the
+    /// (rare) case where the same Codex session shows up in both lists.
     pub(crate) fn apply_filter(
         &mut self,
         project_filter: bool,
         project_paths: &[String],
+        current_cwd: Option<&str>,
         automation_filter: &AutomationFilter,
     ) {
-        let project_filtered: Vec<_> = if project_filter && !project_paths.is_empty() {
-            let source = self.project.as_ref().unwrap_or(&self.all);
-            source
-                .iter()
-                .filter(|s| {
-                    project_paths
-                        .iter()
-                        .any(|p| path_is_within_project(&s.file_path, p))
-                })
-                .cloned()
-                .collect()
-        } else {
-            self.all.clone()
-        };
+        let project_filtered: Vec<_> =
+            if project_filter && (!project_paths.is_empty() || current_cwd.is_some()) {
+                // When the project-specific load has resolved, take its
+                // Claude sessions verbatim and merge in any Codex sessions
+                // from the global pool (start_project_load scans only
+                // Claude paths). When the load hasn't resolved yet, fall
+                // back to the global pool so Ctrl+A doesn't blank the
+                // list while the background scan is in flight.
+                let (mut source, seen): (Vec<RecentSession>, HashSet<String>) =
+                    match self.project.as_ref() {
+                        Some(project) => {
+                            let seen = project.iter().map(|s| s.session_id.clone()).collect();
+                            (project.clone(), seen)
+                        }
+                        None => (self.all.clone(), HashSet::new()),
+                    };
+                if self.project.is_some() {
+                    source.extend(
+                        self.all
+                            .iter()
+                            .filter(|s| {
+                                SessionProvider::from_path(&s.file_path) == SessionProvider::Codex
+                                    && !seen.contains(&s.session_id)
+                            })
+                            .cloned(),
+                    );
+                }
+                let mut filtered: Vec<RecentSession> = source
+                    .into_iter()
+                    .filter(|s| session_matches_project(s, project_paths, current_cwd))
+                    .collect();
+                // Concatenating two already-sorted slices does not preserve order; re-sort
+                // the filtered union with the shared helper so the view matches the
+                // unfiltered ordering.
+                crate::recent::sort_recent_sessions_desc(&mut filtered);
+                filtered
+            } else {
+                self.all.clone()
+            };
 
         self.filtered = match automation_filter {
             AutomationFilter::All => project_filtered,
@@ -359,10 +537,37 @@ impl RecentState {
         }
     }
 
-    /// Total count of sessions in the active source (for status text).
+    /// Total count of sessions in the active source for the status bar
+    /// (pre `session_matches_project` / pre `automation_filter`). After
+    /// the union change in `apply_filter`, when `project_filter` is on the
+    /// source is a union of `self.project` (Claude) and Codex sessions in
+    /// `self.all`; otherwise `self.all`. This keeps the
+    /// "X recent (Y hidden by filter)" message in
+    /// `recent_sessions_status_text` coherent.
     pub fn total_count(&self, project_filter: bool) -> usize {
         if project_filter {
-            self.project.as_ref().map_or(self.all.len(), |ps| ps.len())
+            let mut total = self
+                .project
+                .as_ref()
+                .map(|p| p.len())
+                .unwrap_or(self.all.len());
+            // When `self.project` is loaded, count Codex sessions from
+            // `self.all` that are not already in `self.project` (matches
+            // the union built in apply_filter). Skip when project hasn't
+            // loaded yet — `self.all` already contains Codex sessions in
+            // that case.
+            if let Some(project) = self.project.as_ref() {
+                let seen: HashSet<&str> = project.iter().map(|s| s.session_id.as_str()).collect();
+                total += self
+                    .all
+                    .iter()
+                    .filter(|s| {
+                        SessionProvider::from_path(&s.file_path) == SessionProvider::Codex
+                            && !seen.contains(s.session_id.as_str())
+                    })
+                    .count();
+            }
+            total
         } else {
             self.all.len()
         }
@@ -617,6 +822,10 @@ pub struct App {
     pub(crate) last_regex_mode: bool,
     /// Track last search path scope used for search
     pub(crate) last_search_paths: Vec<String>,
+    /// Track last project filter state used for search. The path list may
+    /// stay the same when cwd-based Codex scoping is active, while the
+    /// post-search predicate still changes.
+    pub(crate) last_project_filter: bool,
     /// Tree explorer mode
     pub tree_mode: bool,
     /// Whether search is scoped to current project only (Ctrl+A toggle)
@@ -629,6 +838,9 @@ pub struct App {
     pub(crate) all_search_paths: Vec<String>,
     /// Search path(s) for current project only
     pub current_project_paths: Vec<String>,
+    /// Canonicalized cwd of the ccs process. Used to match Codex sessions
+    /// (their cwd is stored inside the session file, not in the file path).
+    pub current_cwd: Option<String>,
     /// Recent sessions sub-state
     pub recent: RecentState,
     /// AI search re-ranking sub-state
@@ -641,32 +853,30 @@ pub struct App {
 
 impl App {
     pub fn new(search_paths: Vec<String>) -> Self {
+        let current_dir = std::env::current_dir().ok();
+        Self::new_with_current_dir(search_paths, current_dir.as_deref())
+    }
+
+    fn new_with_current_dir(search_paths: Vec<String>, current_dir: Option<&Path>) -> Self {
         // Channel for results from per-request search threads. `result_tx` is
         // promoted to a `SearchState` field (was a local in the legacy
         // worker model) so each spawn-per-request thread in `start_search`
         // can `.clone()` it.
         let (result_tx, result_rx) = mpsc::channel::<BackgroundSearchResult>();
 
-        // Detect current project path for Ctrl+A filter
-        let current_project_paths = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cwd.to_str().map(encode_path_for_claude))
-            .map(|encoded| {
-                search_paths
-                    .iter()
-                    .filter_map(|base| {
-                        let candidate = format!("{}/{}", base, encoded);
-                        if std::path::Path::new(&candidate).is_dir() {
-                            Some(candidate)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        // Detect current project paths for Ctrl+A filtering. This includes
+        // both default roots (`.../projects/<encoded-cwd>`) and already-scoped
+        // custom roots (`.../projects/<encoded-cwd>/...`).
+        let current_project_paths = derive_current_project_paths(&search_paths, current_dir);
 
         let all_search_paths = search_paths.clone();
+
+        // Canonicalize once: macOS resolves `/var` → `/private/var`, and dev
+        // boxes routinely symlink `~/projects`. Codex stores its `cwd`
+        // verbatim, so the side that we control (ccs's own cwd) must match
+        // the OS-canonical form. Fall back to the raw path if canonicalize
+        // fails (rare; e.g. cwd removed).
+        let current_cwd = current_dir.and_then(canonicalize_path_to_string);
 
         let recent = RecentState::new(search_paths.clone());
 
@@ -709,12 +919,14 @@ impl App {
             regex_mode: false,
             last_regex_mode: false,
             last_search_paths: all_search_paths.clone(),
+            last_project_filter: false,
             tree_mode: false,
             project_filter: false,
             automation_filter: AutomationFilter::Manual,
             automation_cache: HashMap::new(),
             all_search_paths,
             current_project_paths,
+            current_cwd,
             recent,
             ai: AiState {
                 active: false,
@@ -729,6 +941,36 @@ impl App {
             picker_mode: false,
             last_tree_visible_height: 20,
         }
+    }
+
+    pub(crate) fn can_filter_by_codex_cwd(&self) -> bool {
+        self.current_cwd.is_some()
+            && self
+                .all_search_paths
+                .iter()
+                .any(|path| search_path_supports_codex_cwd_scope(path))
+    }
+
+    /// Build ripgrep roots for Ctrl+A project search. Claude sessions can be
+    /// narrowed by encoded project path; Codex sessions need their session
+    /// roots so the post-search cwd filter can decide project membership.
+    pub(crate) fn project_scoped_search_paths(&self) -> Vec<String> {
+        if self.current_project_paths.is_empty() {
+            return self.all_search_paths.clone();
+        }
+
+        let mut paths = self.current_project_paths.clone();
+        if self.can_filter_by_codex_cwd() {
+            let codex_paths: Vec<String> = self
+                .all_search_paths
+                .iter()
+                .filter(|path| search_path_supports_codex_cwd_scope(path))
+                .filter(|path| !paths.contains(path))
+                .cloned()
+                .collect();
+            paths.extend(codex_paths);
+        }
+        paths
     }
 
     /// Create a read-only view of the app state for rendering.
@@ -1097,7 +1339,8 @@ impl App {
                 // Re-search if query, regex mode, or search scope changed
                 let query_changed = self.input.text() != self.last_query;
                 let mode_changed = self.regex_mode != self.last_regex_mode;
-                let scope_changed = self.search_paths != self.last_search_paths;
+                let scope_changed = self.search_paths != self.last_search_paths
+                    || self.project_filter != self.last_project_filter;
                 if query_changed && self.input.is_empty() {
                     // User backspaced to empty — reset to idle state
                     self.reset_search_state();
@@ -1204,29 +1447,32 @@ impl App {
         self.recent.apply_filter(
             self.project_filter,
             &self.current_project_paths,
+            self.current_cwd.as_deref(),
             &self.automation_filter,
         );
     }
 
-    /// Rebuild `groups` from `all_groups` based on automation filter.
+    /// Rebuild `groups` from `all_groups` based on project and automation filters.
     pub(crate) fn apply_groups_filter(&mut self) {
-        self.search.groups = match self.automation_filter {
-            AutomationFilter::All => self.search.all_groups.clone(),
-            AutomationFilter::Manual => self
-                .search
-                .all_groups
-                .iter()
-                .filter(|g| g.automation.is_none())
-                .cloned()
-                .collect(),
-            AutomationFilter::Auto => self
-                .search
-                .all_groups
-                .iter()
-                .filter(|g| g.automation.is_some())
-                .cloned()
-                .collect(),
-        };
+        self.search.groups = self
+            .search
+            .all_groups
+            .iter()
+            .filter(|g| {
+                !self.project_filter
+                    || group_matches_project(
+                        g,
+                        &self.current_project_paths,
+                        self.current_cwd.as_deref(),
+                    )
+            })
+            .filter(|g| match self.automation_filter {
+                AutomationFilter::All => true,
+                AutomationFilter::Manual => g.automation.is_none(),
+                AutomationFilter::Auto => g.automation.is_some(),
+            })
+            .cloned()
+            .collect();
         // Clamp cursor so it stays valid after the filtered list shrinks
         // (e.g. async automation metadata arrives while Manual/Auto filter is active).
         if self.search.groups.is_empty() {
@@ -1407,6 +1653,7 @@ impl App {
         self.last_query = query.clone();
         self.last_regex_mode = self.regex_mode;
         self.last_search_paths = self.search_paths.clone();
+        self.last_project_filter = self.project_filter;
         self.search.search_truncated = false;
 
         if let Some(prev) = self.search.current.take() {
@@ -1482,7 +1729,7 @@ impl Drop for App {
 mod tests {
     use super::*;
     use crate::search::{Message, RipgrepMatch};
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1498,7 +1745,48 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         }
+    }
+
+    fn make_group(session_id: &str, file_path: &str) -> SessionGroup {
+        SessionGroup {
+            session_id: session_id.to_string(),
+            file_path: file_path.to_string(),
+            matches: vec![RipgrepMatch {
+                file_path: file_path.to_string(),
+                message: Some(Message {
+                    session_id: session_id.to_string(),
+                    role: "user".to_string(),
+                    content: "needle".to_string(),
+                    timestamp: Utc::now(),
+                    line_number: 1,
+                    ..Default::default()
+                }),
+                source: SessionSource::from_path(file_path),
+            }],
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        }
+    }
+
+    fn write_codex_session(path: &std::path::Path, session_id: &str, cwd: &std::path::Path) {
+        let parent = path
+            .parent()
+            .expect("codex session path should have parent");
+        std::fs::create_dir_all(parent).unwrap();
+        let line = serde_json::json!({
+            "timestamp": "2026-05-03T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": cwd.to_str().unwrap(),
+                "source": "cli"
+            }
+        })
+        .to_string();
+        std::fs::write(path, format!("{line}\n")).unwrap();
     }
 
     #[test]
@@ -1509,6 +1797,42 @@ mod tests {
         assert!(app.input.is_empty());
         assert!(app.search.groups.is_empty());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_app_new_detects_direct_claude_project_search_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let encoded = encode_path_for_claude(repo.to_str().unwrap());
+        let project_root = dir.path().join("projects").join(encoded);
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project_root = project_root.to_string_lossy().to_string();
+
+        let app = App::new_with_current_dir(vec![project_root.clone()], Some(&repo));
+
+        assert_eq!(app.current_project_paths, vec![project_root]);
+    }
+
+    #[test]
+    fn test_app_new_detects_scoped_claude_project_search_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let encoded = encode_path_for_claude(repo.to_str().unwrap());
+        let scoped_root = dir
+            .path()
+            .join("projects")
+            .join(encoded)
+            .join("session-scope");
+        std::fs::create_dir_all(&scoped_root).unwrap();
+        let scoped_root = scoped_root.to_string_lossy().to_string();
+
+        let app = App::new_with_current_dir(vec![scoped_root.clone()], Some(&repo));
+
+        assert_eq!(app.current_project_paths, vec![scoped_root]);
     }
 
     #[test]
@@ -1568,6 +1892,179 @@ mod tests {
         );
     }
 
+    fn claude_session_in_project() -> RecentSession {
+        RecentSession {
+            session_id: "claude-1".to_string(),
+            file_path: "/proj/-Users-x-y/abc.jsonl".to_string(),
+            project: "y".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "claude summary".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
+        }
+    }
+
+    fn codex_session_with_cwd(session_id: &str, cwd: &str) -> RecentSession {
+        RecentSession {
+            session_id: session_id.to_string(),
+            file_path: format!(
+                "/home/u/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-{}.jsonl",
+                session_id
+            ),
+            project: "codex-proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "codex summary".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+            cwd: Some(cwd.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_apply_filter_keeps_codex_in_all_after_claude_project_load() {
+        let claude = claude_session_in_project();
+        let codex = codex_session_with_cwd("codex-1", "/proj");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex.clone()];
+        state.project = Some(vec![claude.clone()]);
+
+        state.apply_filter(
+            true,
+            &["/proj/-Users-x-y".to_string()],
+            Some("/proj"),
+            &AutomationFilter::All,
+        );
+
+        assert_eq!(state.filtered.len(), 2, "expected union of Claude+Codex");
+        let session_ids: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert!(
+            session_ids.contains(&"codex-1"),
+            "Codex session should remain in filtered output, got {:?}",
+            session_ids
+        );
+        assert!(
+            session_ids.contains(&"claude-1"),
+            "Claude session should remain in filtered output, got {:?}",
+            session_ids
+        );
+    }
+
+    #[test]
+    fn test_apply_filter_drops_codex_with_unrelated_cwd() {
+        let codex = codex_session_with_cwd("codex-1", "/other-proj");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex];
+        state.project = Some(vec![]);
+
+        state.apply_filter(true, &[], Some("/proj"), &AutomationFilter::All);
+
+        assert!(
+            state.filtered.is_empty(),
+            "Codex session with unrelated cwd must be filtered out"
+        );
+    }
+
+    #[test]
+    fn test_apply_filter_sorts_union_by_timestamp_desc() {
+        let mut claude_old = claude_session_in_project();
+        claude_old.timestamp = DateTime::parse_from_rfc3339("2026-05-07T16:23:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut codex_new = codex_session_with_cwd("codex-new", "/proj");
+        codex_new.timestamp = DateTime::parse_from_rfc3339("2026-05-11T18:25:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut codex_mid = codex_session_with_cwd("codex-mid", "/proj");
+        codex_mid.timestamp = DateTime::parse_from_rfc3339("2026-05-11T18:21:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex_new, codex_mid];
+        state.project = Some(vec![claude_old]);
+
+        state.apply_filter(
+            true,
+            &["/proj/-Users-x-y".to_string()],
+            Some("/proj"),
+            &AutomationFilter::All,
+        );
+
+        let ids: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["codex-new", "codex-mid", "claude-1"],
+            "union must be sorted by timestamp desc (newest first)"
+        );
+    }
+
+    #[test]
+    fn test_apply_filter_dedupes_codex_already_in_project() {
+        let codex_in_project = codex_session_with_cwd("codex-1", "/proj");
+        let codex_in_all = codex_session_with_cwd("codex-1", "/proj");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex_in_all];
+        state.project = Some(vec![codex_in_project]);
+
+        state.apply_filter(true, &[], Some("/proj"), &AutomationFilter::All);
+
+        assert_eq!(
+            state.filtered.len(),
+            1,
+            "duplicate Codex sessions (same session_id) must dedupe"
+        );
+    }
+
+    #[test]
+    fn test_total_count_includes_codex_in_union() {
+        let claude = claude_session_in_project();
+        let codex = codex_session_with_cwd("codex-1", "/proj");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex];
+        state.project = Some(vec![claude]);
+
+        assert_eq!(
+            state.total_count(true),
+            2,
+            "total_count must reflect union of Claude project + Codex from all"
+        );
+    }
+
+    #[test]
+    fn test_total_count_no_double_count_for_codex_already_in_project() {
+        let codex_a = codex_session_with_cwd("codex-1", "/proj");
+        let codex_b = codex_session_with_cwd("codex-1", "/proj");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![codex_a];
+        state.project = Some(vec![codex_b]);
+
+        assert_eq!(
+            state.total_count(true),
+            1,
+            "duplicate Codex sessions must not be double-counted"
+        );
+    }
+
     #[test]
     fn test_handle_search_result_reuses_recent_session_automation() {
         let mut app = App::new(vec!["/test".to_string()]);
@@ -1588,6 +2085,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         }];
 
         let result = RipgrepMatch {
@@ -1755,6 +2253,259 @@ mod tests {
             r"C:\Users\test\project-other\session.jsonl",
             r"C:/Users/test/project"
         ));
+    }
+
+    #[test]
+    fn test_search_path_supports_custom_codex_home_scope() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
+        let prev_codex = std::env::var("CODEX_HOME").ok();
+        unsafe { std::env::set_var("CODEX_HOME", "/tmp/custom-codex") };
+
+        assert!(search_path_supports_codex_cwd_scope("/tmp/custom-codex"));
+        assert!(search_path_supports_codex_cwd_scope(
+            "/tmp/custom-codex/sessions/2026/05/01"
+        ));
+        assert!(search_path_supports_codex_cwd_scope(
+            "/tmp/custom-codex/archived_sessions"
+        ));
+        assert!(!search_path_supports_codex_cwd_scope(
+            "/tmp/custom-codexish/sessions"
+        ));
+
+        unsafe { std::env::remove_var("CODEX_HOME") };
+        if let Some(v) = prev_codex {
+            unsafe { std::env::set_var("CODEX_HOME", v) };
+        }
+    }
+
+    fn make_session_with_cwd(file_path: &str, cwd: Option<&str>) -> RecentSession {
+        RecentSession {
+            session_id: file_path.to_string(),
+            file_path: file_path.to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::ClaudeCodeCLI,
+            timestamp: Utc::now(),
+            summary: "summary".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+            cwd: cwd.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_session_matches_project_same_cwd() {
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/repo"),
+        );
+        assert!(session_matches_project(&session, &[], Some("/repo")));
+    }
+
+    #[test]
+    fn test_session_matches_project_session_in_subdir_of_current() {
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/repo/sub"),
+        );
+        assert!(session_matches_project(&session, &[], Some("/repo")));
+    }
+
+    #[test]
+    fn test_session_matches_project_ignores_claude_cwd_without_project_path() {
+        let session = make_session_with_cwd("/tmp/claude/rollout.jsonl", Some("/repo"));
+        assert!(!session_matches_project(&session, &[], Some("/repo")));
+    }
+
+    #[test]
+    fn test_session_matches_project_current_in_subdir_of_session_does_not_match() {
+        // Was true under symmetric matching. Made false intentionally:
+        // symmetric matching falsely included Codex sessions recorded at
+        // common ancestors like $HOME for every subdir the user cd's into.
+        // Abstract paths /repo and /repo/sub stand in for the
+        // $HOME / $HOME/projects/foo case.
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/repo"),
+        );
+        assert!(!session_matches_project(&session, &[], Some("/repo/sub")));
+    }
+
+    #[test]
+    fn test_session_matches_project_siblings() {
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/repo-other"),
+        );
+        assert!(!session_matches_project(&session, &[], Some("/repo")));
+    }
+
+    #[test]
+    fn test_session_matches_project_no_cwd_either_side() {
+        let session = make_session_with_cwd("/tmp/.codex/sessions/2026/05/01/rollout.jsonl", None);
+        assert!(!session_matches_project(&session, &[], None));
+    }
+
+    #[test]
+    fn test_session_matches_project_only_current_cwd() {
+        let session = make_session_with_cwd("/tmp/.codex/sessions/2026/05/01/rollout.jsonl", None);
+        assert!(!session_matches_project(&session, &[], Some("/repo")));
+    }
+
+    #[test]
+    fn test_session_matches_project_only_session_cwd() {
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/repo"),
+        );
+        assert!(!session_matches_project(&session, &[], None));
+    }
+
+    #[test]
+    fn test_session_matches_project_file_path_match_overrides_cwd() {
+        let session = make_session_with_cwd("/proj/-Users-x-y/abc.jsonl", Some("/unrelated"));
+        assert!(session_matches_project(
+            &session,
+            &["/proj/-Users-x-y".to_string()],
+            Some("/different"),
+        ));
+    }
+
+    #[test]
+    fn test_session_matches_project_project_paths_no_match_and_cwd_no_match_returns_false() {
+        let session = make_session_with_cwd(
+            "/tmp/.codex/sessions/2026/05/01/rollout.jsonl",
+            Some("/other-project"),
+        );
+        assert!(!session_matches_project(
+            &session,
+            &["/proj/-Users-x-y".to_string()],
+            Some("/repo"),
+        ));
+    }
+
+    #[test]
+    fn test_apply_groups_filter_applies_project_scope_to_codex_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        let other_repo = dir.path().join("repo-other");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&other_repo).unwrap();
+
+        let claude_project_dir = dir.path().join("projects").join("-Users-test-repo");
+        let claude_file = claude_project_dir.join("claude.jsonl");
+
+        let codex_dir = dir.path().join(".codex/sessions/2026/05/03");
+        let codex_in = codex_dir.join("rollout-2026-05-03T10-00-00-codex-in.jsonl");
+        let codex_out = codex_dir.join("rollout-2026-05-03T10-00-00-codex-out.jsonl");
+        write_codex_session(&codex_in, "codex-in", &repo);
+        write_codex_session(&codex_out, "codex-out", &other_repo);
+
+        let mut app = App::new(vec![dir.path().to_string_lossy().to_string()]);
+        app.project_filter = true;
+        app.current_project_paths = vec![claude_project_dir.to_string_lossy().to_string()];
+        app.current_cwd = canonicalize_path_to_string(&repo);
+        app.search.all_groups = vec![
+            make_group("claude", &claude_file.to_string_lossy()),
+            make_group("codex-in", &codex_in.to_string_lossy()),
+            make_group("codex-out", &codex_out.to_string_lossy()),
+        ];
+
+        app.apply_groups_filter();
+
+        let ids = app
+            .search
+            .groups
+            .iter()
+            .map(|g| g.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["claude", "codex-in"]);
+    }
+
+    #[test]
+    fn test_handle_search_result_filters_codex_only_project_scope() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        let other_repo = dir.path().join("repo-other");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&other_repo).unwrap();
+
+        let codex_dir = dir.path().join(".codex/sessions/2026/05/03");
+        let codex_in = codex_dir.join("rollout-2026-05-03T10-00-00-codex-in.jsonl");
+        let codex_out = codex_dir.join("rollout-2026-05-03T10-00-00-codex-out.jsonl");
+        write_codex_session(&codex_in, "codex-in", &repo);
+        write_codex_session(&codex_out, "codex-out", &other_repo);
+
+        let mut app = App::new(vec![dir.path().to_string_lossy().to_string()]);
+        app.project_filter = true;
+        app.current_project_paths = vec![];
+        app.current_cwd = canonicalize_path_to_string(&repo);
+        app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.handle_search_result(BackgroundSearchResult {
+            seq: 1,
+            query: "needle".to_string(),
+            result: Ok(crate::search::SearchResult {
+                matches: vec![
+                    make_group("codex-in", &codex_in.to_string_lossy())
+                        .matches
+                        .remove(0),
+                    make_group("codex-out", &codex_out.to_string_lossy())
+                        .matches
+                        .remove(0),
+                ],
+                truncated: false,
+            }),
+        });
+
+        assert_eq!(app.search.all_groups.len(), 2);
+        let ids = app
+            .search
+            .groups
+            .iter()
+            .map(|g| g.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["codex-in"]);
+    }
+
+    #[test]
+    fn test_app_new_captures_current_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let canonical = std::fs::canonicalize(dir.path()).unwrap();
+
+        let app = App::new_with_current_dir(vec!["/test".to_string()], Some(dir.path()));
+
+        assert_eq!(
+            app.current_cwd.as_deref(),
+            canonical.to_str(),
+            "App should capture the injected current_cwd"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_app_new_current_cwd_is_canonicalized() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let real_canonical = std::fs::canonicalize(&real_dir).unwrap();
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+
+        let app = App::new_with_current_dir(vec!["/test".to_string()], Some(&link));
+
+        let captured = app.current_cwd.clone().expect("current_cwd should be Some");
+        assert_eq!(
+            captured,
+            real_canonical.to_str().unwrap(),
+            "current_cwd should be canonicalized (resolve symlinks)"
+        );
     }
 
     #[test]
@@ -3165,6 +3916,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         };
         app.recent.filtered = vec![snapshotted.clone()];
 
@@ -3179,6 +3931,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         };
         let (tx, rx) = mpsc::channel::<Vec<RecentSession>>();
         tx.send(vec![fresh_session]).unwrap();
@@ -3226,6 +3979,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: crate::session::record::MessageRole::User,
+            cwd: None,
         };
         let (tx, rx) = mpsc::channel::<Vec<RecentSession>>();
         tx.send(vec![fresh_session]).unwrap();

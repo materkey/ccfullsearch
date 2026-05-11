@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::search::{count_session_messages, extract_project_from_path};
 use crate::session::record::{ContentMode, MessageRole, SessionRecord};
-use crate::session::{self, SessionSource};
+use crate::session::{self, SessionProvider, SessionSource};
 
 const HEAD_SCAN_LINES: usize = 30;
 
@@ -32,6 +32,10 @@ pub struct RecentSession {
     /// `User` for first-user-message / last-prompt sources, `Assistant` for
     /// summary records and AI-generated titles.
     pub preview_role: MessageRole,
+    /// Working directory recorded inside the session metadata. Currently
+    /// filled only for Codex rollouts (`session_meta.payload.cwd`); Claude
+    /// sessions encode the project in the file path itself.
+    pub cwd: Option<String>,
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
@@ -616,6 +620,15 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let path_str = path.to_str().unwrap_or("");
     let source = SessionSource::from_path(path_str);
     let project = extract_project_from_path(path_str);
+    let cwd = (SessionProvider::from_path(path_str) == SessionProvider::Codex)
+        .then(|| session::read_codex_session_cwd(path_str))
+        .flatten()
+        .map(|raw| {
+            std::fs::canonicalize(&raw)
+                .ok()
+                .and_then(|p| p.to_str().map(String::from))
+                .unwrap_or(raw)
+        });
     const TAIL_BYTES: u64 = 256 * 1024;
     let latest_chain = SessionDag::from_file(path, DisplayFilter::Standard)
         .ok()
@@ -724,6 +737,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             branch,
             message_count,
             preview_role: MessageRole::Assistant,
+            cwd: cwd.clone(),
         });
     }
 
@@ -740,6 +754,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             branch,
             message_count,
             preview_role: MessageRole::Assistant,
+            cwd: cwd.clone(),
         });
     }
 
@@ -756,6 +771,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             branch,
             message_count,
             preview_role: MessageRole::User,
+            cwd: cwd.clone(),
         });
     }
 
@@ -785,6 +801,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         branch,
         message_count,
         preview_role: MessageRole::User,
+        cwd,
     })
 }
 
@@ -800,6 +817,18 @@ fn extract_session_id_from_head(path: &Path) -> Option<String> {
 /// `subagents/` directories via the shared session-layer walker.
 fn find_jsonl_files(search_paths: &[String]) -> Vec<PathBuf> {
     session::collect_session_jsonl_files(search_paths)
+}
+
+/// Sort recent sessions newest-first, breaking ties by `file_path` so the order
+/// is stable across platforms. Shared by `collect_recent_sessions`,
+/// `collect_from_files`, and `RecentState::apply_filter` so all three paths
+/// produce identical orderings.
+pub(crate) fn sort_recent_sessions_desc(sessions: &mut [RecentSession]) {
+    sessions.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.file_path.cmp(&a.file_path))
+    });
 }
 
 /// Collect recent sessions from search paths.
@@ -851,11 +880,7 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
             deduped.push(session);
         }
     }
-    deduped.sort_by(|a, b| {
-        b.timestamp
-            .cmp(&a.timestamp)
-            .then_with(|| b.file_path.cmp(&a.file_path))
-    });
+    sort_recent_sessions_desc(&mut deduped);
     deduped
 }
 
@@ -945,11 +970,7 @@ fn collect_from_files(
         }
     }
 
-    deduped.sort_by(|a, b| {
-        b.timestamp
-            .cmp(&a.timestamp)
-            .then_with(|| b.file_path.cmp(&a.file_path))
-    });
+    sort_recent_sessions_desc(&mut deduped);
     deduped.truncate(limit);
     deduped
 }
@@ -976,6 +997,7 @@ mod tests {
             branch: Some("main".to_string()),
             message_count: Some(17),
             preview_role: MessageRole::User,
+            cwd: None,
         };
         assert_eq!(session.session_id, "sess-linear-001");
         assert_eq!(session.project, "myproject");
@@ -1001,6 +1023,7 @@ mod tests {
             branch: None,
             message_count: None,
             preview_role: MessageRole::Assistant,
+            cwd: None,
         };
         assert_eq!(session.source, SessionSource::ClaudeDesktop);
         assert_eq!(session.project, "uuid1");
@@ -1088,6 +1111,77 @@ mod tests {
         assert_eq!(result.branch.as_deref(), Some("codex-main"));
         assert_eq!(result.message_count, Some(2));
         assert_eq!(result.preview_role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_extract_summary_codex_fills_cwd() {
+        let proj = TempDir::new().unwrap();
+        let proj_canonical = std::fs::canonicalize(proj.path()).unwrap();
+        let proj_str = proj_canonical.to_str().unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_id = "019f0000-0000-7000-8000-0000000000aa";
+        let path = session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{session_id}","cwd":"{proj_str}","source":"cli"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Real question"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let result = extract_summary(&path).unwrap();
+        assert_eq!(result.cwd.as_deref(), Some(proj_str));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_extract_summary_codex_canonicalizes_cwd() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let link_dir = dir.path().join("link");
+        symlink(&real_dir, &link_dir).unwrap();
+
+        let canonical_real = std::fs::canonicalize(&real_dir).unwrap();
+        let canonical_real_str = canonical_real.to_str().unwrap();
+        let link_str = link_dir.to_str().unwrap();
+
+        let session_dir = dir.path().join(".codex/sessions/2026/05/03");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_id = "019f0000-0000-7000-8000-0000000000bb";
+        let path = session_dir.join(format!("rollout-2026-05-03T10-00-00-{session_id}.jsonl"));
+
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"timestamp":"2026-05-03T10:00:00Z","type":"session_meta","payload":{{"id":"{session_id}","cwd":"{link_str}","source":"cli"}}}}
+{{"timestamp":"2026-05-03T10:00:01Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Real question"}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let result = extract_summary(&path).unwrap();
+        assert_eq!(result.cwd.as_deref(), Some(canonical_real_str));
+    }
+
+    #[test]
+    fn test_extract_summary_claude_cwd_is_none() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Hello"}}]}},"sessionId":"sess-cwd-001","timestamp":"2025-06-01T10:00:00Z"}}"#).unwrap();
+
+        let result = extract_summary(f.path()).unwrap();
+        assert!(
+            result.cwd.is_none(),
+            "expected cwd None for Claude session, got {:?}",
+            result.cwd
+        );
     }
 
     #[test]
