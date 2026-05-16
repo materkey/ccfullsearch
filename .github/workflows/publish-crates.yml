@@ -1,0 +1,60 @@
+name: Publish to crates.io
+
+# Fires after cargo-dist's Release workflow creates a GitHub Release.
+# Reads version from the tag (vX.Y.Z), checks it out, and runs `cargo publish`.
+# Requires repo secret CARGO_REGISTRY_TOKEN (scope: publish-update, crate: ccfullsearch).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.14.1). Omit to use the latest release."
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag="${INPUT_TAG:-$RELEASE_TAG}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing tag: $tag"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          tag_version="${TAG#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error::Cargo.toml version ($cargo_version) does not match tag ($tag_version)"
+            exit 1
+          fi
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
