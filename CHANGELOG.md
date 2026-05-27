@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.15.0 - 2026-05-27
+
+### New Features
+- Opencode sessions support — discover and search Opencode SQLite databases (`opencode.db`, channel-suffixed variants like `opencode-dev.db`) alongside Claude Code CLI, Claude Desktop, and Codex rollouts. Cap matches per session (not per database) so chatty sessions don't starve quieter neighbours; cache the project label as `Option<String>` and drop `None` entries so a transient DB lock at startup doesn't pin the fallback "Opencode" label; route cancellation through a shared `CANCELLED_ERR` sentinel and silence cancellation noise via `ccs_debug`; reuse `is_opencode_session_path` for search-path classification; stat each file once in `extract_summary` and log dropped Opencode errors rather than swallowing them.
+
+### Changed
+- Consolidate `fmt` / `clippy` / `test` behind a single `make check` target — `Makefile` is the single entry point CI runs, individual targets (`make fmt` / `clippy` / `test`) remain callable.
+- Add `CONTRIBUTING.md` and a minimal PR template (Testing + Notes) — lightweight contributor docs after the first external PR landed without a description.
+
 ## v0.14.0 - 2026-05-11
 
 ### New Features
