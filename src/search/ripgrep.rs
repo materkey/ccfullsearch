@@ -261,6 +261,11 @@ const MAX_COUNT_PER_FILE: usize = 1000;
 
 /// Per-session cap inside an Opencode DB so one chatty session can't fill
 /// the entire `MAX_COUNT_PER_FILE` budget and hide every other session.
+///
+/// 100 is a tenth of `MAX_COUNT_PER_FILE` (1000) — large enough that a typical
+/// session never bumps into it (most sessions yield ≤20 matches per query in
+/// practice), small enough that a runaway agent loop can't crowd out 9+ other
+/// sessions before the global cap fires.
 const OPENCODE_PER_SESSION_CAP: usize = 100;
 
 /// Maximum bytes of `rg` stderr we keep in memory for the failure-message
@@ -535,12 +540,12 @@ fn search_single_path(
 }
 
 fn is_opencode_storage_path(path: &str) -> bool {
-    let normalized = if path.contains('\\') {
-        path.replace('\\', "/")
+    let normalized: std::borrow::Cow<'_, str> = if path.contains('\\') {
+        std::borrow::Cow::Owned(path.replace('\\', "/"))
     } else {
-        path.to_string()
+        std::borrow::Cow::Borrowed(path)
     };
-    Path::new(normalized.as_str())
+    Path::new(normalized.as_ref())
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(opencode::is_opencode_db_filename)

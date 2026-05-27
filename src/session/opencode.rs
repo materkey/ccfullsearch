@@ -89,15 +89,15 @@ pub fn opencode_database_path() -> Option<PathBuf> {
 /// True when `path` looks like an Opencode synthetic path
 /// (`<root>/opencode.db#<session_id>` or just `<root>/opencode.db`).
 pub fn is_opencode_session_path(path: &str) -> bool {
-    let normalized = if path.contains('\\') {
-        path.replace('\\', "/")
+    let normalized: std::borrow::Cow<'_, str> = if path.contains('\\') {
+        std::borrow::Cow::Owned(path.replace('\\', "/"))
     } else {
-        path.to_string()
+        std::borrow::Cow::Borrowed(path)
     };
     let db_part = normalized
         .rsplit_once(PATH_FRAGMENT_SEP)
         .map(|(db, _)| db)
-        .unwrap_or(normalized.as_str());
+        .unwrap_or(normalized.as_ref());
     Path::new(db_part)
         .file_name()
         .and_then(|n| n.to_str())
@@ -129,12 +129,16 @@ pub fn parse_session_path(path: &str) -> Option<(PathBuf, String)> {
 ///
 /// We open `READ_ONLY | URI` and append `?mode=ro` so we never accidentally
 /// write to the user's database, even when they have a hot Opencode running.
-pub(crate) fn open_db(db_path: &Path) -> rusqlite::Result<Connection> {
+///
+/// Returns `Result<_, String>` at the crate boundary per the project
+/// convention; `rusqlite::Error` stays internal to this module.
+pub(crate) fn open_db(db_path: &Path) -> Result<Connection, String> {
     let uri = format!("file:{}?mode=ro", db_path.to_string_lossy());
     Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
+    .map_err(|e| format!("opencode open_db({}): {e}", db_path.display()))
 }
 
 /// Metadata for a single Opencode session as stored in the `session` table.
@@ -214,8 +218,8 @@ pub fn read_project_label(db_path: &Path, project_id: &str) -> Option<String> {
 /// as [`read_project_label`]. Extracted so the JOIN-based session-summary
 /// query can reuse the precedence without re-querying the `project` table.
 fn derive_project_label(name: Option<String>, worktree: Option<String>) -> Option<String> {
-    if let Some(n) = name.as_ref().filter(|s| !s.is_empty()) {
-        return Some(n.clone());
+    if let Some(n) = name.filter(|s| !s.is_empty()) {
+        return Some(n);
     }
     let worktree = worktree?;
     if let Some(base) = Path::new(&worktree)
@@ -266,11 +270,19 @@ pub fn list_sessions_for_recent(db_path: &Path, limit: usize) -> Vec<OpencodeSes
     if limit == 0 {
         return Vec::new();
     }
-    let Ok(conn) = open_db(db_path) else {
-        return Vec::new();
+    let conn = match open_db(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            crate::ccs_debug!("opencode list_sessions_for_recent open_db({db_path:?}): {e}");
+            return Vec::new();
+        }
     };
-    let Ok(mut stmt) = conn.prepare(SQL_LIST_RECENT) else {
-        return Vec::new();
+    let mut stmt = match conn.prepare(SQL_LIST_RECENT) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::ccs_debug!("opencode list_sessions_for_recent prepare failed: {e}");
+            return Vec::new();
+        }
     };
     let limit_i64: i64 = limit.try_into().unwrap_or(i64::MAX);
     let rows = stmt.query_map([limit_i64], |row| {
@@ -294,10 +306,21 @@ pub fn list_sessions_for_recent(db_path: &Path, limit: usize) -> Vec<OpencodeSes
             session_file,
         })
     });
-    match rows {
-        Ok(iter) => iter.filter_map(Result::ok).collect(),
-        Err(_) => Vec::new(),
-    }
+    let iter = match rows {
+        Ok(iter) => iter,
+        Err(e) => {
+            crate::ccs_debug!("opencode list_sessions_for_recent query_map failed: {e}");
+            return Vec::new();
+        }
+    };
+    iter.filter_map(|r| match r {
+        Ok(row) => Some(row),
+        Err(e) => {
+            crate::ccs_debug!("opencode list_sessions_for_recent row dropped: {e}");
+            None
+        }
+    })
+    .collect()
 }
 
 const SQL_LIST_RECENT: &str = r#"
@@ -342,20 +365,37 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
          ORDER BY time_created ASC, id ASC",
     ) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            crate::ccs_debug!("opencode load_messages prepare(message) failed: {e}");
+            return Vec::new();
+        }
     };
 
-    let msg_rows: Vec<(String, String, i64, String)> = msg_stmt
-        .query_map([session_id], |row| {
+    let msg_rows: Vec<(String, String, i64, String)> = match msg_stmt.query_map(
+        [session_id],
+        |row| {
             Ok((
                 row.get::<_, String>("id")?,
                 row.get::<_, String>("session_id")?,
                 row.get::<_, i64>("time_created")?,
                 row.get::<_, String>("data")?,
             ))
-        })
-        .map(|iter| iter.filter_map(Result::ok).collect::<Vec<_>>())
-        .unwrap_or_default();
+        },
+    ) {
+        Ok(iter) => iter
+            .filter_map(|r| match r {
+                Ok(row) => Some(row),
+                Err(e) => {
+                    crate::ccs_debug!("opencode load_messages message row dropped: {e}");
+                    None
+                }
+            })
+            .collect(),
+        Err(e) => {
+            crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
+            return Vec::new();
+        }
+    };
 
     if msg_rows.is_empty() {
         return Vec::new();
@@ -370,17 +410,31 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
          ORDER BY message_id ASC, time_created ASC, id ASC",
     ) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            crate::ccs_debug!("opencode load_messages prepare(part) failed: {e}");
+            return Vec::new();
+        }
     };
-    let part_rows: Vec<(String, String)> = part_stmt
-        .query_map([session_id], |row| {
-            Ok((
-                row.get::<_, String>("message_id")?,
-                row.get::<_, String>("data")?,
-            ))
-        })
-        .map(|iter| iter.filter_map(Result::ok).collect::<Vec<_>>())
-        .unwrap_or_default();
+    let part_rows: Vec<(String, String)> = match part_stmt.query_map([session_id], |row| {
+        Ok((
+            row.get::<_, String>("message_id")?,
+            row.get::<_, String>("data")?,
+        ))
+    }) {
+        Ok(iter) => iter
+            .filter_map(|r| match r {
+                Ok(row) => Some(row),
+                Err(e) => {
+                    crate::ccs_debug!("opencode load_messages part row dropped: {e}");
+                    None
+                }
+            })
+            .collect(),
+        Err(e) => {
+            crate::ccs_debug!("opencode load_messages query_map(part) failed: {e}");
+            return Vec::new();
+        }
+    };
 
     let mut parts_by_msg: std::collections::HashMap<String, Vec<ContentBlock>> =
         std::collections::HashMap::new();
@@ -512,12 +566,15 @@ pub fn materialize_session(session: &OpencodeSession) -> Option<(String, Vec<Mat
 
 /// What kind of search the caller wants to run.
 ///
-/// Fixed-string queries use a SQL `LIKE` prefilter so SQLite can narrow the
-/// candidate set with its `data` index — orders of magnitude faster than a
-/// table scan. Regex queries can't be expressed as a single `LIKE`, so we
-/// fall back to a full part scan and let the Rust regex engine do the
-/// matching. SQLite has no portable regex operator across builds, and the
-/// bundled SQLite we link doesn't load the optional `regex` extension.
+/// Fixed-string queries use a SQL `LIKE` prefilter so SQLite can drop
+/// non-matching rows inside the engine before we ever JSON-parse them —
+/// meaningfully faster than streaming every row into Rust just to discard
+/// it. There is no index on `part.data` (and `LOWER(data) LIKE '%q%'`
+/// couldn't use one anyway); both modes are full table scans, Fixed just
+/// gets a cheaper per-row filter. Regex queries can't be expressed as a
+/// single `LIKE`, so we let the Rust regex engine do the matching: SQLite
+/// has no portable regex operator across builds, and the bundled SQLite
+/// we link doesn't load the optional `regex` extension.
 #[derive(Debug, Clone, Copy)]
 pub enum SearchMode<'a> {
     /// Case-insensitive substring match.
