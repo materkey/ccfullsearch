@@ -29,6 +29,7 @@ Publish a new version of ccfullsearch (`ccs`). Handles version bump, changelog, 
 - Generate changelog entry from commits since last tag: `git log --oneline <latest-tag>...HEAD`
 - Group by type: New Features, Fixed, Changed
 - **Keep entries terse and user-facing.** One sentence per bullet describing observable behavior. No implementation details (struct names, internal modules, cache strategies, sentinel values, type signatures) — those belong in the commit body, not the changelog. If a commit body lists 5 follow-up fixes that harden one feature, the changelog gets one bullet for the feature itself.
+- **Credit external contributors inline.** For any commit whose author isn't the repo owner (check `git log --format='%h %an %s' <latest-tag>..HEAD`), append `(#PR) Thanks @handle.` to the bullet — same style as the Nextcloud/OpenWebUI release notes (e.g. `... and Android offline voice/gateway recovery. (#86798, #86355) Thanks @ngutman.`). Resolve the handle via `gh pr view <N> --json author --jq .author.login`. Do NOT use a separate `## New Contributors` block — keep the credit next to the feature it shipped. Follow-up commits the maintainer made on top of the contributor's PR don't get a separate bullet; they're folded into the same feature line.
 - Insert new section after `# Changelog` header with format:
   ```
   ## vX.Y.Z - YYYY-MM-DD
