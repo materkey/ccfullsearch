@@ -19,6 +19,21 @@ static DESKTOP_TITLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<Str
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static CODEX_PROJECT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+// Render calls `extract_project_from_path` per visible group every frame;
+// each Opencode resolution opens the SQLite DB twice without this cache.
+// We only cache successful resolutions — a `None` from a transient failure
+// (DB momentarily locked during startup, in-flight schema commit) would
+// otherwise pin the "Opencode" fallback label for the rest of the process
+// lifetime. Unresolvable sessions pay a re-resolution cost per frame, which
+// is the right trade-off here.
+static OPENCODE_PROJECT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// Shared sentinel for cooperative cancellation across the ripgrep and
+// Opencode search paths. Comparing on this constant avoids a silent
+// failure mode where renaming the literal on one side turns cancellation
+// into a "successful empty result" on the other.
+pub(crate) const CANCELLED_ERR: &str = "cancelled";
 
 /// A match from ripgrep search
 #[derive(Debug, Clone)]
@@ -189,7 +204,7 @@ fn search_multiple_paths_inner(
     extra_args: &[String],
 ) -> Result<SearchResult, String> {
     if cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
+        return Err(CANCELLED_ERR.into());
     }
 
     // Build the regex matcher once and reuse it across every path. Returns
@@ -202,7 +217,7 @@ fn search_multiple_paths_inner(
 
     for search_path in search_paths {
         if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".into());
+            return Err(CANCELLED_ERR.into());
         }
 
         if search_path.is_empty() {
@@ -243,6 +258,10 @@ fn search_multiple_paths_inner(
 }
 
 const MAX_COUNT_PER_FILE: usize = 1000;
+
+/// Per-session cap inside an Opencode DB so one chatty session can't fill
+/// the entire `MAX_COUNT_PER_FILE` budget and hide every other session.
+const OPENCODE_PER_SESSION_CAP: usize = 100;
 
 /// Maximum bytes of `rg` stderr we keep in memory for the failure-message
 /// diagnostic. Beyond this we keep draining the pipe (so the child does not
@@ -407,7 +426,7 @@ fn search_single_path(
             // Reap helper threads so we do not leak them or their pipes.
             let _ = watchdog_handle.join();
             let _ = stderr_handle.join();
-            return Err("cancelled".into());
+            return Err(CANCELLED_ERR.into());
         }
 
         if let Some(mut m) = parse_ripgrep_json(&line) {
@@ -478,7 +497,7 @@ fn search_single_path(
             let _ = c.wait();
         }
         let _ = stderr_handle.join();
-        return Err("cancelled".into());
+        return Err(CANCELLED_ERR.into());
     }
 
     let mut child = take_child(&child).ok_or_else(|| "ripgrep child was lost".to_string())?;
@@ -515,16 +534,16 @@ fn search_single_path(
     Ok((results, truncated))
 }
 
-/// Recognize an Opencode storage root for dispatch in
-/// `search_multiple_paths_inner` dispatches search paths ending in
-/// `opencode.db` to the SQLite-backed Opencode search instead of ripgrep.
 fn is_opencode_storage_path(path: &str) -> bool {
     let normalized = if path.contains('\\') {
         path.replace('\\', "/")
     } else {
         path.to_string()
     };
-    normalized.contains("/opencode.db")
+    Path::new(normalized.as_str())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(opencode::is_opencode_db_filename)
 }
 
 /// Search the Opencode SQLite database for the given query.
@@ -534,12 +553,13 @@ fn is_opencode_storage_path(path: &str) -> bool {
 /// `(session_id, message_id)` pair. We cap at `MAX_COUNT_PER_FILE` matches
 /// **across the whole database** (the DB is treated as a single "file" for
 /// dispatch purposes), unlike the ripgrep path which applies the cap per
-/// JSONL file. Rows are streamed in `p.time_created DESC` order, so when
-/// the cap fires the newest matches are kept and older sessions may be
-/// silently dropped — truncation is surfaced via the returned flag so the
-/// caller can warn the user. The cancel token is honoured both by the
-/// streaming layer (polled every ~64 rows) and by the early-exit check
-/// below.
+/// JSONL file. Rows are streamed in `p.time_created DESC` order. To prevent
+/// a single chatty session from starving every other session out of the
+/// budget, a per-session sub-cap (`OPENCODE_PER_SESSION_CAP`) limits how
+/// many rows any one session can claim — rows beyond that count are
+/// dropped silently and the global truncation flag is set so the caller
+/// can warn the user. The cancel token is honoured both by the streaming
+/// layer (polled every ~64 rows) and by the early-exit check below.
 ///
 /// Returns `(matches, truncated)`. `truncated` is `true` when the
 /// `MAX_COUNT_PER_FILE` cap was hit and additional matches were left
@@ -558,7 +578,7 @@ fn search_opencode_storage(
     }
 
     if cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
+        return Err(CANCELLED_ERR.into());
     }
 
     // Regex queries skip the SQL LIKE prefilter (a regex can't be expressed
@@ -571,6 +591,7 @@ fn search_opencode_storage(
     };
 
     let mut results: Vec<RipgrepMatch> = Vec::new();
+    let mut per_session: HashMap<String, usize> = HashMap::new();
     let mut truncated = false;
 
     // Isolate Opencode DB failures so a corrupt, locked, or
@@ -580,6 +601,13 @@ fn search_opencode_storage(
     // `cli::collect_opencode_list_entries`. Cancellation is the one error we
     // must keep propagating so the search machinery can short-circuit.
     let outcome = opencode::search_parts_streaming(&db, query, mode, cancel, |row| {
+        let count = per_session.entry(row.session_id.clone()).or_insert(0);
+        if *count >= OPENCODE_PER_SESSION_CAP {
+            truncated = true;
+            return ControlFlow::Continue(());
+        }
+        *count += 1;
+
         let role_str = match row.role {
             crate::session::record::MessageRole::User => "user".to_string(),
             crate::session::record::MessageRole::Assistant => "assistant".to_string(),
@@ -611,11 +639,16 @@ fn search_opencode_storage(
 
     match outcome {
         Ok(()) => Ok((results, truncated)),
-        Err(e) if e == "cancelled" => Err(e),
+        Err(e) if e == CANCELLED_ERR => Err(e),
         // Preserve whatever rows were collected before the error rather than
         // discarding them: a mid-stream SQL failure (locked DB, decode error)
         // can fire after hundreds of valid matches have already been pushed.
-        Err(_) => Ok((results, truncated)),
+        Err(e) => {
+            crate::ccs_debug!(
+                "opencode search dropped after partial results ({storage_path}): {e}"
+            );
+            Ok((results, truncated))
+        }
     }
 }
 
@@ -700,19 +733,16 @@ pub fn extract_project_from_path(path: &str) -> String {
     // Opencode synthetic path: `<db>#<session_id>`. Resolve through the DB
     // so the project label matches what `list_sessions_for_recent` / recent uses.
     if SessionProvider::from_path(path) == SessionProvider::Opencode {
-        if let Some((db, sid)) = opencode::parse_session_path(path) {
-            if let Some(session) = OpencodeSession::from_db(&db, &sid) {
-                if let Some(label) = opencode::read_project_label(&db, &session.project_id) {
-                    return label;
-                }
-                if let Some(dir) = session
-                    .directory
-                    .as_deref()
-                    .and_then(|d| Path::new(d).file_name().and_then(|n| n.to_str()))
-                {
-                    return dir.to_string();
-                }
+        if let Ok(cache) = OPENCODE_PROJECT_CACHE.lock() {
+            if let Some(hit) = cache.get(path) {
+                return hit.clone();
             }
+        }
+        if let Some(resolved) = resolve_opencode_project_label(path) {
+            if let Ok(mut cache) = OPENCODE_PROJECT_CACHE.lock() {
+                cache.insert(path.to_string(), resolved.clone());
+            }
+            return resolved;
         }
         return "Opencode".to_string();
     }
@@ -774,6 +804,19 @@ pub fn extract_project_from_path(path: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(".jsonl")
         .to_string()
+}
+
+fn resolve_opencode_project_label(path: &str) -> Option<String> {
+    let (db, sid) = opencode::parse_session_path(path)?;
+    let session = OpencodeSession::from_db(&db, &sid)?;
+    if let Some(label) = opencode::read_project_label(&db, &session.project_id) {
+        return Some(label);
+    }
+    session
+        .directory
+        .as_deref()
+        .and_then(|d| Path::new(d).file_name().and_then(|n| n.to_str()))
+        .map(str::to_string)
 }
 
 fn read_codex_session_project(path: &str) -> Option<String> {
@@ -1186,6 +1229,51 @@ mod tests {
         let project = extract_project_from_path(path);
 
         assert_eq!(project, "myapp");
+    }
+
+    #[test]
+    fn test_is_opencode_storage_path_basename_only() {
+        assert!(is_opencode_storage_path("/home/u/opencode.db"));
+        assert!(is_opencode_storage_path(
+            "/home/u/.local/share/opencode/opencode.db"
+        ));
+        assert!(is_opencode_storage_path("/home/u/opencode-dev.db"));
+        assert!(is_opencode_storage_path("/home/u/opencode-canary.db"));
+        assert!(!is_opencode_storage_path("/home/u/opencode.db.backup"));
+        assert!(!is_opencode_storage_path("/home/u/opencode.dbtest"));
+        assert!(!is_opencode_storage_path("/home/u/my-opencode.db-archive"));
+        assert!(!is_opencode_storage_path("/home/u/.claude/projects/foo"));
+    }
+
+    #[test]
+    fn test_extract_project_from_path_caches_opencode_label() {
+        use rusqlite::Connection;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT,
+                name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '', directory TEXT, title TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            INSERT INTO project VALUES ('p1', '/tmp/cache-proj', 'git', 'cache-proj', 1, 1);
+            INSERT INTO session VALUES ('ses_cache_label', 'p1', 's', '/tmp/cache-proj', 't', 1, 1);
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let path = opencode::synthetic_session_path(&db, "ses_cache_label");
+        let first = extract_project_from_path(&path);
+        assert_eq!(first, "cache-proj");
+
+        std::fs::remove_file(&db).unwrap();
+        let second = extract_project_from_path(&path);
+        assert_eq!(second, "cache-proj", "cache should serve repeated calls");
     }
 
     #[test]
@@ -1612,12 +1700,111 @@ mod tests {
 
         assert_eq!(
             results.len(),
-            MAX_COUNT_PER_FILE,
-            "results must be capped at MAX_COUNT_PER_FILE"
+            OPENCODE_PER_SESSION_CAP,
+            "single-session results must be capped at OPENCODE_PER_SESSION_CAP \
+             so a chatty session can't starve other sessions"
         );
         assert!(
             truncated,
             "truncated flag must be set when the cap is hit with more matches available"
+        );
+    }
+
+    #[test]
+    fn test_search_opencode_chatty_session_does_not_starve_others() {
+        use rusqlite::Connection;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT,
+                name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '', directory TEXT, title TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+            INSERT INTO project VALUES ('p', '/tmp/p', 'git', 'p', 1, 9);
+            INSERT INTO session VALUES ('ses_CHATTY', 'p', '', '/tmp/p', 't', 1, 9);
+            INSERT INTO session VALUES ('ses_QUIET',  'p', '', '/tmp/p', 't', 1, 8);
+            "#,
+        )
+        .unwrap();
+
+        // Chatty session gets the freshest timestamps and far more than the
+        // per-session cap; quiet session gets older but real matches. Under
+        // the old global-only cap the quiet session would be invisible.
+        let chatty_rows = OPENCODE_PER_SESSION_CAP * 4;
+        for i in 0..chatty_rows {
+            let mid = format!("mC{:05}", i);
+            conn.execute(
+                "INSERT INTO message VALUES (?1, 'ses_CHATTY', ?2, ?2, ?3)",
+                rusqlite::params![
+                    mid,
+                    2_000_000_000_i64 + i as i64,
+                    r#"{"role":"user","time":{"created":2000000000}}"#
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO part VALUES (?1, ?2, 'ses_CHATTY', ?3, ?3, ?4)",
+                rusqlite::params![
+                    format!("pC{:05}", i),
+                    mid,
+                    2_000_000_000_i64 + i as i64,
+                    r#"{"type":"text","text":"findme opencode"}"#
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO message VALUES ('mQ', 'ses_QUIET', 1, 1, ?1)",
+            rusqlite::params![r#"{"role":"user","time":{"created":1}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('pQ', 'mQ', 'ses_QUIET', 1, 1, ?1)",
+            rusqlite::params![r#"{"type":"text","text":"findme opencode"}"#],
+        )
+        .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (results, truncated) =
+            search_opencode_storage("findme", db_path.to_str().unwrap(), None, &cancel)
+                .expect("opencode search should succeed");
+
+        let quiet_hits = results
+            .iter()
+            .filter(|m| {
+                m.message
+                    .as_ref()
+                    .is_some_and(|msg| msg.session_id == "ses_QUIET")
+            })
+            .count();
+        let chatty_hits = results
+            .iter()
+            .filter(|m| {
+                m.message
+                    .as_ref()
+                    .is_some_and(|msg| msg.session_id == "ses_CHATTY")
+            })
+            .count();
+        assert_eq!(
+            quiet_hits, 1,
+            "quiet session must surface despite chatty neighbour"
+        );
+        assert_eq!(
+            chatty_hits, OPENCODE_PER_SESSION_CAP,
+            "chatty session must be capped at per-session limit"
+        );
+        assert!(
+            truncated,
+            "truncation flag must surface the per-session drop"
         );
     }
 

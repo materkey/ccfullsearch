@@ -316,7 +316,7 @@ fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
 /// Opencode DB paths always carry per-session `directory` metadata, so they
 /// support project filtering by cwd the same way Codex roots do.
 fn search_path_supports_opencode_cwd_scope(search_path: &str) -> bool {
-    search_path.contains("/opencode.db")
+    crate::session::opencode::is_opencode_session_path(search_path)
 }
 
 /// Either provider's cwd scope support — for places that allow project

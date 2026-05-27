@@ -94,7 +94,10 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
     // Opencode database is reachable via the caller's search paths, matching
     // `collect_recent_sessions` so tests with synthetic temp roots don't
     // pick up the user's real DB.
-    if search_paths.iter().any(|p| p.contains("/opencode.db")) {
+    if search_paths
+        .iter()
+        .any(|p| crate::session::opencode::is_opencode_session_path(p))
+    {
         sessions.extend(collect_opencode_list_entries(search_paths, limit));
     }
 

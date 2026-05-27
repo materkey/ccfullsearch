@@ -40,6 +40,13 @@ use std::sync::Arc;
 use crate::session::record::{ContentBlock, MessageRole, SessionRecord};
 
 const DB_FILENAME: &str = "opencode.db";
+
+// Mirrors opencode's getChannelPath: `opencode.db` or `opencode-<channel>.db`.
+pub(crate) fn is_opencode_db_filename(name: &str) -> bool {
+    name.strip_suffix(".db")
+        .map(|stem| stem == "opencode" || stem.starts_with("opencode-"))
+        .unwrap_or(false)
+}
 const PATH_FRAGMENT_SEP: &str = "#";
 
 /// Resolve the Opencode "home" directory (the parent of `opencode.db`).
@@ -87,7 +94,14 @@ pub fn is_opencode_session_path(path: &str) -> bool {
     } else {
         path.to_string()
     };
-    normalized.contains("/opencode.db")
+    let db_part = normalized
+        .rsplit_once(PATH_FRAGMENT_SEP)
+        .map(|(db, _)| db)
+        .unwrap_or(normalized.as_str());
+    Path::new(db_part)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(is_opencode_db_filename)
 }
 
 /// Build the synthetic ccs path used to identify an Opencode session.
@@ -104,7 +118,8 @@ pub fn synthetic_session_path(db_path: &Path, session_id: &str) -> String {
 /// `synthetic_session_path`. Returns `None` if the path is not Opencode-shaped.
 pub fn parse_session_path(path: &str) -> Option<(PathBuf, String)> {
     let (db, sid) = path.rsplit_once(PATH_FRAGMENT_SEP)?;
-    if !db.ends_with(DB_FILENAME) {
+    let basename = Path::new(db).file_name().and_then(|n| n.to_str())?;
+    if !is_opencode_db_filename(basename) {
         return None;
     }
     Some((PathBuf::from(db), sid.to_string()))
@@ -557,7 +572,7 @@ where
     F: FnMut(OpencodeMatchRow) -> ControlFlow<()>,
 {
     if cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
+        return Err(crate::search::CANCELLED_ERR.into());
     }
 
     let conn =
@@ -599,7 +614,7 @@ where
 
         row_count += 1;
         if row_count.is_multiple_of(CANCEL_POLL_INTERVAL) && cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".into());
+            return Err(crate::search::CANCELLED_ERR.into());
         }
 
         let session_id: String = row.get(0).map_err(|e| format!("row get session_id: {e}"))?;
@@ -876,6 +891,51 @@ mod tests {
         assert!(!is_opencode_session_path(
             "/home/u/.claude/projects/foo/abc.jsonl"
         ));
+    }
+
+    #[test]
+    fn test_is_opencode_db_filename_accepts_channel_suffixed_names() {
+        assert!(is_opencode_db_filename("opencode.db"));
+        assert!(is_opencode_db_filename("opencode-dev.db"));
+        assert!(is_opencode_db_filename("opencode-canary.db"));
+        assert!(is_opencode_db_filename("opencode-feature.branch.db"));
+        assert!(!is_opencode_db_filename("opencode.db.backup"));
+        assert!(!is_opencode_db_filename("opencode.dbtest"));
+        assert!(!is_opencode_db_filename("my-opencode.db"));
+        assert!(!is_opencode_db_filename("opencode2.db"));
+        assert!(!is_opencode_db_filename(".db"));
+    }
+
+    #[test]
+    fn test_is_opencode_session_path_accepts_channel_suffixed_db() {
+        assert!(is_opencode_session_path(
+            "/home/u/.local/share/opencode/opencode-dev.db#ses_x"
+        ));
+        assert!(is_opencode_session_path(
+            "/home/u/.local/share/opencode/opencode-beta.db"
+        ));
+    }
+
+    #[test]
+    fn test_is_opencode_session_path_rejects_substring_lookalikes() {
+        assert!(!is_opencode_session_path(
+            "/home/u/.local/share/opencode/opencode.db.backup"
+        ));
+        assert!(!is_opencode_session_path(
+            "/home/u/.local/share/opencode/opencode.dbtest"
+        ));
+        assert!(!is_opencode_session_path(
+            "/home/u/.local/share/opencode/opencode.db.backup#ses_x"
+        ));
+        assert!(!is_opencode_session_path(
+            "/home/u/my-opencode.db-archive/notes.txt"
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_path_rejects_substring_lookalikes() {
+        assert!(parse_session_path("/x/prefix-opencode.db#ses_x").is_none());
+        assert!(parse_session_path("/x/opencode.db.backup#ses_x").is_none());
     }
 
     #[test]

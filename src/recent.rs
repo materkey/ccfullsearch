@@ -638,12 +638,13 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             Some(dag.chain_from(tip))
         });
 
-    let mtime = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
     let mtime_timestamp: DateTime<Utc> = mtime.into();
 
     let head = scan_head(path, HEAD_SCAN_LINES, latest_chain.as_ref())?;
 
-    let file_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let file_len = meta.len();
     let tail_start = file_len.saturating_sub(TAIL_BYTES);
     let tail = scan_tail(path, TAIL_BYTES, latest_chain.as_ref()).unwrap_or_default();
 
@@ -923,7 +924,9 @@ pub fn opencode_summary_to_recent(
 /// developer's real DB. Otherwise fall back to the default lookup
 /// (`$OPENCODE_DATA`, then platform default).
 pub fn opencode_databases_for_search_paths(search_paths: &[String]) -> Vec<PathBuf> {
-    let any_explicit = search_paths.iter().any(|p| p.contains("/opencode.db"));
+    let any_explicit = search_paths
+        .iter()
+        .any(|p| opencode::is_opencode_session_path(p));
 
     if any_explicit {
         // The caller has opinions — honour them strictly. If their explicit
@@ -931,7 +934,7 @@ pub fn opencode_databases_for_search_paths(search_paths: &[String]) -> Vec<PathB
         // silently leaking to the developer's real database.
         return search_paths
             .iter()
-            .filter(|p| p.contains("/opencode.db"))
+            .filter(|p| opencode::is_opencode_session_path(p))
             .filter_map(|p| {
                 // A search path of `<db>#<sid>` (synthetic session path)
                 // should still resolve to `<db>` so the loader hits the
@@ -1006,7 +1009,10 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
     // storage when the caller explicitly included an Opencode root in
     // `search_paths` — otherwise tests with synthetic temp roots would
     // pick up the user's real Opencode sessions.
-    if search_paths.iter().any(|p| p.contains("/opencode.db")) {
+    if search_paths
+        .iter()
+        .any(|p| opencode::is_opencode_session_path(p))
+    {
         sessions.extend(collect_opencode_recent_sessions(search_paths, limit));
     }
 
