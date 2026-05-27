@@ -1,5 +1,6 @@
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
-use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
+use crate::session::opencode::{self, OpencodeSession};
+use crate::session::record::{parse_content_blocks, ContentBlock, ContentMode, SessionRecord};
 use crate::session::{self, SessionSource};
 use chrono::{DateTime, Utc};
 use std::cell::RefCell;
@@ -55,8 +56,17 @@ pub struct SessionTree {
 }
 
 impl SessionTree {
-    /// Parse a JSONL session file into a tree structure.
+    /// Parse a session file into a tree structure.
+    ///
+    /// Detects Opencode session metadata files (path under
+    /// `<opencode>/storage/session/...`) and dispatches to the Opencode loader,
+    /// which materializes the multi-file storage layout into a synthetic
+    /// linear chain. Everything else is parsed as JSONL.
     pub fn from_file(file_path: &str) -> Result<Self, String> {
+        if opencode::is_opencode_session_path(file_path) {
+            return Self::from_opencode_file(file_path);
+        }
+
         let file = fs::File::open(file_path)
             .map_err(|e| format!("Failed to open {}: {}", file_path, e))?;
         let reader = BufReader::new(file);
@@ -181,6 +191,82 @@ impl SessionTree {
             file_path: file_path.to_string(),
             source,
             content_cache: RefCell::new(HashMap::new()),
+        };
+
+        tree.flatten_to_rows();
+        Ok(tree)
+    }
+
+    /// Load an Opencode session into a SessionTree.
+    ///
+    /// Opencode 1.x stores everything in `<storage>/opencode.db`. The session
+    /// is identified by the synthetic path `<db>#<session_id>`. We materialize
+    /// the session into a linear chain (Opencode doesn't branch the way
+    /// Claude does) and pre-cache the full content per message so
+    /// `get_full_content` doesn't need to re-query SQLite.
+    fn from_opencode_file(file_path: &str) -> Result<Self, String> {
+        let path = std::path::Path::new(file_path);
+        let session = OpencodeSession::from_file(path)
+            .ok_or_else(|| format!("Failed to load Opencode session at {}", file_path))?;
+        let (db_path, _) = opencode::parse_session_path(file_path)
+            .ok_or_else(|| format!("Not an Opencode session path: {}", file_path))?;
+
+        let messages = opencode::load_messages(&db_path, &session.id);
+
+        let mut nodes: HashMap<String, DagNode> = HashMap::new();
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        let mut prev_uuid: Option<String> = None;
+        let mut full_content_cache: HashMap<String, String> = HashMap::new();
+
+        for (line_idx, msg) in messages.iter().enumerate() {
+            let preview = SessionRecord::render_content(
+                &msg.content_blocks,
+                &ContentMode::Preview { max_chars: 120 },
+            );
+            let full = render_full_text(&msg.content_blocks);
+            full_content_cache.insert(msg.id.clone(), full);
+
+            let role_str = match msg.role {
+                crate::session::record::MessageRole::User => "user",
+                crate::session::record::MessageRole::Assistant => "assistant",
+            };
+
+            if let Some(parent) = prev_uuid.as_ref() {
+                children
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(msg.id.clone());
+            }
+
+            nodes.insert(
+                msg.id.clone(),
+                DagNode {
+                    uuid: msg.id.clone(),
+                    parent_uuid: prev_uuid.clone(),
+                    timestamp: Some(msg.created_at),
+                    line_index: line_idx,
+                    role: Some(role_str.to_string()),
+                    content_preview: Some(preview),
+                    is_sidechain: false,
+                },
+            );
+
+            prev_uuid = Some(msg.id.clone());
+        }
+
+        // Opencode's chain is linear by construction, so the "latest chain" is
+        // every node in the tree.
+        let latest_chain: HashSet<String> = nodes.keys().cloned().collect();
+
+        let mut tree = SessionTree {
+            nodes,
+            children,
+            latest_chain,
+            rows: Vec::new(),
+            session_id: session.id,
+            file_path: file_path.to_string(),
+            source: SessionSource::CLI,
+            content_cache: RefCell::new(full_content_cache),
         };
 
         tree.flatten_to_rows();
@@ -428,6 +514,13 @@ impl SessionTree {
         }
         false
     }
+}
+
+/// Render `ContentBlock`s as the full preview body shown in the tree's right
+/// pane. Mirrors `ContentMode::Full` so Opencode messages look the same as
+/// Claude/Codex messages when expanded.
+fn render_full_text(blocks: &[ContentBlock]) -> String {
+    SessionRecord::render_content(blocks, &ContentMode::Full)
 }
 
 /// Build the graph gutter string for a row.

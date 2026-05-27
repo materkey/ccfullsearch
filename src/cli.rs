@@ -89,6 +89,15 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
         .filter_map(|path| extract_session_metadata(&path))
         .collect();
 
+    // Opencode storage isn't JSONL-shaped — pull those sessions from their
+    // own layout so `ccs list` is provider-complete. Only walk when an
+    // Opencode database is reachable via the caller's search paths, matching
+    // `collect_recent_sessions` so tests with synthetic temp roots don't
+    // pick up the user's real DB.
+    if search_paths.iter().any(|p| p.contains("/opencode.db")) {
+        sessions.extend(collect_opencode_list_entries(search_paths, limit));
+    }
+
     // Sort by last_active descending
     sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
@@ -101,6 +110,34 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
             println!("{}", json);
         }
     }
+}
+
+fn collect_opencode_list_entries(search_paths: &[String], limit: usize) -> Vec<ListResult> {
+    use crate::recent::opencode_databases_for_search_paths;
+    use crate::session::opencode::list_sessions_for_recent;
+    let dbs = opencode_databases_for_search_paths(search_paths);
+    if dbs.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for db in &dbs {
+        for summary in list_sessions_for_recent(db, limit) {
+            let project = summary
+                .project_label
+                .clone()
+                .unwrap_or_else(|| summary.project_id.clone());
+            out.push(ListResult {
+                session_id: summary.id,
+                project,
+                provider: "Opencode".to_string(),
+                source: SessionSource::CLI.display_name().to_string(),
+                file_path: summary.session_file.to_string_lossy().to_string(),
+                last_active: summary.updated_at.to_rfc3339(),
+                message_count: summary.message_count,
+            });
+        }
+    }
+    out
 }
 
 /// Extract metadata from a single .jsonl file by reading first and last messages

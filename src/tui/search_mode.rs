@@ -300,7 +300,7 @@ mod tests {
             session_id: id.to_string(),
             file_path: format!("/tmp/{}.jsonl", id),
             project: project.to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: summary.to_string(),
             automation: None,
@@ -559,7 +559,7 @@ mod tests {
                 matches: vec![RipgrepMatch {
                     file_path: "/all/session.jsonl".to_string(),
                     message: None,
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 }],
                 truncated: false,
             }),
@@ -687,7 +687,7 @@ mod tests {
         };
         assert_eq!(target.session_id, "s2");
         assert_eq!(target.file_path, "/tmp/s2.jsonl");
-        assert_eq!(target.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(target.source, SessionSource::CLI);
         assert!(target.uuid.is_none());
     }
 
@@ -766,7 +766,7 @@ mod tests {
                     uuid: Some("uuid-1".to_string()),
                     ..Default::default()
                 }),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             }],
             automation: None,
             message_count: None,
@@ -782,7 +782,7 @@ mod tests {
             other => panic!("Expected Pick, got {:?}", other),
         };
         assert_eq!(picked.session_id, "sess-123");
-        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(picked.source, SessionSource::CLI);
         assert_eq!(picked.project, "myapp");
     }
 
@@ -807,7 +807,7 @@ mod tests {
         assert_eq!(picked.session_id, "s2");
         assert_eq!(picked.project, "proj-b");
         assert_eq!(picked.file_path, "/tmp/s2.jsonl");
-        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(picked.source, SessionSource::CLI);
     }
 
     #[test]

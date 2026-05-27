@@ -91,6 +91,13 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
 pub fn count_session_messages(file_path: &str) -> (usize, bool) {
     use std::io::{BufRead, BufReader};
 
+    // Opencode session paths are synthetic (`<db>#<session_id>`) — there's
+    // no JSONL file to open. Count via SQLite instead so search headers
+    // don't show "N/0 matches" for Opencode sessions.
+    if let Some(count) = count_opencode_session_messages(file_path) {
+        return (count, false);
+    }
+
     let file = match std::fs::File::open(file_path) {
         Ok(f) => f,
         Err(_) => return (0, false),
@@ -123,6 +130,20 @@ pub fn count_session_messages(file_path: &str) -> (usize, bool) {
     (count, compacted)
 }
 
+/// Count messages on an Opencode session by querying the `message` table.
+/// Returns `None` when `file_path` isn't an Opencode synthetic path so the
+/// caller can fall through to the JSONL counter.
+fn count_opencode_session_messages(file_path: &str) -> Option<usize> {
+    use crate::session::opencode::{open_db, parse_session_path};
+    let (db_path, session_id) = parse_session_path(file_path)?;
+    let conn = open_db(&db_path).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM message WHERE session_id = ?1")
+        .ok()?;
+    let count: i64 = stmt.query_row([session_id], |row| row.get(0)).ok()?;
+    Some(count.max(0) as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,7 +167,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         }
     }
 
@@ -319,7 +340,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         }
     }
 
@@ -396,7 +417,7 @@ mod tests {
                 line_number: 2,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         }];
 
         let groups = group_by_session(results);
@@ -439,7 +460,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         }];
 
         let groups = group_by_session(results);
@@ -453,7 +474,7 @@ mod tests {
             RipgrepMatch {
                 file_path: "/path/to/session.jsonl".to_string(),
                 message: None, // Should be skipped
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             },
             make_match("session-1", 0),
         ];
@@ -516,5 +537,39 @@ mod tests {
         let (count, compacted) = count_session_messages("/nonexistent/file.jsonl");
         assert_eq!(count, 0);
         assert!(!compacted);
+    }
+
+    #[test]
+    fn test_count_session_messages_opencode_synthetic_path() {
+        // Set up a tiny Opencode-shaped SQLite database with two messages on
+        // one session. The count helper should follow the synthetic path
+        // back to SQLite instead of trying to File::open it (which returned
+        // (0, false) before this branch existed and produced bogus "1/0
+        // matches" labels in the TUI).
+        use rusqlite::Connection;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+            INSERT INTO message VALUES ('m1', 'ses_OC1', 1, 1, '{}');
+            INSERT INTO message VALUES ('m2', 'ses_OC1', 2, 2, '{}');
+            INSERT INTO message VALUES ('m3', 'ses_OTHER', 3, 3, '{}');
+            "#,
+        )
+        .unwrap();
+
+        let synthetic = format!("{}#ses_OC1", db_path.to_string_lossy());
+        let (count, compacted) = count_session_messages(&synthetic);
+        assert_eq!(count, 2, "should count only messages for ses_OC1");
+        assert!(!compacted);
+
+        // Unknown session id under the same DB should return 0 (not a fall-
+        // through to the JSONL File::open path).
+        let synthetic_missing = format!("{}#ses_DOES_NOT_EXIST", db_path.to_string_lossy());
+        let (count, _) = count_session_messages(&synthetic_missing);
+        assert_eq!(count, 0);
     }
 }

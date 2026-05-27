@@ -14,6 +14,7 @@ use ratatui::{
     Frame,
 };
 use regex::RegexBuilder;
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// RGB(75,0,130) — the selected-row background used across every list
@@ -46,14 +47,34 @@ const SELECTED_PROJECT_BG: Color = Color::Rgb(94, 36, 130);
 const BRANCH_FG: Color = Color::Rgb(86, 194, 255);
 const CLAUDE_AGENT_FG: Color = Color::Rgb(255, 140, 90);
 const CODEX_AGENT_FG: Color = Color::Rgb(122, 167, 255);
+const OPENCODE_AGENT_FG: Color = Color::Rgb(170, 130, 255);
 
 /// Pre-built preview prefixes shared by `render_groups` (collapsed groups)
 /// and `render_recent_sessions`. Hoisted so the render hot path does not
 /// `format!`/walk them every frame.
 const PREVIEW_PREFIX_USER: &str = "     User: ";
 const PREVIEW_PREFIX_CLAUDE: &str = "     Claude: ";
-/// Both PREVIEW_PREFIX_* literals are 11 ASCII bytes — no chars() walk needed.
+/// Used for Opencode assistant lines. The literal length differs from the
+/// User/Claude variants (the content column shifts right by a couple chars
+/// — same minor misalignment that already exists between User and Claude).
+const PREVIEW_PREFIX_OPENCODE: &str = "     Opencode: ";
+/// `PREVIEW_PREFIX_USER` length in bytes — used as the conservative content
+/// width budget. Longer prefixes spill a few chars, matching the pre-existing
+/// behaviour for Claude rows.
 const PREVIEW_PREFIX_LEN: usize = 11;
+
+/// Pick the assistant preview prefix for a session. Opencode gets its own
+/// label so the recent list reads `Opencode:` instead of borrowing Claude's
+/// identity. Dispatched on `SessionProvider` (derived from the file path)
+/// rather than `SessionSource`, because Opencode reports
+/// `SessionSource::CLI` — the source/CLI axis doesn't tell us
+/// which CLI we're talking to.
+fn assistant_prefix_for(file_path: &str) -> &'static str {
+    match SessionProvider::from_path(file_path) {
+        SessionProvider::Opencode => PREVIEW_PREFIX_OPENCODE,
+        _ => PREVIEW_PREFIX_CLAUDE,
+    }
+}
 const AI_UNRANKED_SEPARATOR_LABEL: &str = "── Unranked below ──";
 
 #[derive(Clone)]
@@ -696,7 +717,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 let preview_prefix = if msg.role == "user" {
                     PREVIEW_PREFIX_USER
                 } else {
-                    PREVIEW_PREFIX_CLAUDE
+                    assistant_prefix_for(&group.file_path)
                 };
                 // Centre the preview on the first query occurrence so the
                 // match stays visible even when it sits past column 120 in a
@@ -775,6 +796,7 @@ fn provider_badge_label(provider: SessionProvider) -> &'static str {
     match provider {
         SessionProvider::Claude => "CC",
         SessionProvider::Codex => "CX",
+        SessionProvider::Opencode => "OC",
     }
 }
 
@@ -782,6 +804,7 @@ fn provider_badge_style(provider: SessionProvider, _selected: bool, _base: Style
     let fg = match provider {
         SessionProvider::Claude => CLAUDE_AGENT_FG,
         SessionProvider::Codex => CODEX_AGENT_FG,
+        SessionProvider::Opencode => OPENCODE_AGENT_FG,
     };
     Style::default().fg(fg).add_modifier(Modifier::BOLD)
 }
@@ -811,19 +834,32 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     )
 }
 
-fn display_session_id(session_id: &str, provider: SessionProvider) -> &str {
-    let max_len = match provider {
+fn display_session_id<'a>(session_id: &'a str, provider: SessionProvider) -> Cow<'a, str> {
+    match provider {
         // Codex uses UUIDv7 rollout IDs, where the first 8 chars are mostly a
         // timestamp prefix. Include the next UUID segment to distinguish
         // sessions created in the same second.
-        SessionProvider::Codex if session_id.as_bytes().get(8) == Some(&b'-') => 13,
-        _ => 8,
-    };
+        SessionProvider::Codex if session_id.as_bytes().get(8) == Some(&b'-') => {
+            truncate_prefix(session_id, 13)
+        }
+        // Opencode IDs are `ses_<ULID-ish>`. The ULID encodes a time/counter
+        // in its leading bytes, so sessions created in the same hour share
+        // their first ~12 chars and collide visibly when truncated from the
+        // start. Keep the `ses_` sigil and suffix-truncate so distinct
+        // sessions render distinct short labels.
+        SessionProvider::Opencode if session_id.starts_with("ses_") && session_id.len() > 12 => {
+            let suffix = &session_id[session_id.len() - 8..];
+            Cow::Owned(format!("ses_…{suffix}"))
+        }
+        _ => truncate_prefix(session_id, 8),
+    }
+}
 
+fn truncate_prefix(session_id: &str, max_len: usize) -> Cow<'_, str> {
     if session_id.len() > max_len {
-        &session_id[..max_len]
+        Cow::Borrowed(&session_id[..max_len])
     } else {
-        session_id
+        Cow::Borrowed(session_id)
     }
 }
 
@@ -1044,7 +1080,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
         // don't double-style every cell.
         let preview_prefix = match session.preview_role {
             MessageRole::User => PREVIEW_PREFIX_USER,
-            MessageRole::Assistant => PREVIEW_PREFIX_CLAUDE,
+            MessageRole::Assistant => assistant_prefix_for(&session.file_path),
         };
         let max_content = available_width.saturating_sub(PREVIEW_PREFIX_LEN);
         let preview_content = truncate_to_width(&session.summary, max_content);
@@ -1586,7 +1622,7 @@ mod tests {
         let m = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.search.groups = vec![SessionGroup {
@@ -1623,7 +1659,7 @@ mod tests {
                     matches: vec![RipgrepMatch {
                         file_path,
                         message: Some(msg),
-                        source: SessionSource::ClaudeCodeCLI,
+                        source: SessionSource::CLI,
                     }],
                     automation: None,
                     message_count: None,
@@ -1644,7 +1680,7 @@ mod tests {
                 session_id: format!("recent-{i}"),
                 file_path: format!("/test/recent-{i}.jsonl"),
                 project: "proj".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: Utc.with_ymd_and_hms(2025, 1, 9, 10, i as u32, 0).unwrap(),
                 summary: format!("Recent summary {i}"),
                 automation: None,
@@ -1891,7 +1927,7 @@ mod tests {
             matches: vec![RipgrepMatch {
                 file_path: "/path/to/projects/-Users-test-projects-deep/session.jsonl".to_string(),
                 message: Some(msg),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             }],
             automation: None,
             message_count: None,
@@ -1961,7 +1997,7 @@ mod tests {
                     line_number: 1,
                     ..Default::default()
                 }),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             }],
             automation: None,
             message_count: None,
@@ -2041,7 +2077,7 @@ mod tests {
                         line_number: mi + 1,
                         ..Default::default()
                     }),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 });
             }
             groups.push(SessionGroup {
@@ -2237,7 +2273,7 @@ mod tests {
         let m = RipgrepMatch {
             file_path: "/path/to/session.jsonl".to_string(),
             message: Some(msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.search.groups = vec![SessionGroup {
@@ -2280,7 +2316,7 @@ mod tests {
                     i
                 ),
                 message: Some(msg),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             };
 
             app.search.groups.push(SessionGroup {
@@ -2344,13 +2380,13 @@ mod tests {
         let large_match = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(large_msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         let small_match = RipgrepMatch {
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(small_msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         // Single group with both messages
@@ -2451,7 +2487,7 @@ mod tests {
             matches.push(RipgrepMatch {
                 file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
                 message: Some(msg),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             });
         }
 
@@ -2557,12 +2593,12 @@ mod tests {
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(large_msg),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 },
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 },
             ],
             automation: None,
@@ -2661,12 +2697,12 @@ mod tests {
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(ansi_msg),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 },
                 RipgrepMatch {
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 },
             ],
             automation: None,
@@ -2720,7 +2756,7 @@ mod tests {
         let m = RipgrepMatch {
             file_path: "/Users/test/.claude/projects/-Users-test-myapp/session.jsonl".to_string(),
             message: Some(msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         let group = SessionGroup {
@@ -2802,7 +2838,7 @@ mod tests {
                 "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-session.jsonl"
                     .to_string(),
             message: Some(msg),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         let group = SessionGroup {
@@ -2893,7 +2929,7 @@ mod tests {
                 session_id: "sess-1".to_string(),
                 file_path: "/test/session1.jsonl".to_string(),
                 project: "my-project".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 30, 0).unwrap(),
                 summary: "Fix the login bug".to_string(),
                 automation: None,
@@ -2906,7 +2942,7 @@ mod tests {
                 session_id: "sess-2".to_string(),
                 file_path: "/test/session2.jsonl".to_string(),
                 project: "other-app".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: Utc.with_ymd_and_hms(2025, 5, 31, 9, 0, 0).unwrap(),
                 summary: "Add new feature".to_string(),
                 automation: None,
@@ -2959,7 +2995,7 @@ mod tests {
             session_id: "b701e752abcd1234".to_string(),
             file_path: "/projects/avito/sess.jsonl".to_string(),
             project: "avito-android".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: ts,
             summary: "hello".to_string(),
             automation: Some("ralphex".to_string()),
@@ -3017,7 +3053,7 @@ mod tests {
             session_id: "019f0000-0000-7000-8000-000000000001".to_string(),
             file_path: "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl".to_string(),
             project: "myapp".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: ts,
             summary: "hello".to_string(),
             automation: None,
@@ -3044,7 +3080,7 @@ mod tests {
                     "/Users/test/.codex/sessions/2026/05/03/rollout-2026-05-03T10-43-24-{session_id}.jsonl"
                 ),
                 project: "kmux".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: ts,
                 summary: "hello".to_string(),
                 automation: None,
@@ -3099,7 +3135,7 @@ mod tests {
             session_id: "b701e752abcd".to_string(),
             file_path: "/projects/sess.jsonl".to_string(),
             project: "avito-android".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp,
             summary: "grep samsungapps across this week's sessions".to_string(),
             automation: None,
@@ -3230,7 +3266,7 @@ mod tests {
             matches: vec![RipgrepMatch {
                 file_path,
                 message: Some(msg),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
             }],
             automation: None,
             message_count: Some(12),
@@ -3274,6 +3310,179 @@ mod tests {
     }
 
     #[test]
+    fn test_render_recent_header_shows_oc_badge_for_opencode() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Realistic Opencode session id (4-char `ses_` sigil + 26-char
+        // ULID-ish suffix). The display layer must show the *suffix*, not the
+        // prefix, so distinct sessions stay visually distinguishable.
+        let session_id = "ses_3f1f05d9effe6iVgV05J8wZ0w2";
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: session_id.to_string(),
+            // Path must match `is_opencode_session_path` so SessionProvider::from_path
+            // returns Opencode and the badge label resolves to "OC". The synthetic
+            // shape is `<db_path>#<session_id>` — same format the recent loader
+            // writes onto every Opencode RecentSession.
+            file_path: format!("/tmp/opencode/opencode.db#{session_id}"),
+            project: "opencode-project".to_string(),
+            source: SessionSource::CLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
+            summary: "opencode summary".to_string(),
+            automation: None,
+            branch: None,
+            message_count: Some(3),
+            preview_role: MessageRole::User,
+            cwd: None,
+        }];
+        app.recent.cursor = 99;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let badge = "OC · cli";
+        let (badge_x, _) = find_cell_for_text(terminal.backend().buffer(), 120, 24, badge)
+            .expect("Opencode badge should render on the right side");
+        assert_eq!(
+            badge_x,
+            120 - badge.chars().count() as u16,
+            "OC badge should align to the right edge"
+        );
+
+        let suffix = &session_id[session_id.len() - 8..];
+        let short = format!("ses_…{suffix}");
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, &short).is_some(),
+            "Opencode short id should render with the suffix ({short:?})"
+        );
+        let prefix_8 = &session_id[..8];
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, prefix_8).is_none(),
+            "Opencode short id must not render the leading {prefix_8:?} prefix"
+        );
+    }
+
+    #[test]
+    fn test_render_recent_distinguishes_opencode_ids_sharing_prefix() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Two Opencode session ids whose first 12 chars are identical. The
+        // old prefix-truncation rendered them both as `ses_3f1f`, hiding the
+        // distinction in the recent list. After suffix-truncation they must
+        // produce distinct short labels.
+        let id_a = "ses_3f1f05d9effe6iVgV05J8wZ0w2";
+        let id_b = "ses_3f1f05d9effe6iVgV05K9xA1y3";
+        assert_eq!(
+            &id_a[..12],
+            &id_b[..12],
+            "test setup invariant: ids share their first 12 chars",
+        );
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![
+            RecentSession {
+                session_id: id_a.to_string(),
+                file_path: format!("/tmp/opencode/opencode.db#{id_a}"),
+                project: "project-a".to_string(),
+                source: SessionSource::CLI,
+                timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
+                summary: "session a".to_string(),
+                automation: None,
+                branch: None,
+                message_count: Some(1),
+                preview_role: MessageRole::User,
+                cwd: None,
+            },
+            RecentSession {
+                session_id: id_b.to_string(),
+                file_path: format!("/tmp/opencode/opencode.db#{id_b}"),
+                project: "project-b".to_string(),
+                source: SessionSource::CLI,
+                timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 9, 0, 0).unwrap(),
+                summary: "session b".to_string(),
+                automation: None,
+                branch: None,
+                message_count: Some(1),
+                preview_role: MessageRole::User,
+                cwd: None,
+            },
+        ];
+        app.recent.cursor = 99;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        let short_a = format!("ses_…{}", &id_a[id_a.len() - 8..]);
+        let short_b = format!("ses_…{}", &id_b[id_b.len() - 8..]);
+        assert_ne!(
+            short_a, short_b,
+            "suffix-truncated labels must differ for ids that share the prefix"
+        );
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, &short_a).is_some(),
+            "first session's short id should render: {short_a:?}"
+        );
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, &short_b).is_some(),
+            "second session's short id should render: {short_b:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_recent_preview_uses_opencode_prefix_for_assistant() {
+        use crate::recent::RecentSession;
+        use chrono::TimeZone;
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.loading = false;
+        app.recent.load_rx = None;
+        app.recent.filtered = vec![RecentSession {
+            session_id: "ses_OC1".to_string(),
+            file_path: "/tmp/opencode/opencode.db#ses_OC1".to_string(),
+            project: "opencode-project".to_string(),
+            source: SessionSource::CLI,
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
+            summary: "assistant reply".to_string(),
+            automation: None,
+            branch: None,
+            message_count: Some(3),
+            preview_role: MessageRole::Assistant,
+            cwd: None,
+        }];
+        app.recent.cursor = 99;
+
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("Render should not panic");
+
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, "Opencode:").is_some(),
+            "Opencode preview prefix should render `Opencode:` instead of `Claude:`"
+        );
+        assert!(
+            find_cell_for_text(terminal.backend().buffer(), 120, 24, "Claude:").is_none(),
+            "Opencode preview must not borrow Claude's label"
+        );
+    }
+
+    #[test]
     fn test_render_recent_header_highlights_project_and_branch() {
         use crate::recent::RecentSession;
         use chrono::TimeZone;
@@ -3288,7 +3497,7 @@ mod tests {
             session_id: "recent-style".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "recent-app".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap(),
             summary: "recent summary".to_string(),
             automation: None,
@@ -3383,7 +3592,7 @@ mod tests {
             session_id: "124e8bc6abcd".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "claude-code-fullsearch-rust".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc.with_ymd_and_hms(2026, 4, 21, 15, 50, 0).unwrap(),
             summary: "triangle layout test".to_string(),
             automation: None,
@@ -3456,7 +3665,7 @@ mod tests {
             session_id: "124e8bc6abcd".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "claude-code-fullsearch-rust".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc.with_ymd_and_hms(2026, 4, 21, 15, 50, 0).unwrap(),
             summary: "triangle layout test".to_string(),
             automation: None,
@@ -3496,7 +3705,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
             summary: "hello".to_string(),
             automation: None,
@@ -3543,7 +3752,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
@@ -3585,7 +3794,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
@@ -3628,7 +3837,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
@@ -3669,7 +3878,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap(),
             summary: "Automated session".to_string(),
             automation: Some("ralphex".to_string()),
@@ -3704,7 +3913,7 @@ mod tests {
                 session_id: "a".to_string(),
                 file_path: "/test/a.jsonl".to_string(),
                 project: "p".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
                 summary: "a".to_string(),
                 automation: None,
@@ -3717,7 +3926,7 @@ mod tests {
                 session_id: "b".to_string(),
                 file_path: "/test/b.jsonl".to_string(),
                 project: "p".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 timestamp: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
                 summary: "b".to_string(),
                 automation: None,

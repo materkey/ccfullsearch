@@ -92,7 +92,7 @@ fn resume_inner(
     if let Some(uuid) = message_uuid {
         if !file_changed
             && provider == SessionProvider::Claude
-            && source == SessionSource::ClaudeCodeCLI
+            && source == SessionSource::CLI
             && fork::should_fork_for_resume(&resolved_file_path, uuid)
         {
             let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
@@ -116,10 +116,16 @@ fn resume_inner(
         (SessionProvider::Codex, _, ResumeMode::Child) => {
             launcher::resume_codex_child(&session_id, &resolved_file_path)
         }
-        (SessionProvider::Claude, SessionSource::ClaudeCodeCLI, ResumeMode::Exec) => {
+        (SessionProvider::Opencode, _, ResumeMode::Exec) => {
+            launcher::resume_opencode(&session_id, &resolved_file_path)
+        }
+        (SessionProvider::Opencode, _, ResumeMode::Child) => {
+            launcher::resume_opencode_child(&session_id, &resolved_file_path)
+        }
+        (SessionProvider::Claude, SessionSource::CLI, ResumeMode::Exec) => {
             launcher::resume_cli(&session_id, &resolved_file_path)
         }
-        (SessionProvider::Claude, SessionSource::ClaudeCodeCLI, ResumeMode::Child) => {
+        (SessionProvider::Claude, SessionSource::CLI, ResumeMode::Child) => {
             launcher::resume_cli_child(&session_id, &resolved_file_path)
         }
         (SessionProvider::Claude, SessionSource::ClaudeDesktop, ResumeMode::Exec) => {

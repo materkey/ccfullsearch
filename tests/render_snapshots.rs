@@ -75,7 +75,7 @@ fn snapshot_search_with_results() {
         file_path: "/home/user/.claude/projects/-home-user-projects-myapp/session.jsonl"
             .to_string(),
         message: Some(msg),
-        source: SessionSource::ClaudeCodeCLI,
+        source: SessionSource::CLI,
     };
 
     app.search.groups = vec![SessionGroup {

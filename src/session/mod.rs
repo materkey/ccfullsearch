@@ -1,3 +1,4 @@
+pub mod opencode;
 pub mod record;
 
 use chrono::{DateTime, Utc};
@@ -9,11 +10,12 @@ use std::path::{Path, PathBuf};
 /// Codex stores rollout transcripts under one of these subdirectories of `CODEX_HOME`.
 pub(crate) const CODEX_SESSION_SUBDIRS: [&str; 2] = ["sessions", "archived_sessions"];
 
-/// Source of the Claude session
+/// Source of the session (Desktop vs CLI)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionSource {
-    /// Claude Code CLI sessions stored in ~/.claude/projects/
-    ClaudeCodeCLI,
+    /// Any CLI-driven session (Claude Code CLI, Codex, Opencode, ...). Use
+    /// `SessionProvider::from_path` to disambiguate which CLI.
+    CLI,
     /// Claude Desktop app sessions stored in ~/Library/Application Support/Claude/
     ClaudeDesktop,
 }
@@ -24,14 +26,14 @@ impl SessionSource {
         if path.contains("local-agent-mode-sessions") {
             SessionSource::ClaudeDesktop
         } else {
-            SessionSource::ClaudeCodeCLI
+            SessionSource::CLI
         }
     }
 
     /// Returns display name for the source
     pub fn display_name(&self) -> &'static str {
         match self {
-            SessionSource::ClaudeCodeCLI => "CLI",
+            SessionSource::CLI => "CLI",
             SessionSource::ClaudeDesktop => "Desktop",
         }
     }
@@ -44,11 +46,16 @@ pub enum SessionProvider {
     Claude,
     /// Codex CLI session.
     Codex,
+    /// Opencode session.
+    Opencode,
 }
 
 impl SessionProvider {
     /// Detect the session provider from the transcript path.
     pub fn from_path(path: &str) -> Self {
+        if opencode::is_opencode_session_path(path) {
+            return SessionProvider::Opencode;
+        }
         let normalized = normalize_session_path(path);
         let is_codex = normalized.contains("/.codex/sessions/")
             || normalized.contains("/.codex/archived_sessions/")
@@ -69,6 +76,7 @@ impl SessionProvider {
         match self {
             SessionProvider::Claude => "Claude",
             SessionProvider::Codex => "Codex",
+            SessionProvider::Opencode => "Opencode",
         }
     }
 }
@@ -431,6 +439,19 @@ pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<PathBuf> {
 pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> Option<String> {
     use std::io::{BufRead, BufReader};
 
+    // Opencode session IDs start with `ses_` and live in a SQLite DB. Resolve
+    // them against the caller's `search_paths` first so explicit DBs (e.g.
+    // `CCFS_SEARCH_PATH=/path/to/side.db`) win over the default database;
+    // `opencode_databases_for_search_paths` already falls back to the default
+    // when no explicit DB entries are present.
+    if session_id.starts_with("ses_") {
+        for db in crate::recent::opencode_databases_for_search_paths(search_paths) {
+            if opencode::OpencodeSession::from_db(&db, session_id).is_some() {
+                return Some(opencode::synthetic_session_path(&db, session_id));
+            }
+        }
+    }
+
     let target_filename = format!("{}.jsonl", session_id);
     let mut audit_match: Option<String> = None;
 
@@ -570,7 +591,7 @@ mod tests {
     #[test]
     fn test_session_source_from_cli_path() {
         let path = "/Users/user/.claude/projects/-Users-user-myproject/abc123.jsonl";
-        assert_eq!(SessionSource::from_path(path), SessionSource::ClaudeCodeCLI);
+        assert_eq!(SessionSource::from_path(path), SessionSource::CLI);
     }
 
     #[test]
@@ -581,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_session_source_display_name() {
-        assert_eq!(SessionSource::ClaudeCodeCLI.display_name(), "CLI");
+        assert_eq!(SessionSource::CLI.display_name(), "CLI");
         assert_eq!(SessionSource::ClaudeDesktop.display_name(), "Desktop");
     }
 
@@ -1139,5 +1160,103 @@ mod tests {
             find_session_file_in_paths("desktop-123", &[dir.path().to_string_lossy().to_string()]);
 
         assert_eq!(found, Some(audit.to_string_lossy().to_string()));
+    }
+
+    fn build_opencode_db_with_session(db_path: &Path, session_id: &str) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (
+                id TEXT PRIMARY KEY,
+                worktree TEXT NOT NULL,
+                vcs TEXT,
+                name TEXT,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+            );
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '',
+                directory TEXT,
+                title TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            INSERT INTO project VALUES ('p1', '/tmp/p', 'git', 'p', 1, 1);
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session VALUES (?1, 'p1', 's', '/tmp/p', 't', 1, 1)",
+            [session_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_find_session_file_in_paths_prefers_explicit_opencode_db() {
+        // An explicit opencode.db in search_paths must win over the default
+        // database returned by opencode_database_path(). We don't touch any
+        // env vars here — opencode_databases_for_search_paths short-circuits
+        // to explicit DBs whenever any search-path entry mentions
+        // `/opencode.db`, so the developer's real DB never gets consulted.
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db");
+        build_opencode_db_with_session(&db, "ses_explicit");
+
+        let found =
+            find_session_file_in_paths("ses_explicit", &[db.to_string_lossy().into_owned()]);
+        assert_eq!(
+            found,
+            Some(opencode::synthetic_session_path(&db, "ses_explicit"))
+        );
+    }
+
+    #[test]
+    fn test_find_session_file_in_paths_falls_back_to_default_opencode_db() {
+        // When search_paths contains no explicit opencode.db entry, lookup
+        // must fall back to the default database (resolved via
+        // `OPENCODE_DATA` here for test isolation).
+        use tempfile::TempDir;
+
+        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
+        let _env_guard = crate::EnvGuard::new(&["OPENCODE_DATA", "XDG_DATA_HOME"]);
+
+        // SAFETY: tests run single-threaded behind TEST_ENV_MUTEX.
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db");
+        build_opencode_db_with_session(&db, "ses_default");
+        unsafe { std::env::set_var("OPENCODE_DATA", dir.path()) };
+
+        // search_paths has no `.db` entry — must trigger the default-DB path.
+        let unrelated = TempDir::new().unwrap();
+        let found = find_session_file_in_paths(
+            "ses_default",
+            &[unrelated.path().to_string_lossy().into_owned()],
+        );
+        assert_eq!(
+            found,
+            Some(opencode::synthetic_session_path(&db, "ses_default"))
+        );
     }
 }

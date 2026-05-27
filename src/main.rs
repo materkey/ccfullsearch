@@ -400,7 +400,7 @@ mod tests {
         let outcome = ccs::tui::TuiOutcome::Resume {
             session_id: "test-id".to_string(),
             file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::session::SessionSource::ClaudeCodeCLI,
+            source: ccs::session::SessionSource::CLI,
             uuid: None,
             query: String::new(),
         };
@@ -412,7 +412,7 @@ mod tests {
         let outcome = ccs::tui::TuiOutcome::Resume {
             session_id: "test-id".to_string(),
             file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::session::SessionSource::ClaudeCodeCLI,
+            source: ccs::session::SessionSource::CLI,
             uuid: None,
             query: String::new(),
         };

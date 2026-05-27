@@ -356,6 +356,81 @@ pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// Pick the working directory for an Opencode resume. Prefers the session's
+/// recorded `directory` field, falls back to the project's `worktree`, then
+/// to a generic fallback when neither exists on disk anymore.
+pub(super) fn build_opencode_resume_command(
+    session_id: &str,
+    file_path: &str,
+) -> Result<(String, String), String> {
+    use crate::session::opencode::{parse_session_path, read_project_worktree, OpencodeSession};
+
+    let path = Path::new(file_path);
+    let session = OpencodeSession::from_file(path);
+    let db_path = parse_session_path(file_path).map(|(db, _)| db);
+
+    let project_worktree = session.as_ref().and_then(|s| {
+        db_path
+            .as_ref()
+            .and_then(|db| read_project_worktree(db, &s.project_id))
+    });
+    let candidate_dirs = [
+        session.as_ref().and_then(|s| s.directory.clone()),
+        project_worktree,
+    ];
+
+    let working_dir = candidate_dirs
+        .into_iter()
+        .flatten()
+        .find(|d| Path::new(d).exists())
+        .unwrap_or_else(|| fallback_working_dir(file_path));
+
+    Ok((working_dir, session_id.to_string()))
+}
+
+/// Resume an Opencode session using exec.
+pub fn resume_opencode(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_opencode_resume_command(session_id, file_path)?;
+
+    let opencode_path =
+        which::which("opencode").map_err(|_| "opencode binary not found in PATH".to_string())?;
+
+    ccs_debug!(
+        "[ccs:resume_opencode] opencode={} cwd={} --session {}",
+        opencode_path.display(),
+        working_dir,
+        resume_arg
+    );
+
+    let mut cmd = Command::new(&opencode_path);
+    cmd.current_dir(&working_dir)
+        .args(["--session", &resume_arg]);
+    exec_command(&mut cmd)
+}
+
+/// Resume an Opencode session as a child process.
+pub fn resume_opencode_child(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg) = build_opencode_resume_command(session_id, file_path)?;
+
+    let opencode_path =
+        which::which("opencode").map_err(|_| "opencode binary not found in PATH".to_string())?;
+
+    ccs_debug!(
+        "[ccs:resume_opencode_child] opencode={} cwd={} --session {}",
+        opencode_path.display(),
+        working_dir,
+        resume_arg
+    );
+
+    Command::new(&opencode_path)
+        .current_dir(&working_dir)
+        .args(["--session", &resume_arg])
+        .status()
+        .map_err(|e| format!("Failed to spawn opencode: {}", e))?;
+
+    Ok(())
+}
+
 /// Open Claude Desktop app for Desktop sessions
 pub fn resume_desktop() -> Result<(), String> {
     let mut cmd = Command::new("open");
@@ -714,6 +789,74 @@ mod tests {
         assert!(
             entries.is_empty(),
             "No temp files should remain after successful atomic rename"
+        );
+    }
+
+    /// Build a tiny SQLite DB with one session pointing at `directory` and
+    /// return `(temp_dir, synthetic_path)`. The synthetic path is what the
+    /// rest of ccs stores on `RecentSession.file_path` for an Opencode session.
+    fn build_opencode_db_fixture(directory: &str) -> (TempDir, String) {
+        use rusqlite::Connection;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, name TEXT, time_created INTEGER, time_updated INTEGER);
+            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, slug TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project VALUES ('projAAA', ?1, 'myproj', 1, 2)",
+            [directory],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session VALUES ('ses_TEST', 'projAAA', '', ?1, 't', 1, 2)",
+            [directory],
+        )
+        .unwrap();
+        let synthetic = format!("{}#ses_TEST", db_path.to_string_lossy());
+        (dir, synthetic)
+    }
+
+    #[test]
+    fn test_build_opencode_resume_command_uses_session_directory() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("myproj");
+        fs::create_dir_all(&project).unwrap();
+        let (_db_dir, synthetic) = build_opencode_db_fixture(project.to_str().unwrap());
+
+        let (working_dir, resume_arg) =
+            build_opencode_resume_command("ses_TEST", &synthetic).unwrap();
+        assert_eq!(resume_arg, "ses_TEST");
+        assert_eq!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            project.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_build_opencode_resume_command_falls_back_when_directory_missing() {
+        let ghost = TempDir::new().unwrap();
+        let ghost_path = ghost.path().to_path_buf();
+        drop(ghost);
+        assert!(!ghost_path.exists());
+
+        let (_db_dir, synthetic) = build_opencode_db_fixture(ghost_path.to_str().unwrap());
+
+        let (working_dir, _) = build_opencode_resume_command("ses_TEST", &synthetic).unwrap();
+        assert!(
+            Path::new(&working_dir).exists(),
+            "working_dir should exist when session.directory is missing"
+        );
+        assert_ne!(
+            Path::new(&working_dir).canonicalize().unwrap(),
+            ghost_path,
+            "must not use the missing directory"
         );
     }
 

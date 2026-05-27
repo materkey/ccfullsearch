@@ -154,6 +154,110 @@ fn list_empty_directory_produces_empty_output() {
         .stdout(predicate::str::is_empty());
 }
 
+/// Build a minimal Opencode SQLite database at `<dir>/opencode.db` with one
+/// project, one session, one user message and one assistant message.
+fn setup_opencode_db_fixture() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("opencode.db");
+
+    // Use the bundled SQLite via the `sqlite3` CLI (any modern Linux has it,
+    // and CI does too). This keeps the integration test free of a direct
+    // rusqlite dev-dep and exercises the production read-only path.
+    let schema = r#"
+        CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+        CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '', directory TEXT, title TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+        CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+
+        INSERT INTO project VALUES ('projTEST', '/tmp/integration-test', 'integration-test', 1, 2);
+        INSERT INTO session VALUES ('ses_INTEG1', 'projTEST', '', '/tmp/integration-test', 'Integration test session', 1769762431585, 1769762509666);
+        INSERT INTO message VALUES ('msg_user1', 'ses_INTEG1', 1769762431591, 1769762431591, '{"role":"user","time":{"created":1769762431591}}');
+        INSERT INTO message VALUES ('msg_asst1', 'ses_INTEG1', 1769762431596, 1769762431596, '{"role":"assistant","parentID":"msg_user1","time":{"created":1769762431596}}');
+        INSERT INTO part VALUES ('prt_user_text', 'msg_user1', 'ses_INTEG1', 1, 1, '{"type":"text","text":"hello opencode"}');
+        INSERT INTO part VALUES ('prt_asst_text', 'msg_asst1', 'ses_INTEG1', 2, 2, '{"type":"text","text":"hi human"}');
+    "#;
+
+    let status = std::process::Command::new("sqlite3")
+        .arg(&db_path)
+        .arg(schema)
+        .status()
+        .expect("sqlite3 must be available to seed the integration fixture");
+    assert!(status.success(), "sqlite3 seeding failed");
+
+    dir
+}
+
+#[test]
+fn list_includes_opencode_sessions() {
+    let dir = setup_opencode_db_fixture();
+    let db_path = dir.path().join("opencode.db");
+
+    // Pin CCFS_SEARCH_PATH to the DB so the gating predicate in cli_list
+    // triggers, and OPENCODE_DATA to the parent dir so opencode_storage_root
+    // resolves to our fixture instead of the developer's real opencode home.
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["list"])
+        .env("CCFS_SEARCH_PATH", db_path.to_str().unwrap())
+        .env("OPENCODE_DATA", dir.path().to_str().unwrap())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "list should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["provider"], "Opencode");
+    assert_eq!(rows[0]["session_id"], "ses_INTEG1");
+    assert_eq!(rows[0]["project"], "integration-test");
+    assert_eq!(rows[0]["message_count"], 2);
+}
+
+#[test]
+fn search_finds_text_in_opencode_part() {
+    let dir = setup_opencode_db_fixture();
+    let db_path = dir.path().join("opencode.db");
+
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["search", "hello opencode"])
+        .env("CCFS_SEARCH_PATH", db_path.to_str().unwrap())
+        .env("OPENCODE_DATA", dir.path().to_str().unwrap())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "search should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    assert!(
+        rows.iter().any(|r| r["provider"] == "Opencode"
+            && r["session_id"] == "ses_INTEG1"
+            && r["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("hello opencode")),
+        "expected an Opencode match for the query; got: {}",
+        stdout
+    );
+}
+
 #[test]
 fn list_includes_codex_sessions() {
     let dir = setup_codex_list_dir();

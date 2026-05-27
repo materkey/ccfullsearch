@@ -313,6 +313,19 @@ fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
     })
 }
 
+/// Opencode DB paths always carry per-session `directory` metadata, so they
+/// support project filtering by cwd the same way Codex roots do.
+fn search_path_supports_opencode_cwd_scope(search_path: &str) -> bool {
+    search_path.contains("/opencode.db")
+}
+
+/// Either provider's cwd scope support — for places that allow project
+/// filtering when *any* per-session cwd metadata is reachable.
+fn search_path_supports_cwd_scope(search_path: &str) -> bool {
+    search_path_supports_codex_cwd_scope(search_path)
+        || search_path_supports_opencode_cwd_scope(search_path)
+}
+
 fn canonicalize_path_to_string(path: &Path) -> Option<String> {
     std::fs::canonicalize(path)
         .ok()
@@ -339,7 +352,12 @@ fn session_matches_project(
     {
         return true;
     }
-    if SessionProvider::from_path(&session.file_path) != SessionProvider::Codex {
+    let provider = SessionProvider::from_path(&session.file_path);
+    // Both Codex and Opencode store the session's working directory in
+    // metadata; for either we can match by cwd when the Claude-style
+    // file_path prefix check failed. The match is asymmetric: session_cwd
+    // must lie inside current_cwd, never the reverse.
+    if !matches!(provider, SessionProvider::Codex | SessionProvider::Opencode) {
         return false;
     }
     match (session.cwd.as_deref(), current_cwd) {
@@ -352,6 +370,7 @@ fn group_matches_project(
     group: &SessionGroup,
     project_paths: &[String],
     current_cwd: Option<&str>,
+    opencode_cwd_cache: &mut HashMap<String, Option<String>>,
 ) -> bool {
     if project_paths
         .iter()
@@ -360,19 +379,46 @@ fn group_matches_project(
         return true;
     }
 
-    if SessionProvider::from_path(&group.file_path) != SessionProvider::Codex {
-        return false;
-    }
-
+    let provider = SessionProvider::from_path(&group.file_path);
     let Some(cwd) = current_cwd else {
         return false;
     };
 
-    crate::session::read_codex_session_cwd(&group.file_path)
-        .map(|session_cwd| {
-            canonicalize_path_to_string(Path::new(&session_cwd)).unwrap_or(session_cwd)
-        })
+    let session_cwd = match provider {
+        SessionProvider::Codex => crate::session::read_codex_session_cwd(&group.file_path),
+        SessionProvider::Opencode => {
+            read_opencode_session_cwd_cached(&group.file_path, opencode_cwd_cache)
+        }
+        SessionProvider::Claude => return false,
+    };
+
+    session_cwd
+        .map(|cwd_str| canonicalize_path_to_string(Path::new(&cwd_str)).unwrap_or(cwd_str))
         .is_some_and(|session_cwd| path_is_within_project(&session_cwd, cwd))
+}
+
+/// Look up an Opencode session's `directory` field via the synthetic path
+/// (`<db>#<session_id>`) so the project-filter cwd check works on search
+/// results whose RecentSession.cwd isn't populated.
+fn read_opencode_session_cwd(file_path: &str) -> Option<String> {
+    let (db, sid) = crate::session::opencode::parse_session_path(file_path)?;
+    crate::session::opencode::OpencodeSession::from_db(&db, &sid)?.directory
+}
+
+/// Cache-aware wrapper for [`read_opencode_session_cwd`]. Opencode lookups
+/// open the SQLite DB, so the project-filter rebuild can run hundreds of
+/// these per toggle. Cache both `Some` and `None` outcomes so repeated
+/// misses are also O(1).
+fn read_opencode_session_cwd_cached(
+    file_path: &str,
+    cache: &mut HashMap<String, Option<String>>,
+) -> Option<String> {
+    if let Some(cached) = cache.get(file_path) {
+        return cached.clone();
+    }
+    let result = read_opencode_session_cwd(file_path);
+    cache.insert(file_path.to_string(), result.clone());
+    result
 }
 
 /// Recent sessions sub-state: encapsulates global/project data sources,
@@ -469,45 +515,51 @@ impl RecentState {
         current_cwd: Option<&str>,
         automation_filter: &AutomationFilter,
     ) {
-        let project_filtered: Vec<_> =
-            if project_filter && (!project_paths.is_empty() || current_cwd.is_some()) {
-                // When the project-specific load has resolved, take its
-                // Claude sessions verbatim and merge in any Codex sessions
-                // from the global pool (start_project_load scans only
-                // Claude paths). When the load hasn't resolved yet, fall
-                // back to the global pool so Ctrl+A doesn't blank the
-                // list while the background scan is in flight.
-                let (mut source, seen): (Vec<RecentSession>, HashSet<String>) =
-                    match self.project.as_ref() {
-                        Some(project) => {
-                            let seen = project.iter().map(|s| s.session_id.clone()).collect();
-                            (project.clone(), seen)
-                        }
-                        None => (self.all.clone(), HashSet::new()),
-                    };
-                if self.project.is_some() {
-                    source.extend(
-                        self.all
-                            .iter()
-                            .filter(|s| {
-                                SessionProvider::from_path(&s.file_path) == SessionProvider::Codex
-                                    && !seen.contains(&s.session_id)
-                            })
-                            .cloned(),
-                    );
-                }
-                let mut filtered: Vec<RecentSession> = source
-                    .into_iter()
-                    .filter(|s| session_matches_project(s, project_paths, current_cwd))
-                    .collect();
-                // Concatenating two already-sorted slices does not preserve order; re-sort
-                // the filtered union with the shared helper so the view matches the
-                // unfiltered ordering.
-                crate::recent::sort_recent_sessions_desc(&mut filtered);
-                filtered
-            } else {
-                self.all.clone()
-            };
+        let project_filtered: Vec<_> = if project_filter
+            && (!project_paths.is_empty() || current_cwd.is_some())
+        {
+            // When the project-specific load has resolved, take its
+            // Claude sessions verbatim and merge in any Codex sessions
+            // from the global pool (start_project_load scans only
+            // Claude paths). When the load hasn't resolved yet, fall
+            // back to the global pool so Ctrl+A doesn't blank the
+            // list while the background scan is in flight.
+            let (mut source, seen): (Vec<RecentSession>, HashSet<String>) =
+                match self.project.as_ref() {
+                    Some(project) => {
+                        let seen = project.iter().map(|s| s.session_id.clone()).collect();
+                        (project.clone(), seen)
+                    }
+                    None => (self.all.clone(), HashSet::new()),
+                };
+            if self.project.is_some() {
+                // `start_project_load` only scans Claude paths, so Codex
+                // and Opencode sessions are missing from `self.project`.
+                // Union them in from `self.all` (which has all providers)
+                // before the per-session project-match filter runs.
+                source.extend(
+                    self.all
+                        .iter()
+                        .filter(|s| {
+                            let provider = SessionProvider::from_path(&s.file_path);
+                            matches!(provider, SessionProvider::Codex | SessionProvider::Opencode)
+                                && !seen.contains(&s.session_id)
+                        })
+                        .cloned(),
+                );
+            }
+            let mut filtered: Vec<RecentSession> = source
+                .into_iter()
+                .filter(|s| session_matches_project(s, project_paths, current_cwd))
+                .collect();
+            // Concatenating two already-sorted slices does not preserve order; re-sort
+            // the filtered union with the shared helper so the view matches the
+            // unfiltered ordering.
+            crate::recent::sort_recent_sessions_desc(&mut filtered);
+            filtered
+        } else {
+            self.all.clone()
+        };
 
         self.filtered = match automation_filter {
             AutomationFilter::All => project_filtered,
@@ -551,18 +603,18 @@ impl RecentState {
                 .as_ref()
                 .map(|p| p.len())
                 .unwrap_or(self.all.len());
-            // When `self.project` is loaded, count Codex sessions from
-            // `self.all` that are not already in `self.project` (matches
+            // When `self.project` is loaded, count Codex + Opencode sessions
+            // from `self.all` that are not already in `self.project` (matches
             // the union built in apply_filter). Skip when project hasn't
-            // loaded yet — `self.all` already contains Codex sessions in
-            // that case.
+            // loaded yet — `self.all` already contains those sessions then.
             if let Some(project) = self.project.as_ref() {
                 let seen: HashSet<&str> = project.iter().map(|s| s.session_id.as_str()).collect();
                 total += self
                     .all
                     .iter()
                     .filter(|s| {
-                        SessionProvider::from_path(&s.file_path) == SessionProvider::Codex
+                        let provider = SessionProvider::from_path(&s.file_path);
+                        matches!(provider, SessionProvider::Codex | SessionProvider::Opencode)
                             && !seen.contains(s.session_id.as_str())
                     })
                     .count();
@@ -834,6 +886,10 @@ pub struct App {
     pub automation_filter: AutomationFilter,
     /// Cache: file_path -> resolved automation marker (including negative lookups)
     automation_cache: HashMap<String, Option<String>>,
+    /// Cache: Opencode synthetic file_path (`<db>#<sid>`) -> session
+    /// directory. Opens of the Opencode SQLite DB are amortised across
+    /// repeated project-filter rebuilds; caches both `Some` and `None`.
+    opencode_cwd_cache: HashMap<String, Option<String>>,
     /// All search paths (for "all sessions" mode)
     pub(crate) all_search_paths: Vec<String>,
     /// Search path(s) for current project only
@@ -924,6 +980,7 @@ impl App {
             project_filter: false,
             automation_filter: AutomationFilter::Manual,
             automation_cache: HashMap::new(),
+            opencode_cwd_cache: HashMap::new(),
             all_search_paths,
             current_project_paths,
             current_cwd,
@@ -948,12 +1005,13 @@ impl App {
             && self
                 .all_search_paths
                 .iter()
-                .any(|path| search_path_supports_codex_cwd_scope(path))
+                .any(|path| search_path_supports_cwd_scope(path))
     }
 
     /// Build ripgrep roots for Ctrl+A project search. Claude sessions can be
-    /// narrowed by encoded project path; Codex sessions need their session
-    /// roots so the post-search cwd filter can decide project membership.
+    /// narrowed by encoded project path; Codex and Opencode sessions need
+    /// their session-source roots in the path list so the post-search cwd
+    /// filter can decide project membership.
     pub(crate) fn project_scoped_search_paths(&self) -> Vec<String> {
         if self.current_project_paths.is_empty() {
             return self.all_search_paths.clone();
@@ -961,14 +1019,14 @@ impl App {
 
         let mut paths = self.current_project_paths.clone();
         if self.can_filter_by_codex_cwd() {
-            let codex_paths: Vec<String> = self
+            let extra_paths: Vec<String> = self
                 .all_search_paths
                 .iter()
-                .filter(|path| search_path_supports_codex_cwd_scope(path))
+                .filter(|path| search_path_supports_cwd_scope(path))
                 .filter(|path| !paths.contains(path))
                 .cloned()
                 .collect();
-            paths.extend(codex_paths);
+            paths.extend(extra_paths);
         }
         paths
     }
@@ -1454,25 +1512,31 @@ impl App {
 
     /// Rebuild `groups` from `all_groups` based on project and automation filters.
     pub(crate) fn apply_groups_filter(&mut self) {
-        self.search.groups = self
-            .search
-            .all_groups
+        // Split-borrow: `all_groups` is read while `opencode_cwd_cache`
+        // is mutated by `group_matches_project`. Bind each field of `self`
+        // to its own local so the borrow checker tracks them independently.
+        let project_filter = self.project_filter;
+        let automation_filter = self.automation_filter;
+        let project_paths = &self.current_project_paths;
+        let current_cwd = self.current_cwd.as_deref();
+        let opencode_cwd_cache = &mut self.opencode_cwd_cache;
+        let all_groups = &self.search.all_groups;
+
+        let new_groups: Vec<SessionGroup> = all_groups
             .iter()
             .filter(|g| {
-                !self.project_filter
-                    || group_matches_project(
-                        g,
-                        &self.current_project_paths,
-                        self.current_cwd.as_deref(),
-                    )
+                !project_filter
+                    || group_matches_project(g, project_paths, current_cwd, opencode_cwd_cache)
             })
-            .filter(|g| match self.automation_filter {
+            .filter(|g| match automation_filter {
                 AutomationFilter::All => true,
                 AutomationFilter::Manual => g.automation.is_none(),
                 AutomationFilter::Auto => g.automation.is_some(),
             })
             .cloned()
             .collect();
+
+        self.search.groups = new_groups;
         // Clamp cursor so it stays valid after the filtered list shrinks
         // (e.g. async automation metadata arrives while Manual/Auto filter is active).
         if self.search.groups.is_empty() {
@@ -1738,7 +1802,7 @@ mod tests {
             session_id: file_path.to_string(),
             file_path: file_path.to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "summary".to_string(),
             automation: None,
@@ -1897,7 +1961,7 @@ mod tests {
             session_id: "claude-1".to_string(),
             file_path: "/proj/-Users-x-y/abc.jsonl".to_string(),
             project: "y".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "claude summary".to_string(),
             automation: None,
@@ -1916,7 +1980,7 @@ mod tests {
                 session_id
             ),
             project: "codex-proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "codex summary".to_string(),
             automation: None,
@@ -2078,7 +2142,7 @@ mod tests {
             session_id: "auto-session".to_string(),
             file_path: "/sessions/auto-session.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "summary".to_string(),
             automation: Some("ralphex".to_string()),
@@ -2098,7 +2162,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -2142,7 +2206,7 @@ mod tests {
                 line_number: 2,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -2188,7 +2252,7 @@ mod tests {
                 line_number: 3,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -2283,7 +2347,7 @@ mod tests {
             session_id: file_path.to_string(),
             file_path: file_path.to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "summary".to_string(),
             automation: None,
@@ -2345,6 +2409,54 @@ mod tests {
     fn test_session_matches_project_no_cwd_either_side() {
         let session = make_session_with_cwd("/tmp/.codex/sessions/2026/05/01/rollout.jsonl", None);
         assert!(!session_matches_project(&session, &[], None));
+    }
+
+    #[test]
+    fn test_session_matches_project_opencode_session_in_cwd() {
+        // Opencode sessions use synthetic paths `<db>#<session_id>` that
+        // never match Claude project_paths. The cwd fallback (previously
+        // Codex-only) must now also cover Opencode so the project filter
+        // doesn't silently drop them.
+        let session = RecentSession {
+            session_id: "ses_OC".to_string(),
+            file_path: "/tmp/opencode/opencode.db#ses_OC".to_string(),
+            project: "proj".to_string(),
+            source: SessionSource::CLI,
+            timestamp: Utc::now(),
+            summary: "s".to_string(),
+            automation: None,
+            branch: None,
+            message_count: None,
+            preview_role: crate::session::record::MessageRole::User,
+            cwd: Some("/repo".to_string()),
+        };
+        assert!(session_matches_project(&session, &[], Some("/repo")));
+        assert!(!session_matches_project(&session, &[], Some("/repo-other")));
+    }
+
+    #[test]
+    fn test_project_scoped_search_paths_includes_opencode_db() {
+        // When project filter is on, Opencode DB paths must remain in the
+        // ripgrep root list — otherwise the SQLite-backed Opencode search
+        // never runs and Opencode hits silently drop from project-filtered
+        // search results.
+        let claude_proj = "/tmp/.claude/projects/-Users-u-proj".to_string();
+        let oc_db = "/tmp/opencode/opencode.db".to_string();
+        let mut app = App::new(vec![claude_proj.clone(), oc_db.clone()]);
+        app.current_project_paths = vec![claude_proj.clone()];
+        app.current_cwd = Some("/repo".to_string());
+
+        let scoped = app.project_scoped_search_paths();
+        assert!(
+            scoped.contains(&claude_proj),
+            "claude project path should be in scope: {:?}",
+            scoped
+        );
+        assert!(
+            scoped.contains(&oc_db),
+            "opencode db must be added to project scope when cwd filter applies: {:?}",
+            scoped
+        );
     }
 
     #[test]
@@ -2979,7 +3091,7 @@ mod tests {
         let picked = PickedSession {
             session_id: "abc-123".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             project: "my-project".to_string(),
             message_uuid: None,
         };
@@ -3011,7 +3123,7 @@ mod tests {
         let picked = PickedSession {
             session_id: "file-out-test".to_string(),
             file_path: "/sessions/test.jsonl".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             project: "proj".to_string(),
             message_uuid: None,
         };
@@ -3029,7 +3141,7 @@ mod tests {
         let picked = PickedSession {
             session_id: "stdout-test".to_string(),
             file_path: "/sessions/test.jsonl".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             project: "proj".to_string(),
             message_uuid: None,
         };
@@ -3054,7 +3166,7 @@ mod tests {
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
             session_id: "sess-1".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             uuid: Some("uuid-42".to_string()),
         }));
         app.input.set_text("my search query");
@@ -3065,7 +3177,7 @@ mod tests {
             TuiOutcome::Resume {
                 session_id: "sess-1".to_string(),
                 file_path: "/path/to/session.jsonl".to_string(),
-                source: SessionSource::ClaudeCodeCLI,
+                source: SessionSource::CLI,
                 uuid: Some("uuid-42".to_string()),
                 query: "my search query".to_string(),
             }
@@ -3111,7 +3223,7 @@ mod tests {
         app.outcome = Some(AppOutcome::Pick(PickedSession {
             session_id: "pick-1".to_string(),
             file_path: "/pick/session.jsonl".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             project: "proj".to_string(),
             message_uuid: None,
         }));
@@ -3739,7 +3851,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -3796,7 +3908,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -3860,7 +3972,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -3909,7 +4021,7 @@ mod tests {
             session_id: "snapshotted".to_string(),
             file_path: "/proj/snapshotted.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "snapshotted".to_string(),
             automation: None,
@@ -3924,7 +4036,7 @@ mod tests {
             session_id: "fresh".to_string(),
             file_path: "/proj/fresh.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "fresh project session".to_string(),
             automation: None,
@@ -3972,7 +4084,7 @@ mod tests {
             session_id: "fresh".to_string(),
             file_path: "/proj/fresh.jsonl".to_string(),
             project: "proj".to_string(),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
             timestamp: Utc::now(),
             summary: "fresh project session".to_string(),
             automation: None,
@@ -4156,7 +4268,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.handle_search_result(BackgroundSearchResult {
@@ -4254,7 +4366,7 @@ mod tests {
                         line_number: 1,
                         ..Default::default()
                     }),
-                    source: SessionSource::ClaudeCodeCLI,
+                    source: SessionSource::CLI,
                 }],
                 truncated: false,
             }),
@@ -4425,7 +4537,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
         let fresh_match = RipgrepMatch {
             file_path: "/sessions/fresh.jsonl".to_string(),
@@ -4437,7 +4549,7 @@ mod tests {
                 line_number: 1,
                 ..Default::default()
             }),
-            source: SessionSource::ClaudeCodeCLI,
+            source: SessionSource::CLI,
         };
 
         app.search
@@ -4520,6 +4632,63 @@ mod tests {
             observer.load(Ordering::Relaxed),
             "Drop on App must set the in-flight handle's cancel flag"
         );
+    }
+
+    #[test]
+    fn test_read_opencode_session_cwd_cached_survives_db_removal() {
+        // First call hits the SQLite DB; the resolved directory is stored in
+        // the cache. Removing the DB on disk between calls must NOT cause
+        // the second call to miss — the cache is the load-bearing path for
+        // repeated project-filter rebuilds.
+        use rusqlite::Connection;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT,
+                name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '', directory TEXT, title TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            INSERT INTO project VALUES ('p', '/tmp/p', 'git', 'p', 1, 2);
+            INSERT INTO session VALUES ('ses_OC', 'p', '', '/tmp/cached-cwd', 't', 1, 2);
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let synth = format!("{}#ses_OC", db_path.to_string_lossy());
+        let mut cache: HashMap<String, Option<String>> = HashMap::new();
+
+        let first = read_opencode_session_cwd_cached(&synth, &mut cache);
+        assert_eq!(first.as_deref(), Some("/tmp/cached-cwd"));
+        assert!(
+            cache.contains_key(&synth),
+            "cache must store the resolved cwd after the first lookup"
+        );
+
+        // Wipe the DB so any uncached lookup would return None.
+        std::fs::remove_file(&db_path).unwrap();
+
+        let second = read_opencode_session_cwd_cached(&synth, &mut cache);
+        assert_eq!(
+            second.as_deref(),
+            Some("/tmp/cached-cwd"),
+            "second call must return cached value despite DB removal"
+        );
+
+        // Negative lookups are also cached so repeated misses stay O(1).
+        let missing_synth = format!("{}#ses_MISSING", db_path.to_string_lossy());
+        let first_miss = read_opencode_session_cwd_cached(&missing_synth, &mut cache);
+        assert!(first_miss.is_none());
+        assert!(
+            cache.contains_key(&missing_synth),
+            "negative lookups must be cached"
+        );
+        let second_miss = read_opencode_session_cwd_cached(&missing_synth, &mut cache);
+        assert!(second_miss.is_none());
     }
 
     // Drop on `App` must also cancel the background message-count thread

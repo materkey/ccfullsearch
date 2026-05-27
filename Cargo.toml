@@ -32,6 +32,7 @@ clap = { version = "4", features = ["derive"] }
 rayon = "1.10"
 tempfile = "3.0"
 semver = "1.0"
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

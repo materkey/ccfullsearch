@@ -216,7 +216,7 @@ mod tests {
         let tree = SessionTree::new_for_test(
             "tree-sess-1".to_string(),
             "/home/user/.claude/projects/-Users-user-projects-coolapp/session.jsonl".to_string(),
-            SessionSource::ClaudeCodeCLI,
+            SessionSource::CLI,
             vec![TreeRow {
                 uuid: "uuid-tree-1".to_string(),
                 role: "user".to_string(),
@@ -239,7 +239,7 @@ mod tests {
             other => panic!("Expected Pick, got {:?}", other),
         };
         assert_eq!(picked.session_id, "tree-sess-1");
-        assert_eq!(picked.source, SessionSource::ClaudeCodeCLI);
+        assert_eq!(picked.source, SessionSource::CLI);
         assert_eq!(picked.project, "coolapp");
     }
 }

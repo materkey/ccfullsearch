@@ -25,6 +25,38 @@ pub use session::{SessionProvider, SessionSource};
 #[cfg(test)]
 pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Test helper: snapshot a set of env vars and restore them on Drop, so a
+/// panicking assertion can't leave the process env in a bad state and poison
+/// [`TEST_ENV_MUTEX`] for subsequent tests.
+#[cfg(test)]
+pub(crate) struct EnvGuard {
+    saved: Vec<(&'static str, Option<String>)>,
+}
+
+#[cfg(test)]
+impl EnvGuard {
+    pub(crate) fn new(keys: &[&'static str]) -> Self {
+        let saved = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+        Self { saved }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            // SAFETY: tests run single-threaded behind TEST_ENV_MUTEX, so no
+            // other thread is reading the environment during restore.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
 pub fn get_search_paths() -> Vec<String> {
     let mut search_paths = Vec::new();
 
@@ -68,6 +100,14 @@ pub fn get_search_paths() -> Vec<String> {
         let linux_desktop = home.join(".config/Claude/local-agent-mode-sessions");
         if linux_desktop.exists() {
             if let Some(p) = linux_desktop.to_str().map(|s| s.to_string()) {
+                search_paths.push(p);
+            }
+        }
+
+        // Opencode SQLite database. The search layer dispatches paths
+        // ending in `opencode.db` to a SQL-based scanner instead of ripgrep.
+        if let Some(db) = session::opencode::opencode_database_path() {
+            if let Some(p) = db.to_str().map(|s| s.to_string()) {
                 search_paths.push(p);
             }
         }
