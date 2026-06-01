@@ -996,12 +996,23 @@ pub fn collect_recent_sessions(search_paths: &[String], limit: usize) -> Vec<Rec
     // Partition by path-based automation so each class gets its own `limit` quota.
     // Otherwise a burst of claude-mem observer sessions can crowd the top-mtime
     // window and the TUI's AutomationFilter has nothing left to show as Manual.
-    let (auto_files, manual_files): (Vec<_>, Vec<_>) = files_with_mtime
+    //
+    // Files with no path marker still need content-aware splitting during
+    // collection: CCS AI-ranker sessions live beside normal project sessions,
+    // so path-only partitioning would let them spend the manual quota before
+    // their content marker is discovered.
+    let (auto_files, unclassified_files): (Vec<_>, Vec<_>) = files_with_mtime
         .into_iter()
         .partition(|(p, _)| session::detect_automation_by_path(p).is_some());
 
-    let mut sessions = collect_from_files(manual_files, limit);
-    sessions.extend(collect_from_files(auto_files, limit));
+    let (manual_sessions, content_auto_sessions) =
+        collect_from_unclassified_files(unclassified_files, limit);
+    let mut auto_sessions = collect_from_files(auto_files, limit);
+    auto_sessions.extend(content_auto_sessions);
+    auto_sessions = dedup_sort_truncate_sessions(auto_sessions, limit);
+
+    let mut sessions = manual_sessions;
+    sessions.extend(auto_sessions);
 
     // Opencode storage isn't JSONL-shaped, so the JSONL walker above sees
     // nothing under it. Pull Opencode sessions from their own storage layout
@@ -1067,45 +1078,120 @@ fn collect_from_files(
         sessions.extend(batch_sessions);
         offset = end;
 
-        let unique_count = {
-            let mut seen = HashSet::new();
-            sessions
-                .iter()
-                .filter(|s| seen.insert(&s.session_id))
-                .count()
-        };
-        if unique_count >= limit {
-            if offset >= files_with_mtime.len() {
-                break;
-            }
-            // Verify no remaining file can displace our current top `limit`.
-            // Since content_timestamp <= mtime (post-session metadata writes
-            // inflate mtime), the next unscanned file's mtime is an upper bound
-            // on its content timestamp.  Use strict inequality: when
-            // cutoff == next_mtime, an unscanned file could still tie on
-            // timestamp and outrank on file_path (the deterministic tiebreaker).
-            let mut best_ts: HashMap<&str, DateTime<Utc>> = HashMap::new();
-            for s in &sessions {
-                best_ts
-                    .entry(&s.session_id)
-                    .and_modify(|t| {
-                        if s.timestamp > *t {
-                            *t = s.timestamp;
-                        }
-                    })
-                    .or_insert(s.timestamp);
-            }
-            let mut sorted_ts: Vec<DateTime<Utc>> = best_ts.into_values().collect();
-            sorted_ts.sort_unstable_by(|a, b| b.cmp(a));
-            if let Some(&cutoff) = sorted_ts.get(limit.saturating_sub(1)) {
-                let next_mtime: DateTime<Utc> = files_with_mtime[offset].1.into();
-                if cutoff > next_mtime {
-                    break;
-                }
-            }
+        if collection_limit_satisfied(&sessions, &files_with_mtime, offset, limit) {
+            break;
         }
     }
 
+    dedup_sort_truncate_sessions(sessions, limit)
+}
+
+/// Collect files whose path alone does not classify them. Content automation
+/// discovered here is returned separately so it can share the auto quota, while
+/// the manual side keeps scanning until its own quota is satisfied.
+fn collect_from_unclassified_files(
+    files_with_mtime: Vec<(PathBuf, std::time::SystemTime)>,
+    limit: usize,
+) -> (Vec<RecentSession>, Vec<RecentSession>) {
+    let mut manual_sessions: Vec<RecentSession> = Vec::new();
+    let mut auto_sessions: Vec<RecentSession> = Vec::new();
+    let batch_multiplier = 4;
+    let mut offset = 0;
+
+    loop {
+        let batch_size = if offset == 0 {
+            (limit * batch_multiplier).max(limit)
+        } else {
+            files_with_mtime.len().saturating_sub(offset)
+        };
+        let end = (offset + batch_size).min(files_with_mtime.len());
+        if offset >= end {
+            break;
+        }
+
+        let batch_sessions: Vec<RecentSession> = files_with_mtime[offset..end]
+            .par_iter()
+            .filter_map(|(path, _)| extract_summary(path))
+            .collect();
+        for session in batch_sessions {
+            if session.automation.is_some() {
+                auto_sessions.push(session);
+            } else {
+                manual_sessions.push(session);
+            }
+        }
+        offset = end;
+
+        if collection_limit_satisfied(&manual_sessions, &files_with_mtime, offset, limit) {
+            break;
+        }
+    }
+
+    (
+        dedup_sort_truncate_sessions(manual_sessions, limit),
+        dedup_sort_truncate_sessions(auto_sessions, limit),
+    )
+}
+
+fn unique_session_count(sessions: &[RecentSession]) -> usize {
+    let mut seen = HashSet::new();
+    sessions
+        .iter()
+        .filter(|s| seen.insert(&s.session_id))
+        .count()
+}
+
+fn cutoff_timestamp_for_limit(sessions: &[RecentSession], limit: usize) -> Option<DateTime<Utc>> {
+    if limit == 0 {
+        return None;
+    }
+
+    let mut best_ts: HashMap<&str, DateTime<Utc>> = HashMap::new();
+    for s in sessions {
+        best_ts
+            .entry(&s.session_id)
+            .and_modify(|t| {
+                if s.timestamp > *t {
+                    *t = s.timestamp;
+                }
+            })
+            .or_insert(s.timestamp);
+    }
+    let mut sorted_ts: Vec<DateTime<Utc>> = best_ts.into_values().collect();
+    sorted_ts.sort_unstable_by(|a, b| b.cmp(a));
+    sorted_ts.get(limit - 1).copied()
+}
+
+fn collection_limit_satisfied(
+    sessions: &[RecentSession],
+    files_with_mtime: &[(PathBuf, std::time::SystemTime)],
+    offset: usize,
+    limit: usize,
+) -> bool {
+    if limit == 0 {
+        return true;
+    }
+    if unique_session_count(sessions) < limit {
+        return false;
+    }
+    if offset >= files_with_mtime.len() {
+        return true;
+    }
+
+    // Verify no remaining file can displace our current top `limit`.
+    // Since content_timestamp <= mtime (post-session metadata writes inflate
+    // mtime), the next unscanned file's mtime is an upper bound on its content
+    // timestamp. Use strict inequality: when cutoff == next_mtime, an unscanned
+    // file could still tie on timestamp and outrank on file_path.
+    if let Some(cutoff) = cutoff_timestamp_for_limit(sessions, limit) {
+        let next_mtime: DateTime<Utc> = files_with_mtime[offset].1.into();
+        return cutoff > next_mtime;
+    }
+
+    false
+}
+
+fn dedup_sort_truncate_sessions(sessions: Vec<RecentSession>, limit: usize) -> Vec<RecentSession> {
     // Deduplicate by session_id, keeping the newest-timestamp record.
     // This handles git worktrees where the same session appears in multiple dirs.
     let mut seen: HashMap<String, usize> = HashMap::new();
@@ -2087,6 +2173,55 @@ mod tests {
             "manual quota must survive even when auto dominates mtime"
         );
         assert_eq!(auto_count, 3, "auto class keeps its own cap");
+    }
+
+    #[test]
+    fn test_collect_recent_sessions_manual_quota_not_crowded_by_ccs_rankers() {
+        // CCS AI-ranker sessions are detected by content, not path. They must
+        // not consume the path-unknown/manual quota before the Manual filter runs.
+        let dir = tempfile::TempDir::new().unwrap();
+        let proj = dir.path().join("projects").join("-Users-u-manual-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        for i in 0..3 {
+            let filename = format!("manual{}.jsonl", i);
+            write_test_session(
+                &proj,
+                &filename,
+                &format!("manual-{}", i),
+                &format!("manual question {}", i),
+            );
+            set_file_mtime(
+                proj.join(filename),
+                FileTime::from_unix_time(1749000000 + i, 0),
+            )
+            .unwrap();
+        }
+
+        let ranker_prompt = "You are a session relevance ranker. Given a user query and a list of Claude sessions, return a JSON array of session IDs ranked by relevance to the query (most relevant first).";
+        for i in 0..20 {
+            let filename = format!("ranker{}.jsonl", i);
+            write_test_session(&proj, &filename, &format!("ranker-{}", i), ranker_prompt);
+            set_file_mtime(
+                proj.join(filename),
+                FileTime::from_unix_time(1750000000 + i, 0),
+            )
+            .unwrap();
+        }
+
+        let paths = vec![dir.path().join("projects").to_str().unwrap().to_string()];
+        let result = collect_recent_sessions(&paths, 3);
+
+        let manual_count = result.iter().filter(|s| s.automation.is_none()).count();
+        let ccs_count = result
+            .iter()
+            .filter(|s| s.automation.as_deref() == Some("ccs"))
+            .count();
+        assert_eq!(
+            manual_count, 3,
+            "manual quota must survive newer content-detected CCS rankers"
+        );
+        assert_eq!(ccs_count, 3, "CCS rankers share the auto quota");
     }
 
     #[test]

@@ -364,6 +364,10 @@ const CLAUDE_MEM_CONTENT_MARKER: &str = "<observed_from_primary_session>";
 const CLAUDE_MEM_TAG: &str = "claude-mem";
 pub(crate) const RECOG_AUTOMATION_MARKER_PREFIX: &str = "<!-- ccs-automation:recog";
 const RECOG_TAG: &str = "recog";
+// Prompt prefix of ccs's own AI re-ranking sessions (`claude -p` spawned by Ctrl+G, see ai.rs).
+const CCS_AI_RANKER_MARKER: &str =
+    "You are a session relevance ranker. Given a user query and a list of Claude sessions";
+const CCS_TAG: &str = "ccs";
 
 fn matches_scheduled_task_marker(content: &str) -> bool {
     content.trim_start().starts_with(SCHEDULED_TASK_MARKER)
@@ -381,6 +385,10 @@ fn matches_recog_automation_marker(content: &str) -> bool {
     content
         .trim_start()
         .starts_with(RECOG_AUTOMATION_MARKER_PREFIX)
+}
+
+fn matches_ccs_ai_ranker_marker(content: &str) -> bool {
+    content.trim_start().starts_with(CCS_AI_RANKER_MARKER)
 }
 
 /// Recursively collect session JSONL files from the given search roots.
@@ -555,6 +563,10 @@ pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, Str
 pub fn detect_automation(content: &str) -> Option<&'static str> {
     if matches_recog_automation_marker(content) {
         return Some(RECOG_TAG);
+    }
+
+    if matches_ccs_ai_ranker_marker(content) {
+        return Some(CCS_TAG);
     }
 
     if matches_scheduled_task_marker(content) {
@@ -813,6 +825,19 @@ mod tests {
     #[test]
     fn test_detect_automation_no_marker() {
         let content = "How do I sort a list in Python?";
+        assert_eq!(detect_automation(content), None);
+    }
+
+    #[test]
+    fn test_detect_automation_ccs_ai_ranker_prompt() {
+        let content = "You are a session relevance ranker. Given a user query and a list of Claude sessions, return a JSON array of session IDs ranked by relevance to the query (most relevant first).";
+        assert_eq!(detect_automation(content), Some("ccs"));
+    }
+
+    #[test]
+    fn test_detect_automation_ccs_ai_ranker_prompt_not_at_start() {
+        // Discussing the ranker prompt mid-message must NOT classify the session as automation.
+        let content = "добавь automation tag для You are a session relevance ranker. Given a user query and a list of Claude sessions сессий";
         assert_eq!(detect_automation(content), None);
     }
 
