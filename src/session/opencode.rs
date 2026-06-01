@@ -371,31 +371,29 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
         }
     };
 
-    let msg_rows: Vec<(String, String, i64, String)> = match msg_stmt.query_map(
-        [session_id],
-        |row| {
+    let msg_rows: Vec<(String, String, i64, String)> =
+        match msg_stmt.query_map([session_id], |row| {
             Ok((
                 row.get::<_, String>("id")?,
                 row.get::<_, String>("session_id")?,
                 row.get::<_, i64>("time_created")?,
                 row.get::<_, String>("data")?,
             ))
-        },
-    ) {
-        Ok(iter) => iter
-            .filter_map(|r| match r {
-                Ok(row) => Some(row),
-                Err(e) => {
-                    crate::ccs_debug!("opencode load_messages message row dropped: {e}");
-                    None
-                }
-            })
-            .collect(),
-        Err(e) => {
-            crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
-            return Vec::new();
-        }
-    };
+        }) {
+            Ok(iter) => iter
+                .filter_map(|r| match r {
+                    Ok(row) => Some(row),
+                    Err(e) => {
+                        crate::ccs_debug!("opencode load_messages message row dropped: {e}");
+                        None
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
+                return Vec::new();
+            }
+        };
 
     if msg_rows.is_empty() {
         return Vec::new();
