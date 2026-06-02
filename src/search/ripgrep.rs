@@ -972,48 +972,124 @@ pub fn sanitize_content(content: &str) -> String {
     result
 }
 
-/// Extract context around query match in content
-/// Uses character-safe slicing to handle UTF-8 properly
-pub fn extract_context(content: &str, query: &str, context_chars: usize) -> String {
-    let content_lower = content.to_lowercase();
+#[derive(Clone, Copy)]
+struct FoldedCharSpan {
+    folded_start: usize,
+    folded_end: usize,
+    original_start: usize,
+    original_end: usize,
+}
+
+fn find_case_insensitive_span(content: &str, query: &str) -> Option<(usize, usize)> {
+    if query.is_empty() {
+        return Some((0, 0));
+    }
+
     let query_lower = query.to_lowercase();
+    let mut content_lower = String::new();
+    let mut folded_spans = Vec::new();
 
-    // Find the character position of the query (case-insensitive)
-    if let Some(byte_pos) = content_lower.find(&query_lower) {
-        // Convert byte position to character position
-        let char_pos = content[..byte_pos].chars().count();
-        let total_chars = content.chars().count();
-        let query_char_len = query.chars().count();
-
-        // Calculate character boundaries
-        let start_char = char_pos.saturating_sub(context_chars);
-        let end_char = (char_pos + query_char_len + context_chars).min(total_chars);
-
-        // Extract substring using character indices
-        let result: String = content
-            .chars()
-            .skip(start_char)
-            .take(end_char - start_char)
-            .collect();
-
-        let mut output = String::new();
-        if start_char > 0 {
-            output.push_str("...");
+    for (original_start, ch) in content.char_indices() {
+        let original_end = original_start + ch.len_utf8();
+        for folded_ch in ch.to_lowercase() {
+            let folded_start = content_lower.len();
+            content_lower.push(folded_ch);
+            folded_spans.push(FoldedCharSpan {
+                folded_start,
+                folded_end: content_lower.len(),
+                original_start,
+                original_end,
+            });
         }
-        output.push_str(&result);
-        if end_char < total_chars {
-            output.push_str("...");
-        }
-        output
+    }
+
+    let folded_start = content_lower.find(&query_lower)?;
+    let folded_end = folded_start + query_lower.len();
+    let original_start = folded_spans
+        .iter()
+        .find(|span| folded_start >= span.folded_start && folded_start < span.folded_end)?
+        .original_start;
+    let original_end = folded_spans
+        .iter()
+        .find(|span| {
+            let folded_last_byte = folded_end.saturating_sub(1);
+            folded_last_byte >= span.folded_start && folded_last_byte < span.folded_end
+        })?
+        .original_end;
+
+    Some((original_start, original_end))
+}
+
+fn previous_char_boundary(content: &str, byte_pos: usize) -> usize {
+    let mut pos = byte_pos.min(content.len());
+    while !content.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
+fn next_char_boundary(content: &str, byte_pos: usize) -> usize {
+    let mut pos = byte_pos.min(content.len());
+    while pos < content.len() && !content.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
+fn truncated_context(content: &str, context_chars: usize) -> String {
+    let total_chars = content.chars().count();
+    if total_chars > context_chars * 2 {
+        let truncated: String = content.chars().take(context_chars * 2).collect();
+        format!("{}...", truncated)
     } else {
-        // If not found, return truncated content (character-safe)
-        let total_chars = content.chars().count();
-        if total_chars > context_chars * 2 {
-            let truncated: String = content.chars().take(context_chars * 2).collect();
-            format!("{}...", truncated)
-        } else {
-            content.to_string()
-        }
+        content.to_string()
+    }
+}
+
+/// Extract context around a known byte span in content.
+/// Uses character-safe slicing to handle UTF-8 properly.
+pub fn extract_context_around_span(
+    content: &str,
+    match_start: usize,
+    match_end: usize,
+    context_chars: usize,
+) -> String {
+    let start = previous_char_boundary(content, match_start);
+    let mut end = next_char_boundary(content, match_end);
+    if end < start {
+        end = start;
+    }
+
+    let match_start_char = content[..start].chars().count();
+    let match_end_char = content[..end].chars().count();
+    let total_chars = content.chars().count();
+
+    let start_char = match_start_char.saturating_sub(context_chars);
+    let end_char = (match_end_char + context_chars).min(total_chars);
+    let result: String = content
+        .chars()
+        .skip(start_char)
+        .take(end_char - start_char)
+        .collect();
+
+    let mut output = String::new();
+    if start_char > 0 {
+        output.push_str("...");
+    }
+    output.push_str(&result);
+    if end_char < total_chars {
+        output.push_str("...");
+    }
+    output
+}
+
+/// Extract context around query match in content.
+/// Uses character-safe slicing to handle UTF-8 properly.
+pub fn extract_context(content: &str, query: &str, context_chars: usize) -> String {
+    if let Some((match_start, match_end)) = find_case_insensitive_span(content, query) {
+        extract_context_around_span(content, match_start, match_end, context_chars)
+    } else {
+        truncated_context(content, context_chars)
     }
 }
 
@@ -1362,6 +1438,31 @@ mod tests {
         let context = extract_context(content, "nonexistent", 10);
 
         assert!(!context.is_empty(), "Should return truncated content");
+    }
+
+    #[test]
+    fn test_extract_context_lowercase_expansion_before_match() {
+        let content = "\u{0130}\u{00e9}";
+
+        let context = extract_context(content, "\u{00e9}", 10);
+
+        assert_eq!(context, content);
+    }
+
+    #[test]
+    fn test_extract_context_around_span_uses_actual_match_offset() {
+        let filler = "between ".repeat(80);
+        let content = format!("START_MARKER foobar {filler} MATCH_MARKER foo END_MARKER");
+        let matched = RegexBuilder::new(r"\bfoo\b")
+            .build()
+            .unwrap()
+            .find(&content)
+            .unwrap();
+
+        let context = extract_context_around_span(&content, matched.start(), matched.end(), 20);
+
+        assert!(context.contains("MATCH_MARKER foo"));
+        assert!(!context.contains("START_MARKER foobar"));
     }
 
     #[test]

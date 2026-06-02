@@ -1,4 +1,7 @@
-use crate::search::{extract_project_from_path, group_by_session, search_multiple_paths};
+use crate::search::{
+    extract_context, extract_context_around_span, extract_project_from_path, group_by_session,
+    search_multiple_paths,
+};
 use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -20,6 +23,18 @@ struct CliSearchResult {
     content: String,
 }
 
+/// Trailing record emitted after search results so machine consumers can
+/// tell whether the result set is complete without parsing stderr.
+#[derive(Serialize)]
+struct CliSearchSummary {
+    #[serde(rename = "type")]
+    record_type: &'static str,
+    shown: usize,
+    total_matches: usize,
+    sessions: usize,
+    truncated: bool,
+}
+
 #[derive(Serialize)]
 struct ListResult {
     session_id: String,
@@ -31,8 +46,17 @@ struct ListResult {
     message_count: usize,
 }
 
+/// Characters of context kept on each side of the match when rendering snippets
+const SNIPPET_CONTEXT_CHARS: usize = 200;
+
 /// Run CLI search command
-pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: usize) {
+pub fn cli_search(
+    query: &str,
+    search_paths: &[String],
+    use_regex: bool,
+    limit: usize,
+    full_content: bool,
+) {
     // CLI search is one-shot and runs to completion; no cancellation is needed,
     // but the lower-level API requires a token, so we pass a permanently-false one.
     let cancel = Arc::new(AtomicBool::new(false));
@@ -48,20 +72,52 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
         eprintln!("Warning: results may be incomplete (per-file match limit reached)");
     }
 
-    let groups = group_by_session(search_result.matches);
-    let mut count = 0;
+    // In regex mode the query pattern rarely appears literally in the content,
+    // so the snippet is anchored on the first actual regex match instead.
+    let snippet_regex = if use_regex && !full_content {
+        regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    } else {
+        None
+    };
 
-    for group in &groups {
+    let groups = group_by_session(search_result.matches);
+
+    let total_matches: usize = groups
+        .iter()
+        .map(|g| g.matches.iter().filter(|m| m.message.is_some()).count())
+        .sum();
+
+    let mut shown = 0;
+    let mut sessions_shown = std::collections::HashSet::new();
+
+    'groups: for group in &groups {
         let project = extract_project_from_path(&group.file_path);
         let provider = SessionProvider::from_path(&group.file_path);
         let source = SessionSource::from_path(&group.file_path);
 
         for m in &group.matches {
-            if count >= limit {
-                return;
+            if shown >= limit {
+                break 'groups;
             }
 
             if let Some(ref msg) = m.message {
+                let content = if full_content {
+                    msg.content.clone()
+                } else if let Some(found) =
+                    snippet_regex.as_ref().and_then(|re| re.find(&msg.content))
+                {
+                    extract_context_around_span(
+                        &msg.content,
+                        found.start(),
+                        found.end(),
+                        SNIPPET_CONTEXT_CHARS,
+                    )
+                } else {
+                    extract_context(&msg.content, query, SNIPPET_CONTEXT_CHARS)
+                };
                 let result = CliSearchResult {
                     session_id: msg.session_id.clone(),
                     project: project.clone(),
@@ -70,14 +126,30 @@ pub fn cli_search(query: &str, search_paths: &[String], use_regex: bool, limit: 
                     file_path: m.file_path.clone(),
                     timestamp: msg.timestamp.to_rfc3339(),
                     role: msg.role.clone(),
-                    content: msg.content.clone(),
+                    content,
                 };
 
                 if let Ok(json) = serde_json::to_string(&result) {
                     println!("{}", json);
-                    count += 1;
+                    shown += 1;
+                    sessions_shown.insert(msg.session_id.clone());
                 }
             }
+        }
+    }
+
+    // Keep the "no matches -> empty stdout" contract: the summary record is
+    // emitted only when at least one result was shown.
+    if shown > 0 {
+        let summary = CliSearchSummary {
+            record_type: "summary",
+            shown,
+            total_matches,
+            sessions: sessions_shown.len(),
+            truncated: search_result.truncated || total_matches > shown,
+        };
+        if let Ok(json) = serde_json::to_string(&summary) {
+            println!("{}", json);
         }
     }
 }

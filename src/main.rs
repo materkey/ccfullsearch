@@ -43,6 +43,9 @@ enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "100")]
         limit: usize,
+        /// Output full message content instead of a snippet around the match
+        #[arg(long)]
+        full_content: bool,
     },
     /// List all Claude Code sessions
     List {
@@ -188,8 +191,9 @@ fn main() -> io::Result<()> {
             query,
             regex,
             limit,
+            full_content,
         }) => {
-            ccs::cli::cli_search(&query, &ccs::get_search_paths(), regex, limit);
+            ccs::cli::cli_search(&query, &ccs::get_search_paths(), regex, limit, full_content);
             return Ok(());
         }
         Some(Commands::List { limit }) => {

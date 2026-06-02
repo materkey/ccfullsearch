@@ -177,7 +177,18 @@ Fields:
 - `file_path`: full path to the JSONL transcript.
 - `timestamp`: message timestamp in RFC 3339 format.
 - `role`: message role.
-- `content`: extracted searchable content.
+- `content`: snippet around the match (about 200 characters of context on each side). Pass `--full-content` to output the entire message text instead.
+
+When at least one result is emitted, the last line is a summary record so consumers can tell whether the result set is complete:
+
+```json
+{"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true}
+```
+
+- `shown`: number of result lines emitted.
+- `total_matches`: matches found before applying `--limit`.
+- `sessions`: distinct sessions among the shown results.
+- `truncated`: `true` when results are incomplete (the limit cut them off or a per-file match cap was hit).
 
 Example:
 

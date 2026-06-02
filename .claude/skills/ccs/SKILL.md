@@ -1,13 +1,13 @@
 ---
 name: ccs
-description: Search across all Claude Code and Claude Desktop sessions. Find past conversations by content, list recent sessions, locate specific discussions. Use when user asks to find something in previous sessions, recall past conversations, or list Claude sessions.
+description: Search across all Claude Code, Claude Desktop, Codex, and Opencode sessions. Find past conversations by content, list recent sessions, locate specific discussions. Use when user asks to find something in previous sessions, recall past conversations, or list Claude sessions.
 argument-hint: 'optional: search query'
 allowed-tools: [Bash, Read, Grep, Glob]
 ---
 
 # Claude Session Search
 
-Full-text search across Claude Code CLI and Claude Desktop sessions using `ccs`.
+Full-text search across Claude Code CLI, Claude Desktop, Codex, and Opencode sessions using `ccs`.
 
 ## Prerequisites
 
@@ -80,10 +80,12 @@ For **Desktop** sessions (`source: Desktop`): overlay resume is not available, o
 #### Search sessions by content
 
 ```bash
-ccs search "<query>" [--regex] [--limit N]
+ccs search "<query>" [--regex] [--limit N] [--full-content]
 ```
 
 Default limit: 100 matches. Add `--regex` for regex patterns.
+
+By default `content` is a snippet around the match (~200 chars of context on each side), keeping output compact for agent consumption. Add `--full-content` to get the entire message text — use it only when you need the full message body, since tool outputs can make single results very large.
 
 #### List all sessions
 
@@ -117,20 +119,30 @@ Both `search` and `list` commands output JSONL (one JSON object per line).
 
 | Field | Description |
 |-------|-------------|
-| `session_id` | UUID of the session |
+| `session_id` | UUID of the session (or provider-specific session ID) |
 | `project` | Project name extracted from path |
+| `provider` | `Claude`, `Codex`, or `Opencode` |
 | `source` | `CLI` or `Desktop` |
 | `file_path` | Full path to the .jsonl session file |
 | `timestamp` | ISO 8601 timestamp of the message |
 | `role` | `user` or `assistant` |
-| `content` | Message text content |
+| `content` | Snippet around the match (full message text with `--full-content`) |
+
+When at least one result is emitted, the **last line is a summary record** (it has a `type` field; result rows don't):
+
+```json
+{"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true}
+```
+
+If `truncated` is `true`, the result set is incomplete — narrow the query or raise `--limit`.
 
 ### List output fields
 
 | Field | Description |
 |-------|-------------|
-| `session_id` | UUID of the session |
+| `session_id` | UUID of the session (or provider-specific session ID) |
 | `project` | Project name |
+| `provider` | `Claude`, `Codex`, or `Opencode` |
 | `source` | `CLI` or `Desktop` |
 | `file_path` | Full path to the .jsonl session file |
 | `last_active` | ISO 8601 timestamp of last message |
@@ -171,3 +183,4 @@ claude --resume <session_id>
 - Tool use inputs and results are also searchable
 - The `project` field helps identify which project a session belongs to
 - Use `jq` to filter JSONL output: `ccs search "error" | jq 'select(.role == "user")'`
+- To read a full conversation after finding it, prefer the Read tool on `file_path` over `--full-content`: full content of many matches can be hundreds of KB
