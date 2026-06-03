@@ -1,4 +1,4 @@
-use super::path_codec::decode_project_path;
+use super::path_codec::{decode_project_path, encode_path_for_claude};
 use crate::session;
 use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
 use std::fs;
@@ -230,13 +230,38 @@ fn fallback_working_dir(file_path: &str) -> String {
         .unwrap_or_else(|| "/tmp".to_string())
 }
 
+/// Whether launching `claude --resume <session-id>` with `cwd = working_dir`
+/// will actually locate the session.
+///
+/// Claude derives the project directory from cwd by re-encoding it (the same
+/// transform as `encode_path_for_claude`) and then looks for the transcript in
+/// `~/.claude/projects/<encoded>/`. So session-id resume only resolves when that
+/// encoding matches the directory that actually holds the JSONL file — i.e. the
+/// parent directory name of `file_path`.
+fn resume_by_session_id_resolves(working_dir: &str, file_path: &str) -> bool {
+    match Path::new(file_path)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        Some(parent_name) => encode_path_for_claude(working_dir) == parent_name,
+        None => false,
+    }
+}
+
+fn canonical_resume_path(file_path: &str) -> Result<String, String> {
+    fs::canonicalize(file_path)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("Failed to canonicalize resume path {}: {}", file_path, e))
+}
+
 /// Build the resume command arguments. Returns (working_dir, resume_arg).
 /// Extracted for testability.
 pub(super) fn build_resume_command(
     session_id: &str,
     file_path: &str,
 ) -> Result<(String, String), String> {
-    let resume_arg = prepare_resume(session_id, file_path)?;
+    ensure_project_dir(file_path)?;
 
     let decoded_project_dir = decode_project_path(file_path);
 
@@ -246,6 +271,21 @@ pub(super) fn build_resume_command(
     let working_dir = match decoded_project_dir {
         Some(ref dir) if Path::new(dir).exists() => dir.clone(),
         _ => fallback_working_dir(file_path),
+    };
+
+    // `claude --resume <session-id>` finds the transcript by re-encoding cwd into
+    // a `~/.claude/projects/<encoded>/` directory name. That only works when
+    // `encode(working_dir)` matches the directory actually holding the JSONL. When
+    // the original project directory no longer exists on disk (it was moved,
+    // renamed, or the decode is lossy), `working_dir` is a fallback whose encoding
+    // points elsewhere, and claude prints "No conversation found with session ID".
+    // In that case resume by the absolute `.jsonl` path instead — claude's
+    // `--resume <file.jsonl>` loads the transcript straight from the file,
+    // independent of cwd.
+    let resume_arg = if resume_by_session_id_resolves(&working_dir, file_path) {
+        prepare_resume(session_id, file_path)?
+    } else {
+        canonical_resume_path(file_path)?
     };
 
     Ok((working_dir, resume_arg))
@@ -503,18 +543,29 @@ mod tests {
     }
 
     #[test]
-    fn test_build_resume_command_returns_working_dir_and_session_id() {
-        // Place session file inside a .claude/projects/<encoded-dir>/ structure
-        // so decode_project_path can resolve the working directory
+    fn test_build_resume_command_resumes_by_jsonl_path_when_project_dir_missing() {
+        // Regression: when the original project directory no longer exists on
+        // disk (moved/renamed), `claude --resume <session-id>` cannot resolve the
+        // session from the fallback cwd and prints
+        // "No conversation found with session ID". build_resume_command must
+        // instead point claude at the absolute .jsonl path so the transcript is
+        // loaded straight from the file, independent of cwd.
         let dir = TempDir::new().unwrap();
-        let project_dir = dir
-            .path()
-            .join(".claude")
-            .join("projects")
-            .join("-tmp-myproject");
+
+        // A guaranteed-missing decoded target: create then drop a tempdir.
+        let ghost_dir = TempDir::new().unwrap();
+        let ghost_path = ghost_dir.path().to_path_buf();
+        drop(ghost_dir);
+        assert!(
+            !ghost_path.exists(),
+            "ghost dir should not exist after drop"
+        );
+
+        let encoded = encode_path_for_claude(ghost_path.to_str().unwrap());
+        let project_dir = dir.path().join(".claude").join("projects").join(&encoded);
         fs::create_dir_all(&project_dir).unwrap();
 
-        let session_id = "test-build-cmd";
+        let session_id = "missing-project-test";
         let session_file = project_dir.join(format!("{}.jsonl", session_id));
         {
             let mut f = fs::File::create(&session_file).unwrap();
@@ -524,12 +575,65 @@ mod tests {
         let (working_dir, resume_arg) =
             build_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
 
-        assert_eq!(resume_arg, session_id);
-        // working_dir should be a valid directory
+        // Falls back to a real, existing directory for cwd...
         assert!(
             Path::new(&working_dir).exists(),
             "working_dir should exist: {}",
             working_dir
+        );
+        // ...and resumes by the absolute .jsonl path, not the bare session id.
+        assert_eq!(
+            resume_arg,
+            session_file.canonicalize().unwrap().to_string_lossy(),
+            "Missing project dir must resume by jsonl path so claude finds the session"
+        );
+    }
+
+    #[test]
+    fn test_build_resume_command_canonicalizes_relative_jsonl_resume_path() {
+        // Regression: build_resume_command launches claude with cwd set to
+        // working_dir. If the path-based resume arg stays relative, claude
+        // resolves it under that new cwd and looks in the wrong location.
+        let cwd = std::env::current_dir().unwrap();
+        let dir = TempDir::new_in(&cwd).unwrap();
+
+        let ghost_dir = TempDir::new().unwrap();
+        let ghost_path = ghost_dir.path().to_path_buf();
+        drop(ghost_dir);
+        assert!(
+            !ghost_path.exists(),
+            "ghost dir should not exist after drop"
+        );
+
+        let encoded = encode_path_for_claude(ghost_path.to_str().unwrap());
+        let project_dir = dir.path().join(".claude").join("projects").join(&encoded);
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let session_id = "relative-missing-project-test";
+        let session_file = project_dir.join(format!("{}.jsonl", session_id));
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
+        }
+
+        let relative_session_file = session_file.strip_prefix(&cwd).unwrap();
+        assert!(
+            relative_session_file.is_relative(),
+            "test must pass a relative session path"
+        );
+
+        let (_working_dir, resume_arg) =
+            build_resume_command(session_id, relative_session_file.to_str().unwrap()).unwrap();
+
+        assert!(
+            Path::new(&resume_arg).is_absolute(),
+            "path-based resume arg must be absolute: {}",
+            resume_arg
+        );
+        assert_eq!(
+            Path::new(&resume_arg).canonicalize().unwrap(),
+            session_file.canonicalize().unwrap(),
+            "relative input must be canonicalized before changing child cwd"
         );
     }
 
@@ -605,7 +709,7 @@ mod tests {
             writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z"}}"#, session_id).unwrap();
         }
 
-        let (working_dir, _) =
+        let (working_dir, resume_arg) =
             build_resume_command(session_id, session_file.to_str().unwrap()).unwrap();
 
         // Should use the real existing project directory
@@ -613,6 +717,11 @@ mod tests {
             Path::new(&working_dir).canonicalize().unwrap(),
             real_project.canonicalize().unwrap(),
             "Should use the existing decoded project path as working dir"
+        );
+        // cwd re-encodes to the JSONL's project dir, so resume by session id.
+        assert_eq!(
+            resume_arg, session_id,
+            "When the project dir exists, claude resolves the session from cwd by id"
         );
     }
 
