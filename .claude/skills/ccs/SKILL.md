@@ -77,15 +77,67 @@ For **Desktop** sessions (`source: Desktop`): overlay resume is not available, o
 
 ### CLI Mode (for scripted/non-interactive use)
 
-#### Search sessions by content
+The retrieval flow is **search → show → answer**.
+
+#### Step 1 — search
 
 ```bash
-ccs search "<query>" [--regex] [--limit N] [--full-content]
+ccs search "<query>" --limit 20 [--regex]
 ```
 
-Default limit: 100 matches. Add `--regex` for regex patterns.
+Output is JSONL: one `{"type":"match",...}` line per result, then always a final `{"type":"summary",...}` line.
 
-By default `content` is a snippet around the match (~200 chars of context on each side), keeping output compact for agent consumption. Add `--full-content` to get the entire message text — use it only when you need the full message body, since tool outputs can make single results very large.
+Match fields:
+
+| Field | Description |
+|-------|-------------|
+| `session_id` | Session ID |
+| `project` | Project name extracted from path |
+| `provider` | `Claude`, `Codex`, or `Opencode` |
+| `source` | `CLI` or `Desktop` |
+| `file_path` | Path to the session file (for Opencode: `<db>#<session_id>`) |
+| `line_number` | 1-based line in the JSONL file; `null` for Opencode |
+| `message_uuid` | Message UUID; for Opencode this is the SQLite message id |
+| `timestamp` | ISO 8601 timestamp of the message |
+| `role` | `user` or `assistant` |
+| `content` | Snippet around the match (~200 chars each side) |
+
+Summary line:
+
+```json
+{"type":"summary","shown":20,"total_matches":2721,"sessions":24,"truncated":true}
+```
+
+`shown: 0` means no matches. `truncated: true` means the result set is incomplete.
+
+#### Step 2 — show (drill down)
+
+The snippet identifies the session; to answer the user's question, read the surrounding messages:
+
+```bash
+ccs show <file_path> --line <line_number> [--context K] [--max-chars M]
+```
+
+For Opencode matches `line_number` is `null` — anchor by uuid instead:
+
+```bash
+ccs show <file_path> --uuid <message_uuid>
+```
+
+Output is JSONL: `{"type":"message",...}` rows in file order (the target carries `is_target: true`, truncated rows carry `content_truncated: true`), then a final `{"type":"summary",...}` with `session_id`, `provider`, `project`. Defaults: 3 messages before/after, 2000 chars per message — a few KB total.
+
+Note: near a fork of a branched session the window can mix branches; `parent_uuid` on each row shows the actual chain.
+
+#### Step 3 — answer
+
+Cite `project` and `timestamp` from the match. Say if the result set was truncated.
+
+#### Fallbacks
+
+- `shown: 0` — try 2-3 query variants: a shorter phrase, a synonym, or `--regex` for patterns like `"OOM|OutOfMemory"`.
+- `truncated: true` — narrow the query (more specific phrase) before raising `--limit`.
+- Window too small — raise `--context` / `--max-chars`, or use the Read tool on `file_path` with `offset` near `line_number`.
+- `--full-content` on search is a last resort: tool outputs can make single results hundreds of KB.
 
 #### List all sessions
 
@@ -93,7 +145,7 @@ By default `content` is a snippet around the match (~200 chars of context on eac
 ccs list [--limit N]
 ```
 
-Default limit: 50 sessions. Sorted by last activity (newest first).
+Default limit: 50 sessions, sorted by last activity (newest first). Fields: `session_id`, `project`, `provider`, `source`, `file_path`, `last_active`, `message_count`.
 
 #### Pick a session (non-interactive output)
 
@@ -111,61 +163,14 @@ ccs
 
 Launches full interactive TUI with search, navigation, tree view, and session resume.
 
-## Output Format (CLI search/list)
-
-Both `search` and `list` commands output JSONL (one JSON object per line).
-
-### Search output fields
-
-| Field | Description |
-|-------|-------------|
-| `session_id` | UUID of the session (or provider-specific session ID) |
-| `project` | Project name extracted from path |
-| `provider` | `Claude`, `Codex`, or `Opencode` |
-| `source` | `CLI` or `Desktop` |
-| `file_path` | Full path to the .jsonl session file |
-| `timestamp` | ISO 8601 timestamp of the message |
-| `role` | `user` or `assistant` |
-| `content` | Snippet around the match (full message text with `--full-content`) |
-
-When at least one result is emitted, the **last line is a summary record** (it has a `type` field; result rows don't):
-
-```json
-{"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true}
-```
-
-If `truncated` is `true`, the result set is incomplete — narrow the query or raise `--limit`.
-
-### List output fields
-
-| Field | Description |
-|-------|-------------|
-| `session_id` | UUID of the session (or provider-specific session ID) |
-| `project` | Project name |
-| `provider` | `Claude`, `Codex`, or `Opencode` |
-| `source` | `CLI` or `Desktop` |
-| `file_path` | Full path to the .jsonl session file |
-| `last_active` | ISO 8601 timestamp of last message |
-| `message_count` | Total number of messages |
-
 ## Usage Patterns
 
-### Find sessions where a topic was discussed
+### Answer "what did we decide about X?"
 
 ```bash
-ccs search "docker build" --limit 10
-```
-
-### Find sessions with regex
-
-```bash
-ccs search "OOM|OutOfMemory" --regex --limit 20
-```
-
-### List recent sessions
-
-```bash
-ccs list --limit 10
+ccs search "configuration cache" --limit 20
+# pick the most relevant match, then:
+ccs show /path/to/session.jsonl --line 381 --context 3
 ```
 
 ### Resume a found session
@@ -179,8 +184,5 @@ claude --resume <session_id>
 
 - Search is case-insensitive by default
 - Results are grouped by session, sorted by most recent first
-- Content includes both user messages and assistant responses
 - Tool use inputs and results are also searchable
 - The `project` field helps identify which project a session belongs to
-- Use `jq` to filter JSONL output: `ccs search "error" | jq 'select(.role == "user")'`
-- To read a full conversation after finding it, prefer the Read tool on `file_path` over `--full-content`: full content of many matches can be hundreds of KB

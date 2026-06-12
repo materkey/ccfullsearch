@@ -53,6 +53,23 @@ enum Commands {
         #[arg(long, default_value = "50")]
         limit: usize,
     },
+    /// Show messages around a search hit (drill-down for `ccs search` results)
+    Show {
+        /// Session file path (file_path from search output)
+        file_path: String,
+        /// 1-based JSONL line of the target message (line_number from search output)
+        #[arg(long)]
+        line: Option<usize>,
+        /// Target message UUID (message_uuid from search output)
+        #[arg(long)]
+        uuid: Option<String>,
+        /// Messages of context before and after the target
+        #[arg(long, default_value = "3")]
+        context: usize,
+        /// Maximum characters of content per message
+        #[arg(long, default_value = "2000")]
+        max_chars: usize,
+    },
     /// Pick a session interactively and output its info
     Pick {
         /// Optional initial search query
@@ -198,6 +215,16 @@ fn main() -> io::Result<()> {
         }
         Some(Commands::List { limit }) => {
             ccs::cli::cli_list(&ccs::get_search_paths(), limit);
+            return Ok(());
+        }
+        Some(Commands::Show {
+            file_path,
+            line,
+            uuid,
+            context,
+            max_chars,
+        }) => {
+            ccs::cli::cli_show(&file_path, line, uuid.as_deref(), context, max_chars);
             return Ok(());
         }
         Some(Commands::Pick { query, output }) => {

@@ -91,19 +91,23 @@ fn setup_unicode_expansion_search_dir() -> TempDir {
 }
 
 /// Split stdout into result rows and the trailing summary row (if any).
-/// Result rows have no "type" field; the summary row has type == "summary".
+/// Result rows have type == "match"; the summary row has type == "summary".
 fn split_rows(stdout: &str) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
     let rows: Vec<serde_json::Value> = stdout
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    match rows.last() {
-        Some(last) if last["type"] == "summary" => {
-            let summary = last.clone();
-            (rows[..rows.len() - 1].to_vec(), Some(summary))
-        }
+    let (results, summary) = match rows.last() {
+        Some(last) if last["type"] == "summary" => (
+            rows[..rows.len() - 1].to_vec(),
+            Some(rows.last().cloned().unwrap()),
+        ),
         _ => (rows, None),
+    };
+    for row in &results {
+        assert_eq!(row["type"], "match", "Result rows should have type=match");
     }
+    (results, summary)
 }
 
 #[test]
@@ -145,16 +149,25 @@ fn search_returns_json_lines() {
 }
 
 #[test]
-fn search_no_matches_produces_empty_output() {
+fn search_no_matches_emits_summary_only() {
     let dir = setup_search_dir("linear_session.jsonl");
 
-    Command::cargo_bin("ccs")
+    let output = Command::cargo_bin("ccs")
         .unwrap()
         .args(["search", "nonexistent_query_xyz"])
         .env("CCFS_SEARCH_PATH", dir.path().to_str().unwrap())
-        .assert()
-        .success()
-        .stdout(predicate::str::is_empty());
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (results, summary) = split_rows(&stdout);
+    assert!(results.is_empty(), "No result rows expected");
+    let summary = summary.expect("Summary should be emitted even with zero matches");
+    assert_eq!(summary["shown"], 0);
+    assert_eq!(summary["total_matches"], 0);
+    assert_eq!(summary["sessions"], 0);
+    assert_eq!(summary["truncated"], false);
 }
 
 #[test]
@@ -246,6 +259,14 @@ fn search_finds_codex_response_items() {
         .as_str()
         .unwrap_or("")
         .contains("codex needle")));
+    // Pins line_number semantics for Codex rollouts: the first user
+    // response_item sits on the file's 2nd line, after session_meta.
+    assert!(
+        rows.iter()
+            .filter(|row| row["type"] == "match")
+            .any(|row| row["line_number"] == 2),
+        "Codex matches should carry the JSONL line number"
+    );
 }
 
 #[test]
@@ -264,10 +285,16 @@ fn search_emits_summary_line_after_results() {
 
     let summary = summary.expect("Last line should be a summary record");
     assert!(!results.is_empty(), "Should have result rows");
-    assert!(
-        results.iter().all(|r| r.get("type").is_none()),
-        "Result rows should not carry a type field"
-    );
+    for row in &results {
+        assert!(
+            row["line_number"].as_u64().unwrap() >= 1,
+            "Each match should carry a 1-based line_number"
+        );
+        assert!(
+            row["message_uuid"].is_string(),
+            "Each match should carry message_uuid when the JSONL has uuids"
+        );
+    }
     assert_eq!(summary["shown"], results.len());
     assert_eq!(summary["truncated"], false);
     assert_eq!(summary["total_matches"], results.len());
@@ -299,19 +326,6 @@ fn search_summary_reports_truncation_when_limit_cuts_results() {
         summary["total_matches"].as_u64().unwrap() > 1,
         "total_matches should count matches beyond the limit"
     );
-}
-
-#[test]
-fn search_no_matches_emits_no_summary() {
-    let dir = setup_search_dir("linear_session.jsonl");
-
-    Command::cargo_bin("ccs")
-        .unwrap()
-        .args(["search", "nonexistent_query_xyz"])
-        .env("CCFS_SEARCH_PATH", dir.path().to_str().unwrap())
-        .assert()
-        .success()
-        .stdout(predicate::str::is_empty());
 }
 
 #[test]
@@ -456,6 +470,8 @@ fn search_snippet_is_safe_when_lowercase_expands_before_match() {
 fn search_resolves_codex_subagent_hits_to_parent_session() {
     let dir = setup_codex_subagent_search_dir();
     let search_path = dir.path().join(".codex/sessions");
+    let child_path = search_path
+        .join("2026/05/03/rollout-2026-05-03T10-01-00-019f0000-0000-7000-8000-000000000002.jsonl");
 
     let output = Command::cargo_bin("ccs")
         .unwrap()
@@ -477,12 +493,48 @@ fn search_resolves_codex_subagent_hits_to_parent_session() {
         rows[0]["session_id"],
         "019f0000-0000-7000-8000-000000000001"
     );
-    assert!(rows[0]["file_path"]
-        .as_str()
-        .unwrap()
-        .contains("rollout-2026-05-03T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl"));
+    assert_eq!(rows[0]["file_path"], child_path.to_string_lossy().as_ref());
+    assert_eq!(rows[0]["line_number"], 2);
     assert!(rows[0]["content"]
         .as_str()
         .unwrap_or("")
         .contains("Codex child needle"));
+}
+
+#[test]
+fn search_resolves_claude_agent_hits_to_parent_session_but_emits_hit_path() {
+    let dir = TempDir::new().unwrap();
+    let session_dir = dir.path().join("-test-project");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(
+        session_dir.join("parent-session.jsonl"),
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Parent prompt"}]},"uuid":"parent-u1","sessionId":"parent-session","timestamp":"2025-06-01T10:00:00Z"}"#,
+    )
+    .unwrap();
+    let agent_path = session_dir.join("agent-task.jsonl");
+    fs::write(
+        &agent_path,
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Claude agent drilldown needle"}]},"uuid":"agent-a1","sessionId":"parent-session","timestamp":"2025-06-01T10:01:00Z"}"#,
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["search", "Claude agent drilldown needle", "--limit", "10"])
+        .env("CCFS_SEARCH_PATH", dir.path().to_str().unwrap())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "search should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (rows, _summary) = split_rows(&stdout);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"], "parent-session");
+    assert_eq!(rows[0]["file_path"], agent_path.to_string_lossy().as_ref());
+    assert_eq!(rows[0]["line_number"], 1);
+    assert_eq!(rows[0]["message_uuid"], "agent-a1");
 }

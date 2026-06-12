@@ -166,20 +166,23 @@ Press `Ctrl+G` to enter AI ranking mode. Type a natural-language query, then pre
 
 ## CLI
 
-`ccs search` writes JSONL, one object per matching message.
+`ccs search` writes JSONL, one `{"type":"match",...}` object per matching message.
 
 Fields:
 
+- `type`: always `match` on result rows.
 - `session_id`: session UUID or provider-specific session ID.
 - `project`: project name extracted from the transcript path or metadata.
 - `provider`: transcript owner, for example `Claude` or `Codex`.
 - `source`: session source, for example `CLI` or `Desktop`.
-- `file_path`: full path to the JSONL transcript.
+- `file_path`: full path to the JSONL transcript (for Opencode: `<db>#<session_id>`).
+- `line_number`: 1-based line of the message in the JSONL transcript; `null` for Opencode, whose messages live in SQLite.
+- `message_uuid`: message UUID when the transcript has one; for Opencode this is the SQLite message id.
 - `timestamp`: message timestamp in RFC 3339 format.
 - `role`: message role.
 - `content`: snippet around the match (about 200 characters of context on each side). Pass `--full-content` to output the entire message text instead.
 
-When at least one result is emitted, the last line is a summary record so consumers can tell whether the result set is complete:
+The last line is always a summary record, even with zero matches, so consumers can tell whether the result set is complete:
 
 ```json
 {"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true}
@@ -195,6 +198,15 @@ Example:
 ```bash
 ccs search "connection pool timeout" --regex --limit 10
 ```
+
+`ccs show` prints the messages around a search hit — the drill-down step after `ccs search`. Pass `file_path` plus `--line` (the `line_number` of a match) or `--uuid` (its `message_uuid`; the only valid anchor for Opencode):
+
+```bash
+ccs show /path/to/session.jsonl --line 381 --context 3 --max-chars 2000
+ccs show "/path/to/opencode.db#ses_abc" --uuid msg_123
+```
+
+Output is JSONL: `{"type":"message",...}` rows in file order, then a final `{"type":"summary",...}`. Message fields: `line_number`, `message_uuid`, `parent_uuid`, `role`, `timestamp`, `content`, plus `is_target: true` on the anchor row and `content_truncated: true` when `--max-chars` (default 2000) cut the content. `--context` (default 3) counts messages on each side; interleaved non-message records do not shrink the window. Near a fork of a branched session the window follows file order, not the chain — use `parent_uuid` to see the actual structure.
 
 `ccs list` writes JSONL, one object per recent session.
 

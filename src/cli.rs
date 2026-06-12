@@ -1,6 +1,6 @@
 use crate::search::{
     extract_context, extract_context_around_span, extract_project_from_path, group_by_session,
-    search_multiple_paths,
+    search_multiple_paths, Message,
 };
 use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
 use chrono::{DateTime, Utc};
@@ -13,11 +13,17 @@ use std::sync::Arc;
 
 #[derive(Serialize)]
 struct CliSearchResult {
+    #[serde(rename = "type")]
+    record_type: &'static str,
     session_id: String,
     project: String,
     provider: String,
     source: String,
     file_path: String,
+    /// 1-based line in the session JSONL; None for Opencode rows, whose
+    /// messages live in SQLite and have no line position.
+    line_number: Option<usize>,
+    message_uuid: Option<String>,
     timestamp: String,
     role: String,
     content: String,
@@ -97,6 +103,7 @@ pub fn cli_search(
         let project = extract_project_from_path(&group.file_path);
         let provider = SessionProvider::from_path(&group.file_path);
         let source = SessionSource::from_path(&group.file_path);
+        let is_opencode = crate::session::opencode::parse_session_path(&group.file_path).is_some();
 
         for m in &group.matches {
             if shown >= limit {
@@ -119,11 +126,18 @@ pub fn cli_search(
                     extract_context(&msg.content, query, SNIPPET_CONTEXT_CHARS)
                 };
                 let result = CliSearchResult {
+                    record_type: "match",
                     session_id: msg.session_id.clone(),
                     project: project.clone(),
                     provider: provider.display_name().to_string(),
                     source: source.display_name().to_string(),
-                    file_path: m.file_path.clone(),
+                    file_path: msg.file_path.as_deref().unwrap_or(&m.file_path).to_string(),
+                    line_number: if is_opencode {
+                        None
+                    } else {
+                        Some(msg.line_number)
+                    },
+                    message_uuid: msg.uuid.clone(),
                     timestamp: msg.timestamp.to_rfc3339(),
                     role: msg.role.clone(),
                     content,
@@ -138,19 +152,286 @@ pub fn cli_search(
         }
     }
 
-    // Keep the "no matches -> empty stdout" contract: the summary record is
-    // emitted only when at least one result was shown.
-    if shown > 0 {
-        let summary = CliSearchSummary {
-            record_type: "summary",
-            shown,
-            total_matches,
-            sessions: sessions_shown.len(),
-            truncated: search_result.truncated || total_matches > shown,
+    // The summary is always the last line, even with zero matches, so machine
+    // consumers can tell "nothing found" from "search did not run".
+    let summary = CliSearchSummary {
+        record_type: "summary",
+        shown,
+        total_matches,
+        sessions: sessions_shown.len(),
+        truncated: search_result.truncated || total_matches > shown,
+    };
+    if let Ok(json) = serde_json::to_string(&summary) {
+        println!("{}", json);
+    }
+}
+
+/// Per-message record emitted by `ccs show`.
+#[derive(Serialize)]
+struct ShowMessageRow {
+    #[serde(rename = "type")]
+    record_type: &'static str,
+    line_number: Option<usize>,
+    message_uuid: Option<String>,
+    parent_uuid: Option<String>,
+    role: String,
+    timestamp: String,
+    content: String,
+    #[serde(skip_serializing_if = "is_false")]
+    is_target: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    content_truncated: bool,
+}
+
+/// Trailing record emitted by `ccs show` with session-level metadata.
+#[derive(Serialize)]
+struct ShowSummary {
+    #[serde(rename = "type")]
+    record_type: &'static str,
+    session_id: String,
+    file_path: String,
+    provider: String,
+    source: String,
+    project: String,
+    shown: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_uuid: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Run CLI show command — print a window of messages around a search hit.
+///
+/// `file_path`, `--line` and `--uuid` come straight from `ccs search` output
+/// (`file_path`, `line_number`, `message_uuid`). The window is `context`
+/// messages before and after the target, in file order.
+pub fn cli_show(
+    file_path: &str,
+    line: Option<usize>,
+    uuid: Option<&str>,
+    context: usize,
+    max_chars: usize,
+) {
+    let result =
+        if let Some((db, session_id)) = crate::session::opencode::parse_session_path(file_path) {
+            show_opencode(&db, &session_id, file_path, uuid, context, max_chars)
+        } else {
+            show_jsonl(file_path, line, uuid, context, max_chars)
         };
-        if let Ok(json) = serde_json::to_string(&summary) {
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn show_jsonl(
+    file_path: &str,
+    line: Option<usize>,
+    uuid: Option<&str>,
+    context: usize,
+    max_chars: usize,
+) -> Result<(), String> {
+    if line.is_none() && uuid.is_none() {
+        return Err(
+            "pass --line or --uuid to anchor the window (both come from search output)".to_string(),
+        );
+    }
+
+    let file =
+        fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
+    let reader = BufReader::new(file);
+
+    let mut messages: Vec<Message> = Vec::new();
+    // If --line points at a record that isn't a message, remember what it is
+    // so the error names the record type instead of a bare "not found".
+    let mut anchor_line_kind: Option<String> = None;
+    let mut total_lines = 0usize;
+
+    for (idx, raw) in reader.lines().enumerate() {
+        let line_no = idx + 1;
+        total_lines = line_no;
+        let raw = raw.map_err(|e| format!("cannot read {}: {}", file_path, e))?;
+        if let Some(msg) = Message::from_jsonl_with_path(&raw, line_no, Some(file_path)) {
+            messages.push(msg);
+        } else if line == Some(line_no) {
+            anchor_line_kind = Some(classify_non_message_line(&raw));
+        }
+    }
+
+    let target_idx = if let Some(n) = line {
+        messages
+            .iter()
+            .position(|m| m.line_number == n)
+            .ok_or_else(|| match &anchor_line_kind {
+                Some(kind) => format!("line {} is not a message record ({})", n, kind),
+                None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
+            })?
+    } else {
+        let u = uuid.expect("checked above");
+        messages
+            .iter()
+            .position(|m| m.uuid.as_deref() == Some(u))
+            .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?
+    };
+
+    let start = target_idx.saturating_sub(context);
+    let end = target_idx
+        .saturating_add(context)
+        .saturating_add(1)
+        .min(messages.len());
+
+    for (i, msg) in messages[start..end].iter().enumerate() {
+        let (content, content_truncated) = truncate_chars(&msg.content, max_chars);
+        let row = ShowMessageRow {
+            record_type: "message",
+            line_number: Some(msg.line_number),
+            message_uuid: msg.uuid.clone(),
+            parent_uuid: msg.parent_uuid.clone(),
+            role: msg.role.clone(),
+            timestamp: msg.timestamp.to_rfc3339(),
+            content,
+            is_target: start + i == target_idx,
+            content_truncated,
+        };
+        if let Ok(json) = serde_json::to_string(&row) {
             println!("{}", json);
         }
+    }
+
+    let target = &messages[target_idx];
+    let summary = ShowSummary {
+        record_type: "summary",
+        session_id: target.session_id.clone(),
+        file_path: file_path.to_string(),
+        provider: SessionProvider::from_path(file_path)
+            .display_name()
+            .to_string(),
+        source: SessionSource::from_path(file_path)
+            .display_name()
+            .to_string(),
+        project: extract_project_from_path(file_path),
+        shown: end - start,
+        target_line: Some(target.line_number),
+        target_uuid: None,
+    };
+    if let Ok(json) = serde_json::to_string(&summary) {
+        println!("{}", json);
+    }
+    Ok(())
+}
+
+/// Show a window of messages around a target in an Opencode SQLite session.
+/// Opencode messages have no line numbers, so the anchor must be `--uuid`
+/// (the `message_uuid` from search output, which is the SQLite message id).
+fn show_opencode(
+    db_path: &Path,
+    session_id: &str,
+    file_path: &str,
+    uuid: Option<&str>,
+    context: usize,
+    max_chars: usize,
+) -> Result<(), String> {
+    use crate::session::record::{ContentMode, MessageRole, SessionRecord};
+
+    let uuid = uuid.ok_or_else(|| {
+        "Opencode sessions have no line numbers; pass --uuid from the search result's message_uuid"
+            .to_string()
+    })?;
+
+    let messages = crate::session::opencode::load_messages(db_path, session_id);
+    if messages.is_empty() {
+        return Err(format!(
+            "no messages found for session {} in {}",
+            session_id,
+            db_path.display()
+        ));
+    }
+
+    let target_idx = messages
+        .iter()
+        .position(|m| m.id == uuid)
+        .ok_or_else(|| format!("no message with uuid {} in session {}", uuid, session_id))?;
+
+    let start = target_idx.saturating_sub(context);
+    let end = target_idx
+        .saturating_add(context)
+        .saturating_add(1)
+        .min(messages.len());
+
+    for (i, msg) in messages[start..end].iter().enumerate() {
+        let rendered = SessionRecord::render_content(&msg.content_blocks, &ContentMode::Full);
+        let (content, content_truncated) = truncate_chars(&rendered, max_chars);
+        let role = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+        };
+        let row = ShowMessageRow {
+            record_type: "message",
+            line_number: None,
+            message_uuid: Some(msg.id.clone()),
+            parent_uuid: msg.parent_id.clone(),
+            role: role.to_string(),
+            timestamp: msg.created_at.to_rfc3339(),
+            content,
+            is_target: start + i == target_idx,
+            content_truncated,
+        };
+        if let Ok(json) = serde_json::to_string(&row) {
+            println!("{}", json);
+        }
+    }
+
+    let summary = ShowSummary {
+        record_type: "summary",
+        session_id: session_id.to_string(),
+        file_path: file_path.to_string(),
+        provider: SessionProvider::from_path(file_path)
+            .display_name()
+            .to_string(),
+        source: SessionSource::from_path(file_path)
+            .display_name()
+            .to_string(),
+        project: extract_project_from_path(file_path),
+        shown: end - start,
+        target_line: None,
+        target_uuid: Some(uuid.to_string()),
+    };
+    if let Ok(json) = serde_json::to_string(&summary) {
+        println!("{}", json);
+    }
+    Ok(())
+}
+
+/// Name the record type on a line that didn't parse as a message, for error text.
+fn classify_non_message_line(raw: &str) -> String {
+    use crate::session::record::SessionRecord;
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return "invalid JSON".to_string();
+    };
+    match SessionRecord::from_value(&json) {
+        Some(SessionRecord::Message { .. }) => "message with empty content".to_string(),
+        Some(SessionRecord::Summary { .. }) => "type=summary".to_string(),
+        Some(SessionRecord::CustomTitle(_)) => "type=custom_title".to_string(),
+        Some(SessionRecord::AiTitle(_)) => "type=ai_title".to_string(),
+        Some(SessionRecord::AgentName(_)) => "type=agent_name".to_string(),
+        Some(SessionRecord::LastPrompt(_)) => "type=last_prompt".to_string(),
+        Some(SessionRecord::CompactBoundary { .. }) => "type=compact_boundary".to_string(),
+        Some(SessionRecord::Metadata { .. }) => "metadata record".to_string(),
+        Some(SessionRecord::Other { .. }) => "unrecognized record".to_string(),
+        None => "unparseable record".to_string(),
+    }
+}
+
+/// Truncate to at most `max` chars on a char boundary.
+/// Returns the (possibly shortened) string and whether truncation happened.
+fn truncate_chars(s: &str, max: usize) -> (String, bool) {
+    match s.char_indices().nth(max) {
+        Some((byte_idx, _)) => (s[..byte_idx].to_string(), true),
+        None => (s.to_string(), false),
     }
 }
 

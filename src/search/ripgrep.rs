@@ -627,6 +627,7 @@ fn search_opencode_storage(
                 text_content: row.text,
                 timestamp: row.timestamp,
                 branch: None,
+                file_path: Some(row.session_file.to_string_lossy().to_string()),
                 line_number: 1,
                 uuid: Some(row.message_id),
                 parent_uuid: None,

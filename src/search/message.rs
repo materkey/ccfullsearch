@@ -11,6 +11,9 @@ pub struct Message {
     pub text_content: String,
     pub timestamp: DateTime<Utc>,
     pub branch: Option<String>,
+    /// Transcript path the line was parsed from. This stays on the message even
+    /// when search results are grouped under a resolved parent session path.
+    pub file_path: Option<String>,
     pub line_number: usize,
     pub uuid: Option<String>,
     pub parent_uuid: Option<String>,
@@ -81,6 +84,7 @@ impl Message {
             text_content,
             timestamp,
             branch,
+            file_path: file_path.map(str::to_string),
             line_number,
             uuid,
             parent_uuid,
