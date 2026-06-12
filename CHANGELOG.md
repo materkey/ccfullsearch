@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.16.0 - 2026-06-12
+
+### New Features
+- `ccs show` — drill down into a search hit: print the surrounding messages as compact JSONL, anchored by `--line` (or `--uuid` for Opencode), with `--context` and `--max-chars` knobs. Works for Claude, Codex, and Opencode sessions.
+- Agent-readable `ccs search` output — `content` is now a snippet around the match (`--full-content` for full text), every row carries `"type":"match"` plus `line_number`/`message_uuid` locators for `ccs show`, and a trailing summary record (`shown`, `total_matches`, `sessions`, `truncated`) is always emitted, even with zero matches.
+- AI-ranking helper sessions (Ctrl+G) are tagged as automation and hide behind the Ctrl+H filter instead of cluttering recent sessions and search results.
+
+### Fixed
+- Resume no longer fails when the session's original project directory is gone — falls back to resuming by JSONL path.
+- Opencode hardening: SQLite errors are reported instead of silently swallowed, dropped rows are counted.
+
+### Changed
+- Slimmer dependency tree — rusqlite default features disabled.
+
 ## v0.15.0 - 2026-05-27
 
 ### New Features
