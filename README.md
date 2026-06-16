@@ -1,6 +1,6 @@
 # ccs
 
-Search, inspect, and resume local Claude Code, Claude Desktop, and Codex sessions from the terminal.
+Search, inspect, and resume local Claude Code, Claude Desktop, Codex, and Opencode sessions from the terminal.
 
 Use `ccs` when you remember a topic, command, file path, stack trace, or decision from an old agent session, but not the session itself.
 
@@ -39,6 +39,7 @@ Requirements:
 - `rg` from [ripgrep](https://github.com/BurntSushi/ripgrep) must be available in `PATH`. The Homebrew formula installs it automatically.
 - `claude` must be available in `PATH` to resume Claude Code sessions and to use AI ranking.
 - `codex` must be available in `PATH` to resume Codex sessions.
+- `opencode` must be available in `PATH` to resume Opencode sessions.
 
 ## Quick start
 
@@ -105,6 +106,9 @@ For Homebrew installs, use `brew upgrade ccs` instead.
 - Codex with a custom home: `$CODEX_HOME/sessions/` and `$CODEX_HOME/archived_sessions/`
 - Claude Desktop on macOS: `~/Library/Application Support/Claude/local-agent-mode-sessions/`
 - Claude Desktop on Linux: `~/.config/Claude/local-agent-mode-sessions/`
+- Opencode on Linux/XDG: `~/.local/share/opencode/opencode.db`
+- Opencode on macOS: `~/Library/Application Support/opencode/opencode.db`
+- Opencode with a custom data directory: `$OPENCODE_DATA/opencode.db` or `$XDG_DATA_HOME/opencode/opencode.db`
 
 To replace the default roots with one custom directory:
 
