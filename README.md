@@ -1,5 +1,7 @@
 # ccs
 
+[![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmaterkey%2Fccfullsearch%2Fbadges%2Fcrap-badge.json)](https://github.com/materkey/ccfullsearch/actions/workflows/ci.yml)
+
 Search, inspect, and resume local Claude Code, Claude Desktop, Codex, and Opencode sessions from the terminal.
 
 Use `ccs` when you remember a topic, command, file path, stack trace, or decision from an old agent session, but not the session itself.
