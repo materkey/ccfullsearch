@@ -1,0 +1,14 @@
+{
+  "name": "ccfullsearch",
+  "description": "Search and browse Claude Code CLI and Claude Desktop session history",
+  "owner": {
+    "name": "materkey"
+  },
+  "plugins": [
+    {
+      "name": "ccs",
+      "source": "./",
+      "description": "Search and browse Claude Code CLI and Claude Desktop session history"
+    }
+  ]
+}

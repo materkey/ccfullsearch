@@ -266,6 +266,24 @@ This is useful when you want to review or resume several related sessions withou
 
 The repository includes a Claude Code plugin in `.claude-plugin/` and a `ccs` skill in `.claude/skills/ccs/`.
 
+Install the plugin via the Claude Code plugin marketplace:
+
+```bash
+# Add the marketplace
+claude plugin marketplace add materkey/ccfullsearch
+
+# Install the plugin
+claude plugin install ccs@ccfullsearch
+```
+
+Alternatively, install just the skill with [skills](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add materkey/ccfullsearch --skill ccs
+```
+
+Add `-g` to install globally (user-level) instead of into the current project.
+
 The skill supports:
 
 - CLI mode through `ccs search` and `ccs list`.
