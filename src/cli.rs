@@ -1,6 +1,6 @@
 use crate::search::{
     extract_context, extract_context_around_span, extract_project_from_path, group_by_session,
-    search_multiple_paths, Message,
+    search_multiple_paths, Message, SessionGroup,
 };
 use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
 use chrono::{DateTime, Utc};
@@ -78,16 +78,7 @@ pub fn cli_search(
         eprintln!("Warning: results may be incomplete (per-file match limit reached)");
     }
 
-    // In regex mode the query pattern rarely appears literally in the content,
-    // so the snippet is anchored on the first actual regex match instead.
-    let snippet_regex = if use_regex && !full_content {
-        regex::RegexBuilder::new(query)
-            .case_insensitive(true)
-            .build()
-            .ok()
-    } else {
-        None
-    };
+    let snippet_regex = build_snippet_regex(query, use_regex, full_content);
 
     let groups = group_by_session(search_result.matches);
 
@@ -96,10 +87,64 @@ pub fn cli_search(
         .map(|g| g.matches.iter().filter(|m| m.message.is_some()).count())
         .sum();
 
+    let (shown, sessions_shown) =
+        print_group_matches(&groups, query, full_content, limit, snippet_regex.as_ref());
+
+    // The summary is always the last line, even with zero matches, so machine
+    // consumers can tell "nothing found" from "search did not run".
+    let summary = CliSearchSummary {
+        record_type: "summary",
+        shown,
+        total_matches,
+        sessions: sessions_shown.len(),
+        truncated: search_result.truncated || total_matches > shown,
+    };
+    print_json_line(&summary);
+}
+
+/// In regex mode the query pattern rarely appears literally in the content,
+/// so the snippet is anchored on the first actual regex match instead.
+fn build_snippet_regex(query: &str, use_regex: bool, full_content: bool) -> Option<regex::Regex> {
+    if use_regex && !full_content {
+        regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    } else {
+        None
+    }
+}
+
+/// Render the content field of a search result: the full message, or a
+/// snippet anchored on the regex match (regex mode) / the literal query.
+fn render_match_content(
+    content: &str,
+    query: &str,
+    full_content: bool,
+    snippet_regex: Option<&regex::Regex>,
+) -> String {
+    if full_content {
+        content.to_string()
+    } else if let Some(found) = snippet_regex.and_then(|re| re.find(content)) {
+        extract_context_around_span(content, found.start(), found.end(), SNIPPET_CONTEXT_CHARS)
+    } else {
+        extract_context(content, query, SNIPPET_CONTEXT_CHARS)
+    }
+}
+
+/// Print one JSON line per match, stopping at `limit`. Returns the number of
+/// rows printed and the set of session ids they belong to.
+fn print_group_matches(
+    groups: &[SessionGroup],
+    query: &str,
+    full_content: bool,
+    limit: usize,
+    snippet_regex: Option<&regex::Regex>,
+) -> (usize, std::collections::HashSet<String>) {
     let mut shown = 0;
     let mut sessions_shown = std::collections::HashSet::new();
 
-    'groups: for group in &groups {
+    'groups: for group in groups {
         let project = extract_project_from_path(&group.file_path);
         let provider = SessionProvider::from_path(&group.file_path);
         let source = SessionSource::from_path(&group.file_path);
@@ -111,20 +156,6 @@ pub fn cli_search(
             }
 
             if let Some(ref msg) = m.message {
-                let content = if full_content {
-                    msg.content.clone()
-                } else if let Some(found) =
-                    snippet_regex.as_ref().and_then(|re| re.find(&msg.content))
-                {
-                    extract_context_around_span(
-                        &msg.content,
-                        found.start(),
-                        found.end(),
-                        SNIPPET_CONTEXT_CHARS,
-                    )
-                } else {
-                    extract_context(&msg.content, query, SNIPPET_CONTEXT_CHARS)
-                };
                 let result = CliSearchResult {
                     record_type: "match",
                     session_id: msg.session_id.clone(),
@@ -140,11 +171,10 @@ pub fn cli_search(
                     message_uuid: msg.uuid.clone(),
                     timestamp: msg.timestamp.to_rfc3339(),
                     role: msg.role.clone(),
-                    content,
+                    content: render_match_content(&msg.content, query, full_content, snippet_regex),
                 };
 
-                if let Ok(json) = serde_json::to_string(&result) {
-                    println!("{}", json);
+                if print_json_line(&result) {
                     shown += 1;
                     sessions_shown.insert(msg.session_id.clone());
                 }
@@ -152,17 +182,18 @@ pub fn cli_search(
         }
     }
 
-    // The summary is always the last line, even with zero matches, so machine
-    // consumers can tell "nothing found" from "search did not run".
-    let summary = CliSearchSummary {
-        record_type: "summary",
-        shown,
-        total_matches,
-        sessions: sessions_shown.len(),
-        truncated: search_result.truncated || total_matches > shown,
-    };
-    if let Ok(json) = serde_json::to_string(&summary) {
-        println!("{}", json);
+    (shown, sessions_shown)
+}
+
+/// Serialize `value` and print it as a single line. Returns whether the line
+/// was printed (serialization can fail, in which case nothing is emitted).
+fn print_json_line<T: Serialize>(value: &T) -> bool {
+    match serde_json::to_string(value) {
+        Ok(json) => {
+            println!("{}", json);
+            true
+        }
+        Err(_) => false,
     }
 }
 
@@ -413,16 +444,24 @@ fn classify_non_message_line(raw: &str) -> String {
         return "invalid JSON".to_string();
     };
     match SessionRecord::from_value(&json) {
-        Some(SessionRecord::Message { .. }) => "message with empty content".to_string(),
-        Some(SessionRecord::Summary { .. }) => "type=summary".to_string(),
-        Some(SessionRecord::CustomTitle(_)) => "type=custom_title".to_string(),
-        Some(SessionRecord::AiTitle(_)) => "type=ai_title".to_string(),
-        Some(SessionRecord::AgentName(_)) => "type=agent_name".to_string(),
-        Some(SessionRecord::LastPrompt(_)) => "type=last_prompt".to_string(),
-        Some(SessionRecord::CompactBoundary { .. }) => "type=compact_boundary".to_string(),
-        Some(SessionRecord::Metadata { .. }) => "metadata record".to_string(),
-        Some(SessionRecord::Other { .. }) => "unrecognized record".to_string(),
+        Some(record) => classify_record_kind(&record).to_string(),
         None => "unparseable record".to_string(),
+    }
+}
+
+/// Human-readable name for a parsed record kind, for error text.
+fn classify_record_kind(record: &crate::session::record::SessionRecord) -> &'static str {
+    use crate::session::record::SessionRecord;
+    match record {
+        SessionRecord::Message { .. } => "message with empty content",
+        SessionRecord::Summary { .. } => "type=summary",
+        SessionRecord::CustomTitle(_) => "type=custom_title",
+        SessionRecord::AiTitle(_) => "type=ai_title",
+        SessionRecord::AgentName(_) => "type=agent_name",
+        SessionRecord::LastPrompt(_) => "type=last_prompt",
+        SessionRecord::CompactBoundary { .. } => "type=compact_boundary",
+        SessionRecord::Metadata { .. } => "metadata record",
+        SessionRecord::Other { .. } => "unrecognized record",
     }
 }
 
@@ -540,4 +579,142 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
         last_active,
         message_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::record::{MessageRole, SessionRecord};
+
+    #[test]
+    fn classify_record_kind_names_every_variant() {
+        let cases: Vec<(SessionRecord, &str)> = vec![
+            (
+                SessionRecord::Message {
+                    role: MessageRole::User,
+                    content_blocks: Vec::new(),
+                    uuid: None,
+                    parent_uuid: None,
+                    is_sidechain: false,
+                },
+                "message with empty content",
+            ),
+            (
+                SessionRecord::Summary {
+                    text: "s".to_string(),
+                    is_compaction: false,
+                    uuid: None,
+                    parent_uuid: None,
+                    leaf_uuid: None,
+                    is_sidechain: false,
+                },
+                "type=summary",
+            ),
+            (
+                SessionRecord::CustomTitle("t".to_string()),
+                "type=custom_title",
+            ),
+            (SessionRecord::AiTitle("t".to_string()), "type=ai_title"),
+            (SessionRecord::AgentName("t".to_string()), "type=agent_name"),
+            (
+                SessionRecord::LastPrompt("t".to_string()),
+                "type=last_prompt",
+            ),
+            (
+                SessionRecord::CompactBoundary {
+                    uuid: None,
+                    parent_uuid: None,
+                    logical_parent_uuid: None,
+                    is_sidechain: false,
+                },
+                "type=compact_boundary",
+            ),
+            (
+                SessionRecord::Metadata {
+                    uuid: None,
+                    parent_uuid: None,
+                    is_sidechain: false,
+                },
+                "metadata record",
+            ),
+            (
+                SessionRecord::Other {
+                    uuid: None,
+                    parent_uuid: None,
+                    is_sidechain: false,
+                },
+                "unrecognized record",
+            ),
+        ];
+        for (record, expected) in &cases {
+            assert_eq!(classify_record_kind(record), *expected);
+        }
+    }
+
+    #[test]
+    fn classify_non_message_line_rejects_invalid_json() {
+        assert_eq!(classify_non_message_line("{not json"), "invalid JSON");
+    }
+
+    #[test]
+    fn classify_non_message_line_without_type_is_unparseable() {
+        assert_eq!(
+            classify_non_message_line(r#"{"foo": 1}"#),
+            "unparseable record"
+        );
+    }
+
+    #[test]
+    fn classify_non_message_line_names_parsed_record() {
+        assert_eq!(
+            classify_non_message_line(r#"{"type":"summary","summary":"Discussed"}"#),
+            "type=summary"
+        );
+    }
+
+    #[test]
+    fn snippet_regex_built_only_in_regex_snippet_mode() {
+        let re = build_snippet_regex("Foo.*Bar", true, false).unwrap();
+        assert!(
+            re.is_match("prefix foo middle bar suffix"),
+            "case-insensitive"
+        );
+        assert!(build_snippet_regex("foo", false, false).is_none());
+        assert!(build_snippet_regex("foo", true, true).is_none());
+        // Invalid pattern degrades to None instead of failing
+        assert!(build_snippet_regex("foo(", true, false).is_none());
+    }
+
+    #[test]
+    fn render_match_content_full_returns_whole_message() {
+        let content = "x".repeat(600);
+        assert_eq!(render_match_content(&content, "x", true, None), content);
+    }
+
+    #[test]
+    fn render_match_content_anchors_on_regex_match() {
+        let re = regex::Regex::new("needle").unwrap();
+        let content = format!("{}needle{}", "a".repeat(300), "b".repeat(300));
+        let rendered = render_match_content(&content, "needle", false, Some(&re));
+        assert!(rendered.contains("needle"));
+        assert!(rendered.len() < content.len());
+    }
+
+    #[test]
+    fn render_match_content_falls_back_to_literal_query() {
+        let content = format!("{}needle{}", "a".repeat(300), "b".repeat(300));
+        let rendered = render_match_content(&content, "needle", false, None);
+        assert!(rendered.contains("needle"));
+        assert!(rendered.len() < content.len());
+    }
+
+    #[test]
+    fn truncate_chars_respects_char_boundaries() {
+        let (s, truncated) = truncate_chars("héllo", 2);
+        assert_eq!(s, "hé");
+        assert!(truncated);
+        let (s, truncated) = truncate_chars("hi", 10);
+        assert_eq!(s, "hi");
+        assert!(!truncated);
+    }
 }
