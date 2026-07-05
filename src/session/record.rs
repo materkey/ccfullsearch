@@ -97,120 +97,15 @@ impl SessionRecord {
         let record_type = session::extract_record_type(json)?;
 
         match record_type {
-            "response_item" => parse_codex_response_item(json).or_else(|| {
-                Some(SessionRecord::Other {
-                    uuid: session::extract_uuid(json),
-                    parent_uuid: session::extract_parent_uuid_or_logical(json),
-                    is_sidechain: session::is_sidechain(json),
-                })
-            }),
-            "compacted" => {
-                let text = json
-                    .get("payload")
-                    .and_then(|p| p.get("message"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::Summary {
-                    text,
-                    is_compaction: true,
-                    uuid: session::extract_uuid(json),
-                    parent_uuid: session::extract_parent_uuid_or_logical(json),
-                    leaf_uuid: session::extract_leaf_uuid(json),
-                    is_sidechain: session::is_sidechain(json),
-                })
+            "response_item" => parse_codex_response_item(json).or_else(|| Some(other_record(json))),
+            "compacted" => Some(parse_compacted_record(json)),
+            "user" | "assistant" => Some(parse_message_record(json, record_type)),
+            "summary" | "compaction" => Some(parse_summary_record(json, record_type)),
+            "custom-title" | "ai-title" | "agent-name" | "last-prompt" => {
+                Some(parse_named_string_record(json, record_type))
             }
-            "user" | "assistant" => {
-                let role = if record_type == "user" {
-                    MessageRole::User
-                } else {
-                    MessageRole::Assistant
-                };
-                let content_raw = json.get("message").and_then(|m| m.get("content"));
-                let content_blocks = match content_raw {
-                    Some(raw) => parse_content_blocks(raw),
-                    None => Vec::new(),
-                };
-                Some(SessionRecord::Message {
-                    role,
-                    content_blocks,
-                    uuid: session::extract_uuid(json),
-                    parent_uuid: session::extract_parent_uuid_or_logical(json),
-                    is_sidechain: session::is_sidechain(json),
-                })
-            }
-            "summary" | "compaction" => {
-                let text = json
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::Summary {
-                    text,
-                    is_compaction: record_type == "compaction",
-                    uuid: session::extract_uuid(json),
-                    parent_uuid: session::extract_parent_uuid_or_logical(json),
-                    leaf_uuid: session::extract_leaf_uuid(json),
-                    is_sidechain: session::is_sidechain(json),
-                })
-            }
-            "custom-title" => {
-                let title = json
-                    .get("customTitle")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::CustomTitle(title))
-            }
-            "ai-title" => {
-                let title = json
-                    .get("aiTitle")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::AiTitle(title))
-            }
-            "agent-name" => {
-                let name = json
-                    .get("agentName")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::AgentName(name))
-            }
-            "last-prompt" => {
-                let prompt = json
-                    .get("lastPrompt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(SessionRecord::LastPrompt(prompt))
-            }
-            "system" => {
-                let subtype = json.get("subtype").and_then(|v| v.as_str());
-                if subtype == Some("compact_boundary") {
-                    Some(SessionRecord::CompactBoundary {
-                        uuid: session::extract_uuid(json),
-                        parent_uuid: session::extract_parent_uuid(json),
-                        logical_parent_uuid: json
-                            .get("logicalParentUuid")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        is_sidechain: session::is_sidechain(json),
-                    })
-                } else {
-                    Some(SessionRecord::Metadata {
-                        uuid: session::extract_uuid(json),
-                        parent_uuid: session::extract_parent_uuid_or_logical(json),
-                        is_sidechain: session::is_sidechain(json),
-                    })
-                }
-            }
-            _ => Some(SessionRecord::Other {
-                uuid: session::extract_uuid(json),
-                parent_uuid: session::extract_parent_uuid_or_logical(json),
-                is_sidechain: session::is_sidechain(json),
-            }),
+            "system" => Some(parse_system_record(json)),
+            _ => Some(other_record(json)),
         }
     }
 
@@ -273,130 +168,236 @@ impl SessionRecord {
     }
 }
 
+/// Codex `compacted` records carry the summary text in `payload.message`.
+fn parse_compacted_record(json: &serde_json::Value) -> SessionRecord {
+    let text = json
+        .get("payload")
+        .and_then(|p| p.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    SessionRecord::Summary {
+        text,
+        is_compaction: true,
+        uuid: session::extract_uuid(json),
+        parent_uuid: session::extract_parent_uuid_or_logical(json),
+        leaf_uuid: session::extract_leaf_uuid(json),
+        is_sidechain: session::is_sidechain(json),
+    }
+}
+
+fn parse_message_record(json: &serde_json::Value, record_type: &str) -> SessionRecord {
+    let role = if record_type == "user" {
+        MessageRole::User
+    } else {
+        MessageRole::Assistant
+    };
+    let content_blocks = json
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .map(parse_content_blocks)
+        .unwrap_or_default();
+    SessionRecord::Message {
+        role,
+        content_blocks,
+        uuid: session::extract_uuid(json),
+        parent_uuid: session::extract_parent_uuid_or_logical(json),
+        is_sidechain: session::is_sidechain(json),
+    }
+}
+
+fn parse_summary_record(json: &serde_json::Value, record_type: &str) -> SessionRecord {
+    let text = json
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    SessionRecord::Summary {
+        text,
+        is_compaction: record_type == "compaction",
+        uuid: session::extract_uuid(json),
+        parent_uuid: session::extract_parent_uuid_or_logical(json),
+        leaf_uuid: session::extract_leaf_uuid(json),
+        is_sidechain: session::is_sidechain(json),
+    }
+}
+
+/// Records that wrap a single string field (titles, agent name, last prompt).
+fn parse_named_string_record(json: &serde_json::Value, record_type: &str) -> SessionRecord {
+    match record_type {
+        "custom-title" => string_field_record(json, "customTitle", SessionRecord::CustomTitle),
+        "ai-title" => string_field_record(json, "aiTitle", SessionRecord::AiTitle),
+        "agent-name" => string_field_record(json, "agentName", SessionRecord::AgentName),
+        _ => string_field_record(json, "lastPrompt", SessionRecord::LastPrompt),
+    }
+}
+
+fn string_field_record(
+    json: &serde_json::Value,
+    field: &str,
+    make: fn(String) -> SessionRecord,
+) -> SessionRecord {
+    let value = json
+        .get(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    make(value)
+}
+
+fn parse_system_record(json: &serde_json::Value) -> SessionRecord {
+    let subtype = json.get("subtype").and_then(|v| v.as_str());
+    if subtype == Some("compact_boundary") {
+        SessionRecord::CompactBoundary {
+            uuid: session::extract_uuid(json),
+            parent_uuid: session::extract_parent_uuid(json),
+            logical_parent_uuid: json
+                .get("logicalParentUuid")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            is_sidechain: session::is_sidechain(json),
+        }
+    } else {
+        SessionRecord::Metadata {
+            uuid: session::extract_uuid(json),
+            parent_uuid: session::extract_parent_uuid_or_logical(json),
+            is_sidechain: session::is_sidechain(json),
+        }
+    }
+}
+
+/// Fallback for unrecognized record types; keeps uuid/parent_uuid so the
+/// record still participates in the DAG as a bridge node.
+fn other_record(json: &serde_json::Value) -> SessionRecord {
+    SessionRecord::Other {
+        uuid: session::extract_uuid(json),
+        parent_uuid: session::extract_parent_uuid_or_logical(json),
+        is_sidechain: session::is_sidechain(json),
+    }
+}
+
 fn parse_codex_response_item(json: &serde_json::Value) -> Option<SessionRecord> {
     let payload = json.get("payload")?;
     let payload_type = payload.get("type").and_then(|v| v.as_str())?;
 
     match payload_type {
-        "message" => {
-            let role = match payload.get("role").and_then(|v| v.as_str())? {
-                "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
-                // Developer/system rollout entries are context metadata, not user-visible
-                // conversation rows for search/recent summaries.
-                _ => return None,
-            };
-            let content_blocks = payload
-                .get("content")
-                .map(parse_content_blocks)
-                .unwrap_or_default();
-            Some(SessionRecord::Message {
-                role,
-                content_blocks,
-                uuid: session::extract_uuid(json),
-                parent_uuid: session::extract_parent_uuid_or_logical(json),
-                is_sidechain: session::is_sidechain(json),
-            })
+        "message" => parse_codex_chat_message(json, payload),
+        "function_call"
+        | "local_shell_call"
+        | "custom_tool_call"
+        | "tool_search_call"
+        | "web_search_call"
+        | "image_generation_call" => parse_codex_tool_call(payload_type, payload),
+        "function_call_output" | "custom_tool_call_output" | "tool_search_output" => {
+            Some(parse_codex_tool_result(payload_type, payload))
         }
-        "function_call" => {
-            let name = payload
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("function_call")
-                .to_string();
-            let input = payload
-                .get("arguments")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| payload.get("arguments").map(json_to_string))
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name,
-                input,
-            }]))
-        }
-        "local_shell_call" => {
-            let input = payload
-                .get("action")
-                .map(json_to_string)
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name: "local_shell".to_string(),
-                input,
-            }]))
-        }
-        "custom_tool_call" => {
-            let name = payload
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("custom_tool")
-                .to_string();
-            let input = payload
-                .get("input")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| payload.get("input").map(json_to_string))
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name,
-                input,
-            }]))
-        }
-        "function_call_output" | "custom_tool_call_output" => {
-            let content = payload
-                .get("output")
-                .map(render_codex_tool_output)
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolResult(
-                content,
-            )]))
-        }
-        "tool_search_call" => {
-            let input = payload
-                .get("arguments")
-                .map(json_to_string)
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name: "tool_search".to_string(),
-                input,
-            }]))
-        }
-        "tool_search_output" => {
-            let content = json_to_string(payload);
-            Some(codex_assistant_message(vec![ContentBlock::ToolResult(
-                content,
-            )]))
-        }
-        "web_search_call" => {
-            let input = payload
-                .get("action")
-                .map(json_to_string)
-                .unwrap_or_default();
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name: "web_search".to_string(),
-                input,
-            }]))
-        }
-        "image_generation_call" => {
-            let input = json_to_string(payload);
-            Some(codex_assistant_message(vec![ContentBlock::ToolUse {
-                name: "image_generation".to_string(),
-                input,
-            }]))
-        }
-        "reasoning" => {
-            let mut parts = Vec::new();
-            collect_codex_reasoning_text(payload.get("summary"), &mut parts);
-            collect_codex_reasoning_text(payload.get("content"), &mut parts);
-            if parts.is_empty() {
-                return None;
-            }
-            Some(codex_assistant_message(
-                parts.into_iter().map(ContentBlock::Thinking).collect(),
-            ))
-        }
+        "reasoning" => parse_codex_reasoning(payload),
         _ => None,
     }
+}
+
+fn parse_codex_chat_message(
+    json: &serde_json::Value,
+    payload: &serde_json::Value,
+) -> Option<SessionRecord> {
+    let role = match payload.get("role").and_then(|v| v.as_str())? {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        // Developer/system rollout entries are context metadata, not user-visible
+        // conversation rows for search/recent summaries.
+        _ => return None,
+    };
+    let content_blocks = payload
+        .get("content")
+        .map(parse_content_blocks)
+        .unwrap_or_default();
+    Some(SessionRecord::Message {
+        role,
+        content_blocks,
+        uuid: session::extract_uuid(json),
+        parent_uuid: session::extract_parent_uuid_or_logical(json),
+        is_sidechain: session::is_sidechain(json),
+    })
+}
+
+fn parse_codex_tool_call(payload_type: &str, payload: &serde_json::Value) -> Option<SessionRecord> {
+    let (name, input) = match payload_type {
+        "function_call" => (
+            codex_call_name(payload, "function_call"),
+            codex_field_string(payload, "arguments"),
+        ),
+        "local_shell_call" => (
+            "local_shell".to_string(),
+            codex_field_json(payload, "action"),
+        ),
+        "custom_tool_call" => (
+            codex_call_name(payload, "custom_tool"),
+            codex_field_string(payload, "input"),
+        ),
+        "tool_search_call" => (
+            "tool_search".to_string(),
+            codex_field_json(payload, "arguments"),
+        ),
+        "web_search_call" => (
+            "web_search".to_string(),
+            codex_field_json(payload, "action"),
+        ),
+        "image_generation_call" => ("image_generation".to_string(), json_to_string(payload)),
+        _ => return None,
+    };
+    Some(codex_assistant_message(vec![ContentBlock::ToolUse {
+        name,
+        input,
+    }]))
+}
+
+fn parse_codex_tool_result(payload_type: &str, payload: &serde_json::Value) -> SessionRecord {
+    // tool_search_output has no single `output` field; keep the whole payload.
+    let content = if payload_type == "tool_search_output" {
+        json_to_string(payload)
+    } else {
+        payload
+            .get("output")
+            .map(render_codex_tool_output)
+            .unwrap_or_default()
+    };
+    codex_assistant_message(vec![ContentBlock::ToolResult(content)])
+}
+
+fn parse_codex_reasoning(payload: &serde_json::Value) -> Option<SessionRecord> {
+    let mut parts = Vec::new();
+    collect_codex_reasoning_text(payload.get("summary"), &mut parts);
+    collect_codex_reasoning_text(payload.get("content"), &mut parts);
+    if parts.is_empty() {
+        return None;
+    }
+    Some(codex_assistant_message(
+        parts.into_iter().map(ContentBlock::Thinking).collect(),
+    ))
+}
+
+/// Tool name from the payload, or the given fallback when absent.
+fn codex_call_name(payload: &serde_json::Value, fallback: &str) -> String {
+    payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+/// Payload field as a plain string when it is one, else as raw JSON, else empty.
+fn codex_field_string(payload: &serde_json::Value, key: &str) -> String {
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| payload.get(key).map(json_to_string))
+        .unwrap_or_default()
+}
+
+/// Payload field rendered as raw JSON, or empty when absent.
+fn codex_field_json(payload: &serde_json::Value, key: &str) -> String {
+    payload.get(key).map(json_to_string).unwrap_or_default()
 }
 
 fn codex_assistant_message(content_blocks: Vec<ContentBlock>) -> SessionRecord {
@@ -432,9 +433,7 @@ fn collect_codex_reasoning_text(value: Option<&serde_json::Value>, out: &mut Vec
         return;
     };
     if let Some(s) = value.as_str() {
-        if !s.trim().is_empty() {
-            out.push(s.to_string());
-        }
+        push_reasoning_part(s, out);
         return;
     }
     if let Some(arr) = value.as_array() {
@@ -444,11 +443,15 @@ fn collect_codex_reasoning_text(value: Option<&serde_json::Value>, out: &mut Vec
                 .or_else(|| item.get("summary"))
                 .and_then(|v| v.as_str())
             {
-                if !text.trim().is_empty() {
-                    out.push(text.to_string());
-                }
+                push_reasoning_part(text, out);
             }
         }
+    }
+}
+
+fn push_reasoning_part(text: &str, out: &mut Vec<String>) {
+    if !text.trim().is_empty() {
+        out.push(text.to_string());
     }
 }
 
@@ -457,94 +460,100 @@ pub(crate) fn parse_content_blocks(raw: &serde_json::Value) -> Vec<ContentBlock>
     if let Some(s) = raw.as_str() {
         return vec![ContentBlock::Text(s.to_string())];
     }
-
-    let mut blocks = Vec::new();
-    if let Some(arr) = raw.as_array() {
-        for item in arr {
-            let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match item_type {
-                "text" | "input_text" | "output_text" => {
-                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                        blocks.push(ContentBlock::Text(text.to_string()));
-                    }
-                }
-                "tool_use" => {
-                    let name = item
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let input = item
-                        .get("input")
-                        .map(|i| serde_json::to_string(i).unwrap_or_default())
-                        .unwrap_or_default();
-                    blocks.push(ContentBlock::ToolUse { name, input });
-                }
-                "tool_result" => {
-                    let content = if let Some(c) = item.get("content") {
-                        if let Some(s) = c.as_str() {
-                            s.to_string()
-                        } else if let Some(arr) = c.as_array() {
-                            let mut parts = Vec::new();
-                            for entry in arr {
-                                let entry_type =
-                                    entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                match entry_type {
-                                    "text" => {
-                                        if let Some(t) = entry.get("text").and_then(|t| t.as_str())
-                                        {
-                                            parts.push(t.to_string());
-                                        }
-                                    }
-                                    "image" => parts.push("[image]".to_string()),
-                                    "document" => parts.push("[document]".to_string()),
-                                    _ => {}
-                                }
-                            }
-                            parts.join("\n")
-                        } else {
-                            serde_json::to_string(c).unwrap_or_default()
-                        }
-                    } else {
-                        String::new()
-                    };
-                    blocks.push(ContentBlock::ToolResult(content));
-                }
-                "thinking" => {
-                    if let Some(t) = item.get("thinking").and_then(|t| t.as_str()) {
-                        blocks.push(ContentBlock::Thinking(t.to_string()));
-                    }
-                }
-                "image" | "input_image" => {
-                    blocks.push(ContentBlock::Text("[image]".to_string()));
-                }
-                "document" => {
-                    blocks.push(ContentBlock::Text("[document]".to_string()));
-                }
-                "redacted_thinking" => {
-                    blocks.push(ContentBlock::Thinking("[redacted]".to_string()));
-                }
-                "server_tool_use" => {
-                    let name = item
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    blocks.push(ContentBlock::ToolUse {
-                        name,
-                        input: String::new(),
-                    });
-                }
-                "connector_text" => {
-                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                        blocks.push(ContentBlock::Text(text.to_string()));
-                    }
-                }
-                _ => {}
-            }
-        }
+    match raw.as_array() {
+        Some(arr) => arr.iter().filter_map(parse_content_block_item).collect(),
+        None => Vec::new(),
     }
-    blocks
+}
+
+/// Parse a single content-array item into a ContentBlock.
+/// Returns `None` for unknown block types and text blocks without text.
+fn parse_content_block_item(item: &serde_json::Value) -> Option<ContentBlock> {
+    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match item_type {
+        // connector_text carries plain text just like a regular text block.
+        "text" | "input_text" | "output_text" | "connector_text" => parse_text_block(item),
+        "tool_use" => Some(parse_tool_use_block(item)),
+        "tool_result" => Some(parse_tool_result_block(item)),
+        "thinking" => parse_thinking_block(item),
+        "image" | "input_image" => Some(ContentBlock::Text("[image]".to_string())),
+        "document" => Some(ContentBlock::Text("[document]".to_string())),
+        "redacted_thinking" => Some(ContentBlock::Thinking("[redacted]".to_string())),
+        "server_tool_use" => Some(parse_server_tool_use_block(item)),
+        _ => None,
+    }
+}
+
+fn parse_text_block(item: &serde_json::Value) -> Option<ContentBlock> {
+    item.get("text")
+        .and_then(|t| t.as_str())
+        .map(|text| ContentBlock::Text(text.to_string()))
+}
+
+fn parse_tool_use_block(item: &serde_json::Value) -> ContentBlock {
+    let name = item
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let input = item
+        .get("input")
+        .map(|i| serde_json::to_string(i).unwrap_or_default())
+        .unwrap_or_default();
+    ContentBlock::ToolUse { name, input }
+}
+
+fn parse_tool_result_block(item: &serde_json::Value) -> ContentBlock {
+    let content = match item.get("content") {
+        Some(c) => render_tool_result_content(c),
+        None => String::new(),
+    };
+    ContentBlock::ToolResult(content)
+}
+
+fn render_tool_result_content(content: &serde_json::Value) -> String {
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+    match content.as_array() {
+        Some(arr) => arr
+            .iter()
+            .filter_map(tool_result_entry_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => serde_json::to_string(content).unwrap_or_default(),
+    }
+}
+
+fn tool_result_entry_text(entry: &serde_json::Value) -> Option<String> {
+    let entry_type = entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match entry_type {
+        "text" => entry
+            .get("text")
+            .and_then(|t| t.as_str())
+            .map(|t| t.to_string()),
+        "image" => Some("[image]".to_string()),
+        "document" => Some("[document]".to_string()),
+        _ => None,
+    }
+}
+
+fn parse_thinking_block(item: &serde_json::Value) -> Option<ContentBlock> {
+    item.get("thinking")
+        .and_then(|t| t.as_str())
+        .map(|t| ContentBlock::Thinking(t.to_string()))
+}
+
+fn parse_server_tool_use_block(item: &serde_json::Value) -> ContentBlock {
+    let name = item
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    ContentBlock::ToolUse {
+        name,
+        input: String::new(),
+    }
 }
 
 /// Full mode: all block types, newline-joined (matches extract_message_content behavior).
@@ -1467,6 +1476,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tool_result_string_and_json_content() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "tool_result", "content": "plain output"},
+            {"type": "tool_result", "content": {"status": "ok"}},
+            {"type": "tool_result"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0], ContentBlock::ToolResult("plain output".into()));
+        match &blocks[1] {
+            ContentBlock::ToolResult(c) => assert!(c.contains("status")),
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+        assert_eq!(blocks[2], ContentBlock::ToolResult(String::new()));
+    }
+
+    #[test]
     fn test_parse_image_block() {
         let raw: serde_json::Value = serde_json::json!([
             {"type": "image", "source": {"type": "base64", "data": "..."}}
@@ -1580,5 +1606,315 @@ mod tests {
         let result = SessionRecord::render_content(&blocks, &ContentMode::Full);
         assert!(result.contains("file_path"));
         assert!(!result.contains("Read"));
+    }
+
+    // --- Codex response_item parsing ---
+
+    fn codex_record(payload: serde_json::Value) -> SessionRecord {
+        let json = serde_json::json!({"type": "response_item", "payload": payload});
+        SessionRecord::from_value(&json).unwrap()
+    }
+
+    fn expect_tool_use(record: SessionRecord) -> (String, String) {
+        match record {
+            SessionRecord::Message {
+                role,
+                content_blocks,
+                ..
+            } => {
+                assert_eq!(role, MessageRole::Assistant);
+                match content_blocks.as_slice() {
+                    [ContentBlock::ToolUse { name, input }] => (name.clone(), input.clone()),
+                    other => panic!("Expected single ToolUse, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    fn expect_tool_result(record: SessionRecord) -> String {
+        match record {
+            SessionRecord::Message { content_blocks, .. } => match content_blocks.as_slice() {
+                [ContentBlock::ToolResult(content)] => content.clone(),
+                other => panic!("Expected single ToolResult, got {:?}", other),
+            },
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_codex_message_user() {
+        let record = codex_record(serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Debug the parser"}]
+        }));
+        match record {
+            SessionRecord::Message {
+                role,
+                content_blocks,
+                ..
+            } => {
+                assert_eq!(role, MessageRole::User);
+                assert_eq!(
+                    content_blocks,
+                    vec![ContentBlock::Text("Debug the parser".into())]
+                );
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_codex_message_assistant() {
+        let record = codex_record(serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Found the bug"}]
+        }));
+        match record {
+            SessionRecord::Message { role, .. } => assert_eq!(role, MessageRole::Assistant),
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_codex_message_developer_role_falls_back_to_other() {
+        // Developer/system rollout entries are context metadata, not conversation rows.
+        let record = codex_record(serde_json::json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "instructions"}]
+        }));
+        assert!(matches!(record, SessionRecord::Other { .. }));
+    }
+
+    #[test]
+    fn test_codex_function_call_string_arguments() {
+        let record = codex_record(serde_json::json!({
+            "type": "function_call",
+            "name": "shell",
+            "arguments": r#"{"cmd":"ls"}"#
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "shell");
+        assert_eq!(input, r#"{"cmd":"ls"}"#);
+    }
+
+    #[test]
+    fn test_codex_function_call_object_arguments_and_default_name() {
+        let record = codex_record(serde_json::json!({
+            "type": "function_call",
+            "arguments": {"cmd": "ls"}
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "function_call");
+        assert!(input.contains("cmd"));
+    }
+
+    #[test]
+    fn test_codex_local_shell_call() {
+        let record = codex_record(serde_json::json!({
+            "type": "local_shell_call",
+            "action": {"command": ["bash", "-lc", "ls"]}
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "local_shell");
+        assert!(input.contains("bash"));
+    }
+
+    #[test]
+    fn test_codex_custom_tool_call() {
+        let record = codex_record(serde_json::json!({
+            "type": "custom_tool_call",
+            "name": "apply_patch",
+            "input": "*** Begin Patch"
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "apply_patch");
+        assert_eq!(input, "*** Begin Patch");
+    }
+
+    #[test]
+    fn test_codex_custom_tool_call_defaults() {
+        let record = codex_record(serde_json::json!({"type": "custom_tool_call"}));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "custom_tool");
+        assert_eq!(input, "");
+    }
+
+    #[test]
+    fn test_codex_tool_search_call() {
+        let record = codex_record(serde_json::json!({
+            "type": "tool_search_call",
+            "arguments": {"query": "grep"}
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "tool_search");
+        assert!(input.contains("grep"));
+    }
+
+    #[test]
+    fn test_codex_web_search_call() {
+        let record = codex_record(serde_json::json!({
+            "type": "web_search_call",
+            "action": {"query": "rust crap metric"}
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "web_search");
+        assert!(input.contains("rust crap metric"));
+    }
+
+    #[test]
+    fn test_codex_image_generation_call() {
+        let record = codex_record(serde_json::json!({
+            "type": "image_generation_call",
+            "prompt": "a cat"
+        }));
+        let (name, input) = expect_tool_use(record);
+        assert_eq!(name, "image_generation");
+        assert!(input.contains("a cat"));
+    }
+
+    #[test]
+    fn test_codex_function_call_output_string() {
+        let record = codex_record(serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "tool output from shell"
+        }));
+        assert_eq!(expect_tool_result(record), "tool output from shell");
+    }
+
+    #[test]
+    fn test_codex_custom_tool_call_output_blocks() {
+        let record = codex_record(serde_json::json!({
+            "type": "custom_tool_call_output",
+            "output": [{"type": "output_text", "text": "patched"}]
+        }));
+        assert_eq!(expect_tool_result(record), "patched");
+    }
+
+    #[test]
+    fn test_codex_function_call_output_json_value() {
+        let record = codex_record(serde_json::json!({
+            "type": "function_call_output",
+            "output": {"exit_code": 0}
+        }));
+        assert!(expect_tool_result(record).contains("exit_code"));
+    }
+
+    #[test]
+    fn test_codex_function_call_output_missing_output() {
+        let record = codex_record(serde_json::json!({"type": "function_call_output"}));
+        assert_eq!(expect_tool_result(record), "");
+    }
+
+    #[test]
+    fn test_codex_tool_search_output_keeps_whole_payload() {
+        let record = codex_record(serde_json::json!({
+            "type": "tool_search_output",
+            "results": ["found_tool"]
+        }));
+        assert!(expect_tool_result(record).contains("found_tool"));
+    }
+
+    #[test]
+    fn test_codex_reasoning_summary_and_content() {
+        let record = codex_record(serde_json::json!({
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "thought summary"}],
+            "content": [{"type": "reasoning_text", "text": "deep thought"}]
+        }));
+        match record {
+            SessionRecord::Message { content_blocks, .. } => {
+                assert_eq!(
+                    content_blocks,
+                    vec![
+                        ContentBlock::Thinking("thought summary".into()),
+                        ContentBlock::Thinking("deep thought".into()),
+                    ]
+                );
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_codex_reasoning_empty_falls_back_to_other() {
+        let record = codex_record(serde_json::json!({"type": "reasoning", "summary": []}));
+        assert!(matches!(record, SessionRecord::Other { .. }));
+    }
+
+    #[test]
+    fn test_codex_response_item_without_payload_is_other() {
+        let json = serde_json::json!({"type": "response_item"});
+        let record = SessionRecord::from_value(&json).unwrap();
+        assert!(matches!(record, SessionRecord::Other { .. }));
+    }
+
+    #[test]
+    fn test_codex_unknown_payload_type_is_other() {
+        let record = codex_record(serde_json::json!({"type": "ghost"}));
+        assert!(matches!(record, SessionRecord::Other { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonl_codex_compacted() {
+        let line = r#"{"type":"compacted","payload":{"message":"Earlier turns summarized"}}"#;
+        let record = SessionRecord::from_jsonl(line).unwrap();
+        match record {
+            SessionRecord::Summary {
+                text,
+                is_compaction,
+                ..
+            } => {
+                assert_eq!(text, "Earlier turns summarized");
+                assert!(is_compaction);
+            }
+            other => panic!("Expected Summary, got {:?}", other),
+        }
+    }
+
+    // --- collect_codex_reasoning_text ---
+
+    #[test]
+    fn test_collect_reasoning_text_none_and_scalar() {
+        let mut out = Vec::new();
+        collect_codex_reasoning_text(None, &mut out);
+        assert!(out.is_empty());
+        // Non-string, non-array values are ignored.
+        let num = serde_json::json!(42);
+        collect_codex_reasoning_text(Some(&num), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_collect_reasoning_text_string() {
+        let mut out = Vec::new();
+        let value = serde_json::json!("direct reasoning");
+        collect_codex_reasoning_text(Some(&value), &mut out);
+        assert_eq!(out, vec!["direct reasoning".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_reasoning_text_blank_string_skipped() {
+        let mut out = Vec::new();
+        let value = serde_json::json!("   ");
+        collect_codex_reasoning_text(Some(&value), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_collect_reasoning_text_array_items() {
+        let mut out = Vec::new();
+        let value = serde_json::json!([
+            {"type": "summary_text", "text": "first"},
+            {"summary": "second"},
+            {"type": "summary_text", "text": "  "},
+            {"other": "ignored"}
+        ]);
+        collect_codex_reasoning_text(Some(&value), &mut out);
+        assert_eq!(out, vec!["first".to_string(), "second".to_string()]);
     }
 }
