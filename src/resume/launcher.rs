@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
@@ -24,64 +24,77 @@ fn analyze_session(file_path: &str) -> Option<SessionAnalysis> {
     let file = fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
 
-    let mut first_prompt = String::new();
-    let mut message_count: usize = 0;
-    let mut first_ts = String::new();
-    let mut last_ts = String::new();
-    let mut git_branch = String::new();
+    let mut analysis = SessionAnalysis {
+        first_prompt: String::new(),
+        message_count: 0,
+        first_ts: String::new(),
+        last_ts: String::new(),
+        git_branch: String::new(),
+    };
 
     for line in reader.lines().map_while(Result::ok) {
-        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let msg_type = match json.get("type").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => continue,
-        };
-
-        if msg_type != "user" && msg_type != "assistant" {
-            continue;
-        }
-
-        message_count += 1;
-
-        let ts = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-        if first_ts.is_empty() && !ts.is_empty() {
-            first_ts = ts.to_string();
-        }
-        if !ts.is_empty() {
-            last_ts = ts.to_string();
-        }
-
-        if git_branch.is_empty() {
-            if let Some(b) = json
-                .get("gitBranch")
-                .or_else(|| json.get("branch"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                git_branch = b.to_string();
-            }
-        }
-
-        if msg_type == "user" && first_prompt.is_empty() {
-            if let Some(content) = json.get("message").and_then(|m| m.get("content")) {
-                let blocks = parse_content_blocks(content);
-                let full = SessionRecord::render_content(&blocks, &ContentMode::Full);
-                first_prompt = full.chars().take(200).collect();
-            }
-        }
+        analyze_line(&mut analysis, &line);
     }
 
-    Some(SessionAnalysis {
-        first_prompt,
-        message_count,
-        first_ts,
-        last_ts,
-        git_branch,
-    })
+    Some(analysis)
+}
+
+/// Fold one JSONL line into the running analysis; non-message lines are ignored.
+fn analyze_line(analysis: &mut SessionAnalysis, line: &str) {
+    let json: serde_json::Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let msg_type = match json.get("type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+
+    if msg_type != "user" && msg_type != "assistant" {
+        return;
+    }
+
+    analysis.message_count += 1;
+    record_timestamps(analysis, &json);
+    record_git_branch(analysis, &json);
+    record_first_prompt(analysis, msg_type, &json);
+}
+
+fn record_timestamps(analysis: &mut SessionAnalysis, json: &serde_json::Value) {
+    let ts = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+    if ts.is_empty() {
+        return;
+    }
+    if analysis.first_ts.is_empty() {
+        analysis.first_ts = ts.to_string();
+    }
+    analysis.last_ts = ts.to_string();
+}
+
+fn record_git_branch(analysis: &mut SessionAnalysis, json: &serde_json::Value) {
+    if !analysis.git_branch.is_empty() {
+        return;
+    }
+    if let Some(b) = json
+        .get("gitBranch")
+        .or_else(|| json.get("branch"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        analysis.git_branch = b.to_string();
+    }
+}
+
+fn record_first_prompt(analysis: &mut SessionAnalysis, msg_type: &str, json: &serde_json::Value) {
+    if msg_type != "user" || !analysis.first_prompt.is_empty() {
+        return;
+    }
+    if let Some(content) = json.get("message").and_then(|m| m.get("content")) {
+        let blocks = parse_content_blocks(content);
+        let full = SessionRecord::render_content(&blocks, &ContentMode::Full);
+        analysis.first_prompt = full.chars().take(200).collect();
+    }
 }
 
 /// Check if session_id exists in the sessions-index.json at the given project dir.
@@ -351,12 +364,21 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Resume a Codex CLI session using exec.
-pub fn resume_codex(session_id: &str, file_path: &str) -> Result<(), String> {
+/// Resolve everything needed to launch a Codex resume: the working directory,
+/// the resume argument, and the codex binary path.
+fn codex_resume_invocation(
+    session_id: &str,
+    file_path: &str,
+) -> Result<(String, String, PathBuf), String> {
     let (working_dir, resume_arg) = build_codex_resume_command(session_id, file_path)?;
-
     let codex_path =
         which::which("codex").map_err(|_| "Codex binary not found in PATH".to_string())?;
+    Ok((working_dir, resume_arg, codex_path))
+}
+
+/// Resume a Codex CLI session using exec.
+pub fn resume_codex(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg, codex_path) = codex_resume_invocation(session_id, file_path)?;
 
     ccs_debug!(
         "[ccs:resume_codex] codex={} cwd={} resume -C {} {}",
@@ -374,10 +396,7 @@ pub fn resume_codex(session_id: &str, file_path: &str) -> Result<(), String> {
 
 /// Resume a Codex CLI session as a child process.
 pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), String> {
-    let (working_dir, resume_arg) = build_codex_resume_command(session_id, file_path)?;
-
-    let codex_path =
-        which::which("codex").map_err(|_| "Codex binary not found in PATH".to_string())?;
+    let (working_dir, resume_arg, codex_path) = codex_resume_invocation(session_id, file_path)?;
 
     ccs_debug!(
         "[ccs:resume_codex_child] codex={} cwd={} resume -C {} {}",
@@ -428,12 +447,22 @@ pub(super) fn build_opencode_resume_command(
     Ok((working_dir, session_id.to_string()))
 }
 
-/// Resume an Opencode session using exec.
-pub fn resume_opencode(session_id: &str, file_path: &str) -> Result<(), String> {
+/// Resolve everything needed to launch an Opencode resume: the working
+/// directory, the resume argument, and the opencode binary path.
+fn opencode_resume_invocation(
+    session_id: &str,
+    file_path: &str,
+) -> Result<(String, String, PathBuf), String> {
     let (working_dir, resume_arg) = build_opencode_resume_command(session_id, file_path)?;
-
     let opencode_path =
         which::which("opencode").map_err(|_| "opencode binary not found in PATH".to_string())?;
+    Ok((working_dir, resume_arg, opencode_path))
+}
+
+/// Resume an Opencode session using exec.
+pub fn resume_opencode(session_id: &str, file_path: &str) -> Result<(), String> {
+    let (working_dir, resume_arg, opencode_path) =
+        opencode_resume_invocation(session_id, file_path)?;
 
     ccs_debug!(
         "[ccs:resume_opencode] opencode={} cwd={} --session {}",
@@ -450,10 +479,8 @@ pub fn resume_opencode(session_id: &str, file_path: &str) -> Result<(), String> 
 
 /// Resume an Opencode session as a child process.
 pub fn resume_opencode_child(session_id: &str, file_path: &str) -> Result<(), String> {
-    let (working_dir, resume_arg) = build_opencode_resume_command(session_id, file_path)?;
-
-    let opencode_path =
-        which::which("opencode").map_err(|_| "opencode binary not found in PATH".to_string())?;
+    let (working_dir, resume_arg, opencode_path) =
+        opencode_resume_invocation(session_id, file_path)?;
 
     ccs_debug!(
         "[ccs:resume_opencode_child] opencode={} cwd={} --session {}",
@@ -540,6 +567,62 @@ mod tests {
 
         // Should return session ID (Claude CLI doesn't accept file paths for --resume)
         assert_eq!(result, session_id);
+    }
+
+    #[test]
+    fn test_is_session_in_index_detects_entry() {
+        let dir = TempDir::new().unwrap();
+
+        // Missing index file → false
+        assert!(!is_session_in_index(dir.path(), "some-id"));
+
+        // Invalid JSON → false
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(&index_path, "not json").unwrap();
+        assert!(!is_session_in_index(dir.path(), "some-id"));
+
+        // Index without an entries array → false
+        fs::write(&index_path, r#"{"version":1}"#).unwrap();
+        assert!(!is_session_in_index(dir.path(), "some-id"));
+
+        // Valid index: present id → true, absent id → false
+        fs::write(
+            &index_path,
+            r#"{"version":1,"entries":[{"sessionId":"present-id"}],"originalPath":""}"#,
+        )
+        .unwrap();
+        assert!(is_session_in_index(dir.path(), "present-id"));
+        assert!(!is_session_in_index(dir.path(), "absent-id"));
+    }
+
+    #[test]
+    fn test_analyze_session_extracts_metadata_and_skips_noise() {
+        let dir = TempDir::new().unwrap();
+        let session_file = dir.path().join("analyze.jsonl");
+        {
+            let mut f = fs::File::create(&session_file).unwrap();
+            // Noise: invalid JSON, no type field, non-message type — all ignored.
+            writeln!(f, "not json").unwrap();
+            writeln!(f, r#"{{"foo":"bar"}}"#).unwrap();
+            writeln!(f, r#"{{"type":"summary","summary":"s"}}"#).unwrap();
+            // Messages: first user prompt, branch, first/last timestamps.
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"first prompt"}},"gitBranch":"main","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+            // No timestamp → must not disturb first/last timestamps.
+            writeln!(
+                f,
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":"reply"}}}}"#
+            )
+            .unwrap();
+            // Later branch and prompt must not override the first ones.
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"second prompt"}},"gitBranch":"other","timestamp":"2025-01-01T00:02:00Z"}}"#).unwrap();
+        }
+
+        let analysis = analyze_session(session_file.to_str().unwrap()).unwrap();
+        assert_eq!(analysis.message_count, 3);
+        assert_eq!(analysis.first_prompt, "first prompt");
+        assert_eq!(analysis.first_ts, "2025-01-01T00:00:00Z");
+        assert_eq!(analysis.last_ts, "2025-01-01T00:02:00Z");
+        assert_eq!(analysis.git_branch, "main");
     }
 
     #[test]
