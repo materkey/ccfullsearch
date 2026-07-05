@@ -71,123 +71,24 @@ impl SessionTree {
             .map_err(|e| format!("Failed to open {}: {}", file_path, e))?;
         let reader = BufReader::new(file);
 
-        let mut nodes: HashMap<String, DagNode> = HashMap::new();
-        let mut children: HashMap<String, Vec<String>> = HashMap::new();
-        let mut roots: Vec<String> = Vec::new();
-        let mut session_id = String::new();
-        let mut dag_records: Vec<(SessionRecord, usize, Option<DateTime<Utc>>)> = Vec::new();
-
+        let mut builder = JsonlTreeBuilder::default();
         for (line_idx, line_result) in reader.lines().enumerate() {
             let line =
                 line_result.map_err(|e| format!("Read error at line {}: {}", line_idx, e))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let json: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let uuid = match session::extract_uuid(&json) {
-                Some(u) => u,
-                None => continue,
-            };
-
-            let parent_uuid = session::extract_parent_uuid_or_logical(&json);
-
-            let record_type = session::extract_record_type(&json)
-                .unwrap_or("")
-                .to_string();
-
-            let timestamp = session::extract_timestamp(&json);
-
-            let is_sidechain = session::is_sidechain(&json);
-
-            // Collect parsed record for DAG building (avoids re-reading the file)
-            if let Some(record) = SessionRecord::from_value(&json) {
-                dag_records.push((record, line_idx, timestamp));
-            }
-
-            // Extract role and content preview for displayable types
-            let (role, content_preview) = if record_type == "user" || record_type == "assistant" {
-                let message = json.get("message");
-                let role = message
-                    .and_then(|m| m.get("role"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let preview = message.and_then(|m| m.get("content")).map(|c| {
-                    let blocks = parse_content_blocks(c);
-                    SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 120 })
-                });
-
-                (role, preview)
-            } else if record_type == "summary" {
-                // Auto-compaction event — make it displayable
-                let summary_text = json
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(auto-compacted)")
-                    .to_string();
-                (Some("compaction".to_string()), Some(summary_text))
-            } else {
-                (None, None)
-            };
-
-            // Capture session_id from first available record
-            if session_id.is_empty() {
-                if let Some(sid) = session::extract_session_id(&json) {
-                    session_id = sid;
-                }
-            }
-
-            // Track parent->child relationships
-            match &parent_uuid {
-                Some(parent) => {
-                    children
-                        .entry(parent.clone())
-                        .or_default()
-                        .push(uuid.clone());
-                }
-                None => {
-                    roots.push(uuid.clone());
-                }
-            }
-
-            nodes.insert(
-                uuid.clone(),
-                DagNode {
-                    uuid: uuid.clone(),
-                    parent_uuid,
-                    timestamp,
-                    line_index: line_idx,
-                    role,
-                    content_preview,
-                    is_sidechain,
-                },
-            );
+            builder.ingest_line(line.trim(), line_idx);
         }
 
         // Build latest chain using unified DAG engine (reuses parsed records, no second file read)
-        let latest_chain = {
-            let dag = SessionDag::from_records(dag_records.into_iter(), DisplayFilter::Standard);
-            if let Some(tip) = dag.tip(TipStrategy::MaxTimestamp) {
-                dag.chain_from(tip)
-            } else {
-                HashSet::new()
-            }
-        };
+        let latest_chain = build_latest_chain(builder.dag_records);
 
         let source = SessionSource::from_path(file_path);
 
         let mut tree = SessionTree {
-            nodes,
-            children,
+            nodes: builder.nodes,
+            children: builder.children,
             latest_chain,
             rows: Vec::new(),
-            session_id,
+            session_id: builder.session_id,
             file_path: file_path.to_string(),
             source,
             content_cache: RefCell::new(HashMap::new()),
@@ -516,6 +417,131 @@ impl SessionTree {
     }
 }
 
+/// Accumulates per-line parse state while `SessionTree::from_file` walks the
+/// JSONL file: DAG nodes, parent->child links, the session id, and the parsed
+/// records that feed the latest-chain computation.
+#[derive(Default)]
+struct JsonlTreeBuilder {
+    nodes: HashMap<String, DagNode>,
+    children: HashMap<String, Vec<String>>,
+    session_id: String,
+    dag_records: Vec<(SessionRecord, usize, Option<DateTime<Utc>>)>,
+}
+
+impl JsonlTreeBuilder {
+    /// Parse a single JSONL line and fold it into the accumulated state.
+    /// Lines that are empty, invalid JSON, or carry no uuid are skipped.
+    fn ingest_line(&mut self, trimmed: &str, line_idx: usize) {
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let json: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let uuid = match session::extract_uuid(&json) {
+            Some(u) => u,
+            None => return,
+        };
+
+        let parent_uuid = session::extract_parent_uuid_or_logical(&json);
+
+        let record_type = session::extract_record_type(&json)
+            .unwrap_or("")
+            .to_string();
+
+        let timestamp = session::extract_timestamp(&json);
+
+        let is_sidechain = session::is_sidechain(&json);
+
+        // Collect parsed record for DAG building (avoids re-reading the file)
+        if let Some(record) = SessionRecord::from_value(&json) {
+            self.dag_records.push((record, line_idx, timestamp));
+        }
+
+        let (role, content_preview) = extract_role_and_preview(&json, &record_type);
+
+        self.capture_session_id(&json);
+
+        // Track parent->child relationships
+        if let Some(parent) = &parent_uuid {
+            self.children
+                .entry(parent.clone())
+                .or_default()
+                .push(uuid.clone());
+        }
+
+        self.nodes.insert(
+            uuid.clone(),
+            DagNode {
+                uuid,
+                parent_uuid,
+                timestamp,
+                line_index: line_idx,
+                role,
+                content_preview,
+                is_sidechain,
+            },
+        );
+    }
+
+    /// Capture session_id from the first record that carries one.
+    fn capture_session_id(&mut self, json: &serde_json::Value) {
+        if self.session_id.is_empty() {
+            if let Some(sid) = session::extract_session_id(json) {
+                self.session_id = sid;
+            }
+        }
+    }
+}
+
+/// Extract role and content preview for displayable record types
+/// (user/assistant messages and auto-compaction summaries).
+fn extract_role_and_preview(
+    json: &serde_json::Value,
+    record_type: &str,
+) -> (Option<String>, Option<String>) {
+    if record_type == "user" || record_type == "assistant" {
+        let message = json.get("message");
+        let role = message
+            .and_then(|m| m.get("role"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let preview = message.and_then(|m| m.get("content")).map(|c| {
+            let blocks = parse_content_blocks(c);
+            SessionRecord::render_content(&blocks, &ContentMode::Preview { max_chars: 120 })
+        });
+
+        (role, preview)
+    } else if record_type == "summary" {
+        // Auto-compaction event — make it displayable
+        let summary_text = json
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(auto-compacted)")
+            .to_string();
+        (Some("compaction".to_string()), Some(summary_text))
+    } else {
+        (None, None)
+    }
+}
+
+/// Compute the latest-chain uuid set from the collected records via the
+/// unified DAG engine.
+fn build_latest_chain(
+    dag_records: Vec<(SessionRecord, usize, Option<DateTime<Utc>>)>,
+) -> HashSet<String> {
+    let dag = SessionDag::from_records(dag_records.into_iter(), DisplayFilter::Standard);
+    if let Some(tip) = dag.tip(TipStrategy::MaxTimestamp) {
+        dag.chain_from(tip)
+    } else {
+        HashSet::new()
+    }
+}
+
 /// Render `ContentBlock`s as the full preview body shown in the tree's right
 /// pane. Mirrors `ContentMode::Full` so Opencode messages look the same as
 /// Claude/Codex messages when expanded.
@@ -613,6 +639,82 @@ mod tests {
         writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"Branch B msg"}}]}},"uuid":"b4","parentUuid":"b3","sessionId":"s1","timestamp":"2025-01-01T00:04:30Z"}}"#).unwrap();
         writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Branch B reply"}}]}},"uuid":"b5","parentUuid":"b4","sessionId":"s1","timestamp":"2025-01-01T00:05:30Z"}}"#).unwrap();
         path
+    }
+
+    /// Helper: create a minimal Opencode SQLite database with one linear
+    /// user/assistant session and return the synthetic `<db>#<session_id>` path.
+    fn create_opencode_session(dir: &TempDir) -> String {
+        let db_path = dir.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT,
+                name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '', directory TEXT, title TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+
+            INSERT INTO project VALUES ('projT', '/tmp/tree-test', 'git', 'tree-test', 1, 2);
+            INSERT INTO session VALUES ('ses_TREE', 'projT', '', '/tmp/tree-test',
+                'Tree test session', 1769762431585, 1769762509666);
+            INSERT INTO message VALUES ('msg_u1', 'ses_TREE', 1769762431591, 1769762431591,
+                '{"role":"user","time":{"created":1769762431591}}');
+            INSERT INTO message VALUES ('msg_a1', 'ses_TREE', 1769762431596, 1769762431596,
+                '{"role":"assistant","parentID":"msg_u1","time":{"created":1769762431596}}');
+            INSERT INTO part VALUES ('prt_1', 'msg_u1', 'ses_TREE', 1, 1,
+                '{"type":"text","text":"Hello opencode"}');
+            INSERT INTO part VALUES ('prt_2', 'msg_a1', 'ses_TREE', 2, 2,
+                '{"type":"text","text":"Opencode reply"}');
+            "#,
+        )
+        .unwrap();
+        opencode::synthetic_session_path(&db_path, "ses_TREE")
+    }
+
+    #[test]
+    fn test_opencode_session_builds_linear_tree() {
+        let dir = TempDir::new().unwrap();
+        let path = create_opencode_session(&dir);
+        let tree = SessionTree::from_file(&path).unwrap();
+
+        assert_eq!(tree.session_id, "ses_TREE");
+        assert_eq!(tree.rows.len(), 2);
+        assert_eq!(tree.rows[0].role, "user");
+        assert!(tree.rows[0].content_preview.contains("Hello opencode"));
+        assert_eq!(tree.rows[1].role, "assistant");
+        assert!(tree.rows[1].content_preview.contains("Opencode reply"));
+
+        // Opencode chains are linear by construction: every row is on the
+        // latest chain and there are no branch points.
+        assert!(tree.rows.iter().all(|r| r.is_on_latest_chain));
+        assert_eq!(tree.branch_count(), 0);
+    }
+
+    #[test]
+    fn test_opencode_full_content_served_from_cache() {
+        // The synthetic `<db>#<session_id>` path is not a readable JSONL file,
+        // so full content must come from the pre-filled cache.
+        let dir = TempDir::new().unwrap();
+        let path = create_opencode_session(&dir);
+        let tree = SessionTree::from_file(&path).unwrap();
+
+        let content = tree.get_full_content("msg_u1").unwrap();
+        assert!(content.contains("Hello opencode"));
+        let content = tree.get_full_content("msg_a1").unwrap();
+        assert!(content.contains("Opencode reply"));
+    }
+
+    #[test]
+    fn test_opencode_unknown_session_errors() {
+        let dir = TempDir::new().unwrap();
+        let _ = create_opencode_session(&dir);
+        let missing = opencode::synthetic_session_path(&dir.path().join("opencode.db"), "ses_NOPE");
+        assert!(SessionTree::from_file(&missing).is_err());
     }
 
     #[test]
