@@ -41,6 +41,40 @@ Requirements:
 - `codex` must be available in `PATH` to resume Codex sessions.
 - `opencode` must be available in `PATH` to resume Opencode sessions.
 
+## Claude Code plugin
+
+The repository includes a Claude Code plugin in `.claude-plugin/` and a `ccs` skill in `.claude/skills/ccs/`.
+
+Install the plugin via the Claude Code plugin marketplace:
+
+```bash
+# Add the marketplace
+claude plugin marketplace add materkey/ccfullsearch
+
+# Install the plugin
+claude plugin install ccs@ccfullsearch
+```
+
+Alternatively, install just the skill with [skills](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add materkey/ccfullsearch --skill ccs
+```
+
+Add `-g` to install globally (user-level) instead of into the current project.
+
+The skill supports:
+
+- CLI mode through `ccs search` and `ccs list`.
+- Overlay picker mode through `.claude/skills/ccs/scripts/launch-ccs.sh`.
+- Overlay resume through `.claude/skills/ccs/scripts/launch-resume.sh`.
+
+With the plugin installed, Claude Code can use `ccs` for requests such as:
+
+- find where a topic was discussed;
+- list recent sessions;
+- resume a previous conversation.
+
 ## Quick start
 
 Open the TUI:
@@ -261,40 +295,6 @@ ccs --overlay
 Overlay mode resumes the selected session as a child process. When the resumed tool exits, `ccs` returns to the picker and restores the current search query.
 
 This is useful when you want to review or resume several related sessions without relaunching the picker each time.
-
-## Claude Code plugin
-
-The repository includes a Claude Code plugin in `.claude-plugin/` and a `ccs` skill in `.claude/skills/ccs/`.
-
-Install the plugin via the Claude Code plugin marketplace:
-
-```bash
-# Add the marketplace
-claude plugin marketplace add materkey/ccfullsearch
-
-# Install the plugin
-claude plugin install ccs@ccfullsearch
-```
-
-Alternatively, install just the skill with [skills](https://github.com/vercel-labs/skills):
-
-```bash
-npx skills add materkey/ccfullsearch --skill ccs
-```
-
-Add `-g` to install globally (user-level) instead of into the current project.
-
-The skill supports:
-
-- CLI mode through `ccs search` and `ccs list`.
-- Overlay picker mode through `.claude/skills/ccs/scripts/launch-ccs.sh`.
-- Overlay resume through `.claude/skills/ccs/scripts/launch-resume.sh`.
-
-With the plugin installed, Claude Code can use `ccs` for requests such as:
-
-- find where a topic was discussed;
-- list recent sessions;
-- resume a previous conversation.
 
 ## Development
 
