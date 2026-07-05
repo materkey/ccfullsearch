@@ -149,6 +149,83 @@ fn summary_is_on_latest_chain(
     latest_chain.contains(&leaf_uuid)
 }
 
+/// Fold a record's timestamp (if any) into the running maximum.
+fn fold_max_timestamp(
+    current: Option<DateTime<Utc>>,
+    json: &serde_json::Value,
+) -> Option<DateTime<Utc>> {
+    match session::extract_timestamp(json) {
+        Some(ts) => Some(current.map_or(ts, |prev| prev.max(ts))),
+        None => current,
+    }
+}
+
+/// Record a `type=summary` line: keep it as the last summary when it sits on
+/// the latest chain, otherwise remember that an off-chain summary was seen.
+fn record_on_chain_summary(
+    result: &mut ScanResult,
+    json: &serde_json::Value,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    if let Some(SessionRecord::Summary { text, .. }) = SessionRecord::from_value(json) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if summary_is_on_latest_chain(json, latest_chain) {
+            result.last_summary = Some(truncate_summary(trimmed, 100));
+            result.last_summary_sid = session::extract_session_id(json);
+        } else {
+            result.saw_off_chain_summary = true;
+        }
+    }
+}
+
+/// Check ALL messages (user + assistant) for automation markers.
+fn record_automation(result: &mut ScanResult, json: &serde_json::Value) {
+    if result.automation.is_some() {
+        return;
+    }
+    if let Some(text) = extract_text_for_automation(json) {
+        if let Some(tool) = session::detect_automation(&text) {
+            result.automation = Some(tool.to_string());
+        }
+    }
+}
+
+/// Record the first non-meta, non-bootstrap user message as the fallback title.
+fn record_first_user_message(result: &mut ScanResult, json: &serde_json::Value) {
+    if result.first_user_message.is_some() {
+        return;
+    }
+    if let Some(text) = extract_non_meta_user_text(json) {
+        if is_real_user_prompt(&text) {
+            result.first_user_message = Some(truncate_summary(&text, 100));
+        }
+    }
+}
+
+/// Apply one parsed head-scan JSONL record to the accumulator.
+fn scan_head_record(
+    scan: &mut ScanResult,
+    json: &serde_json::Value,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    scan.last_timestamp = fold_max_timestamp(scan.last_timestamp, json);
+
+    if scan.session_id.is_none() {
+        scan.session_id = session::extract_session_id(json);
+    }
+
+    if scan.branch.is_none() {
+        scan.branch = session::extract_branch(json);
+    }
+
+    record_on_chain_summary(scan, json, latest_chain);
+    record_automation(scan, json);
+    record_first_user_message(scan, json);
+}
+
 fn scan_head(
     path: &Path,
     max_lines: usize,
@@ -168,52 +245,15 @@ fn scan_head(
         }
         scan.lines_scanned = i + 1;
 
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
+        let Ok(line) = line else {
+            continue;
         };
 
-        let json: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
         };
 
-        if let Some(ts) = session::extract_timestamp(&json) {
-            scan.last_timestamp = Some(scan.last_timestamp.map_or(ts, |prev| prev.max(ts)));
-        }
-
-        if scan.session_id.is_none() {
-            scan.session_id = session::extract_session_id(&json);
-        }
-
-        if scan.branch.is_none() {
-            scan.branch = session::extract_branch(&json);
-        }
-
-        if let Some(SessionRecord::Summary { text, .. }) = SessionRecord::from_value(&json) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                if summary_is_on_latest_chain(&json, latest_chain) {
-                    scan.last_summary = Some(truncate_summary(trimmed, 100));
-                    scan.last_summary_sid = session::extract_session_id(&json);
-                } else {
-                    scan.saw_off_chain_summary = true;
-                }
-            }
-        }
-
-        // Check ALL messages (user + assistant) for automation markers
-        if scan.automation.is_none() {
-            if let Some(text) = extract_text_for_automation(&json) {
-                scan.automation = session::detect_automation(&text).map(|s| s.to_string());
-            }
-        }
-
-        if let Some(text) = extract_non_meta_user_text(&json) {
-            if scan.first_user_message.is_none() && is_real_user_prompt(&text) {
-                scan.first_user_message = Some(truncate_summary(&text, 100));
-            }
-        }
+        scan_head_record(&mut scan, &json, latest_chain);
 
         if scan.first_user_message.is_some()
             && scan.session_id.is_some()
@@ -239,17 +279,32 @@ struct TailSummaryScan {
     last_timestamp: Option<DateTime<Utc>>,
 }
 
-/// Read the last `max_bytes` of a file and search for the last `type=summary` record.
-/// Compaction summaries are appended during context compaction, so they appear near
-/// the end of long session files. Returns (session_id, summary_text) if found.
+/// Skip the (possibly partial) first line of a tail buffer.
+///
+/// `buf[0]` is the byte at `read_start` (= start - 1), i.e. the byte *before*
+/// the tail start — the caller reads one byte early so a `\n` there means the
+/// tail already begins on a line boundary. Returns `None` when the buffer
+/// holds no complete line at all.
+fn skip_partial_first_line(buf: &[u8]) -> Option<&[u8]> {
+    let at_line_boundary = buf[0] == b'\n';
+    let tail_buf = &buf[1..];
+    if at_line_boundary {
+        Some(tail_buf)
+    } else if tail_buf.first() == Some(&b'\n') {
+        Some(&tail_buf[1..])
+    } else {
+        tail_buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|pos| &tail_buf[pos + 1..])
+    }
+}
+
+/// Read the last `max_bytes` of a file as text, aligned to a line boundary.
 ///
 /// Reads into a byte buffer and skips to the first newline after the seek offset
 /// to avoid splitting multibyte UTF-8 characters or partial JSONL lines.
-fn find_summary_from_tail_with_chain(
-    path: &Path,
-    max_bytes: u64,
-    latest_chain: Option<&HashSet<String>>,
-) -> Option<TailSummaryScan> {
+fn read_tail_lines(path: &Path, max_bytes: u64) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     let start = file_len.saturating_sub(max_bytes);
@@ -268,101 +323,117 @@ fn find_summary_from_tail_with_chain(
     // The buffer includes one extra byte before `start` (when start > 0) so we
     // can check for a line boundary without a second file open.
     let data = if start > 0 {
-        // buf[0] is the byte at read_start (= start - 1). The actual tail starts at buf[1..].
-        let at_line_boundary = buf[0] == b'\n';
-        let tail_buf = &buf[1..];
-        if at_line_boundary {
-            tail_buf
-        } else if tail_buf.first() == Some(&b'\n') {
-            &tail_buf[1..]
-        } else if let Some(pos) = tail_buf.iter().position(|&b| b == b'\n') {
-            &tail_buf[pos + 1..]
-        } else {
-            return None;
-        }
+        skip_partial_first_line(&buf)?
     } else {
-        &buf
+        &buf[..]
     };
-    let tail = String::from_utf8_lossy(data);
+    Some(String::from_utf8_lossy(data).into_owned())
+}
+
+/// Trim `text` and truncate to 100 chars; `None` when trimming leaves nothing.
+fn non_empty_truncated(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| truncate_summary(trimmed, 100))
+}
+
+/// Record a tail `type=summary` line: keep it as the last summary (with the
+/// record-local session_id) when it sits on the latest chain, otherwise
+/// remember that an off-chain summary was seen.
+fn apply_tail_summary(
+    scan: &mut TailSummaryScan,
+    json: &serde_json::Value,
+    text: &str,
+    leaf_uuid: Option<&str>,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let on_chain = match (latest_chain, leaf_uuid) {
+        (Some(chain), Some(leaf)) => chain.contains(leaf),
+        _ => true,
+    };
+    if on_chain {
+        let sid = session::extract_session_id(json);
+        scan.summary = Some((sid, truncate_summary(trimmed, 100)));
+    } else {
+        scan.saw_off_chain_summary = true;
+    }
+}
+
+/// Apply one parsed tail record to the accumulator: summaries plus the
+/// standalone metadata records Claude Code appends near the end of the file.
+fn apply_tail_record(
+    scan: &mut TailSummaryScan,
+    record: SessionRecord,
+    json: &serde_json::Value,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    match record {
+        SessionRecord::Summary {
+            text, leaf_uuid, ..
+        } => {
+            apply_tail_summary(scan, json, &text, leaf_uuid.as_deref(), latest_chain);
+        }
+        SessionRecord::CustomTitle(t) => {
+            if let Some(title) = non_empty_truncated(&t) {
+                scan.custom_title = Some(title);
+            }
+        }
+        SessionRecord::AiTitle(t) => {
+            if let Some(title) = non_empty_truncated(&t) {
+                scan.ai_title = Some(title);
+            }
+        }
+        SessionRecord::AgentName(name) => {
+            if let Some(name) = non_empty_truncated(&name) {
+                scan.agent_name = Some(name);
+            }
+        }
+        SessionRecord::LastPrompt(prompt) => {
+            if let Some(prompt) =
+                non_empty_truncated(strip_leading_recog_automation_marker(&prompt))
+            {
+                scan.last_prompt = Some(prompt);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Read the last `max_bytes` of a file and search for the last `type=summary` record.
+/// Compaction summaries are appended during context compaction, so they appear near
+/// the end of long session files. Returns (session_id, summary_text) if found.
+fn find_summary_from_tail_with_chain(
+    path: &Path,
+    max_bytes: u64,
+    latest_chain: Option<&HashSet<String>>,
+) -> Option<TailSummaryScan> {
+    let tail = read_tail_lines(path, max_bytes)?;
 
     // Find the last summary record in the tail, and track any sessionId from any record
     // so we have a fallback if the summary record itself lacks a sessionId.
-    let mut last_summary: Option<(Option<String>, String)> = None;
+    let mut scan = TailSummaryScan::default();
     let mut any_sid: Option<String> = None;
-    let mut saw_off_chain_summary = false;
-    let mut custom_title: Option<String> = None;
-    let mut ai_title: Option<String> = None;
-    let mut agent_name: Option<String> = None;
-    let mut last_prompt: Option<String> = None;
-    let mut max_ts: Option<DateTime<Utc>> = None;
     for line in tail.lines() {
-        let json: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
         };
-        if let Some(ts) = session::extract_timestamp(&json) {
-            max_ts = Some(max_ts.map_or(ts, |prev: DateTime<Utc>| prev.max(ts)));
-        }
+        scan.last_timestamp = fold_max_timestamp(scan.last_timestamp, &json);
         if any_sid.is_none() {
             any_sid = session::extract_session_id(&json);
         }
         if let Some(record) = SessionRecord::from_value(&json) {
-            match record {
-                SessionRecord::Summary {
-                    text, leaf_uuid, ..
-                } => {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        let on_chain = match (latest_chain, leaf_uuid.as_deref()) {
-                            (Some(chain), Some(leaf)) => chain.contains(leaf),
-                            _ => true,
-                        };
-                        if on_chain {
-                            let sid = session::extract_session_id(&json);
-                            last_summary = Some((sid, truncate_summary(trimmed, 100)));
-                        } else {
-                            saw_off_chain_summary = true;
-                        }
-                    }
-                }
-                SessionRecord::CustomTitle(t) => {
-                    let trimmed = t.trim();
-                    if !trimmed.is_empty() {
-                        custom_title = Some(truncate_summary(trimmed, 100));
-                    }
-                }
-                SessionRecord::AiTitle(t) => {
-                    let trimmed = t.trim();
-                    if !trimmed.is_empty() {
-                        ai_title = Some(truncate_summary(trimmed, 100));
-                    }
-                }
-                SessionRecord::AgentName(name) => {
-                    let trimmed = name.trim();
-                    if !trimmed.is_empty() {
-                        agent_name = Some(truncate_summary(trimmed, 100));
-                    }
-                }
-                SessionRecord::LastPrompt(prompt) => {
-                    let trimmed = strip_leading_recog_automation_marker(&prompt).trim();
-                    if !trimmed.is_empty() {
-                        last_prompt = Some(truncate_summary(trimmed, 100));
-                    }
-                }
-                _ => {}
-            }
+            apply_tail_record(&mut scan, record, &json, latest_chain);
         }
     }
 
-    Some(TailSummaryScan {
-        summary: last_summary.map(|(sid, text)| (sid.or(any_sid), text)),
-        saw_off_chain_summary,
-        custom_title,
-        ai_title,
-        agent_name,
-        last_prompt,
-        last_timestamp: max_ts,
-    })
+    scan.summary = scan
+        .summary
+        .take()
+        .map(|(sid, text)| (sid.or(any_sid), text));
+    Some(scan)
 }
 
 #[cfg(test)]
@@ -395,6 +466,139 @@ fn scan_tail(
     })
 }
 
+/// Fields the middle scan still has to find: `needs` minus what `result`
+/// already holds.
+struct StillNeeds {
+    summary: bool,
+    user_message: bool,
+    session_id: bool,
+    automation: bool,
+    branch: bool,
+}
+
+fn still_needed(needs: &ScanNeeds, result: &ScanResult) -> StillNeeds {
+    StillNeeds {
+        summary: needs.summary && result.last_summary.is_none(),
+        user_message: needs.user_message && result.first_user_message.is_none(),
+        session_id: needs.session_id && result.session_id.is_none(),
+        automation: needs.automation && result.automation.is_none(),
+        branch: needs.branch && result.branch.is_none(),
+    }
+}
+
+fn any_still_needed_besides_summary(still: &StillNeeds) -> bool {
+    still.user_message || still.session_id || still.automation || still.branch
+}
+
+fn all_needs_met(still: &StillNeeds) -> bool {
+    !(still.summary || any_still_needed_besides_summary(still))
+}
+
+fn contains_any(line: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| line.contains(n))
+}
+
+/// Cheap substring checks deciding whether a middle-scan line is worth
+/// parsing as JSON, and which record kinds it may contain.
+struct MiddleLineHints {
+    summary: bool,
+    user: bool,
+    msg: bool,
+    sid: bool,
+    branch: bool,
+}
+
+fn middle_line_hints(
+    line: &str,
+    needs: &ScanNeeds,
+    still: &StillNeeds,
+    in_tail_region: bool,
+) -> MiddleLineHints {
+    MiddleLineHints {
+        summary: needs.summary
+            && !in_tail_region
+            && contains_any(line, &["\"summary\"", "\"compacted\""]),
+        user: still.user_message && line.contains("\"user\""),
+        msg: still.automation && contains_any(line, &["\"user\"", "\"assistant\""]),
+        sid: still.session_id
+            && contains_any(
+                line,
+                &["\"sessionId\"", "\"session_id\"", "\"session_meta\""],
+            ),
+        branch: still.branch && contains_any(line, &["\"branch\"", "\"gitBranch\""]),
+    }
+}
+
+fn any_hint(hints: &MiddleLineHints) -> bool {
+    hints.summary || hints.user || hints.msg || hints.sid || hints.branch
+}
+
+/// Apply one parsed middle-scan JSONL record to the accumulator, extracting
+/// only the fields the corresponding hints/needs flags call for.
+fn apply_middle_record(
+    result: &mut ScanResult,
+    json: &serde_json::Value,
+    hints: &MiddleLineHints,
+    still: &StillNeeds,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    result.last_timestamp = fold_max_timestamp(result.last_timestamp, json);
+
+    if result.session_id.is_none() {
+        result.session_id = session::extract_session_id(json);
+    }
+
+    if still.branch {
+        if let Some(branch) = session::extract_branch(json) {
+            result.branch = Some(branch);
+        }
+    }
+
+    if hints.summary {
+        record_on_chain_summary(result, json, latest_chain);
+    }
+
+    if hints.user {
+        record_first_user_message(result, json);
+    }
+
+    if still.automation {
+        record_automation(result, json);
+    }
+}
+
+/// Process one middle-scan line: cheap substring pre-filters first, JSON
+/// parsing and field extraction only when a needed record kind may be present.
+fn scan_middle_line(
+    result: &mut ScanResult,
+    line: &str,
+    needs: &ScanNeeds,
+    still: &StillNeeds,
+    in_tail_region: bool,
+    latest_chain: Option<&HashSet<String>>,
+) {
+    // Timestamp extraction needs to happen for ALL parseable lines, not just
+    // those matching the hint predicates below. Try a cheap string check
+    // first to avoid parsing lines that have neither timestamps nor needed fields.
+    let could_have_timestamp = contains_any(line, &["\"timestamp\"", "\"_audit_timestamp\""]);
+
+    // When all business fields are found, only continue scanning for timestamps
+    if all_needs_met(still) && !could_have_timestamp {
+        return;
+    }
+
+    let hints = middle_line_hints(line, needs, still, in_tail_region);
+    if !could_have_timestamp && !any_hint(&hints) {
+        return;
+    }
+
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+
+    apply_middle_record(result, &json, &hints, still, latest_chain);
+}
+
 fn scan_middle(
     path: &Path,
     start_line: usize,
@@ -404,9 +608,8 @@ fn scan_middle(
 ) -> ScanResult {
     let mut result = ScanResult::default();
 
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return result,
+    let Ok(file) = File::open(path) else {
+        return result;
     };
     let reader = BufReader::new(file);
     let mut bytes_read: u64 = 0;
@@ -420,112 +623,24 @@ fn scan_middle(
         }
 
         let in_tail_region = end_byte > 0 && bytes_read >= end_byte;
-        let still_need_user_msg = needs.user_message && result.first_user_message.is_none();
-        let still_need_sid = needs.session_id && result.session_id.is_none();
-        let still_need_auto = needs.automation && result.automation.is_none();
-        let still_need_branch = needs.branch && result.branch.is_none();
-        if in_tail_region
-            && !(still_need_user_msg || still_need_sid || still_need_auto || still_need_branch)
-        {
+        let still = still_needed(needs, &result);
+        if in_tail_region && !any_still_needed_besides_summary(&still) {
             break;
         }
 
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
+        let Ok(line) = line else {
+            continue;
         };
         bytes_read += line.len() as u64 + 1;
 
-        let have_summary = !needs.summary || result.last_summary.is_some();
-        let have_user_msg = !needs.user_message || result.first_user_message.is_some();
-        let have_sid = !needs.session_id || result.session_id.is_some();
-        let have_auto = !needs.automation || result.automation.is_some();
-        let have_branch = !needs.branch || result.branch.is_some();
-        let all_needs_met = have_summary && have_user_msg && have_sid && have_auto && have_branch;
-
-        // Timestamp extraction needs to happen for ALL parseable lines, not just
-        // those matching the could_be_* predicates below. Try a cheap string check
-        // first to avoid parsing lines that have neither timestamps nor needed fields.
-        let could_have_timestamp =
-            line.contains("\"timestamp\"") || line.contains("\"_audit_timestamp\"");
-
-        // When all business fields are found, only continue scanning for timestamps
-        if all_needs_met && !could_have_timestamp {
-            continue;
-        }
-
-        let could_be_summary = needs.summary
-            && !in_tail_region
-            && (line.contains("\"summary\"") || line.contains("\"compacted\""));
-        let could_be_user = still_need_user_msg && line.contains("\"user\"");
-        let could_be_msg =
-            still_need_auto && (line.contains("\"user\"") || line.contains("\"assistant\""));
-        let could_have_sid = still_need_sid
-            && (line.contains("\"sessionId\"")
-                || line.contains("\"session_id\"")
-                || line.contains("\"session_meta\""));
-        let could_have_branch =
-            still_need_branch && (line.contains("\"branch\"") || line.contains("\"gitBranch\""));
-
-        if !could_have_timestamp
-            && !could_be_summary
-            && !could_be_user
-            && !could_have_sid
-            && !could_be_msg
-            && !could_have_branch
-        {
-            continue;
-        }
-
-        let json: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if let Some(ts) = session::extract_timestamp(&json) {
-            result.last_timestamp = Some(result.last_timestamp.map_or(ts, |prev| prev.max(ts)));
-        }
-
-        if result.session_id.is_none() {
-            result.session_id = session::extract_session_id(&json);
-        }
-
-        if still_need_branch {
-            if let Some(branch) = session::extract_branch(&json) {
-                result.branch = Some(branch);
-            }
-        }
-
-        if could_be_summary {
-            if let Some(SessionRecord::Summary { text, .. }) = SessionRecord::from_value(&json) {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if summary_is_on_latest_chain(&json, latest_chain) {
-                    result.last_summary = Some(truncate_summary(trimmed, 100));
-                    result.last_summary_sid = session::extract_session_id(&json);
-                } else {
-                    result.saw_off_chain_summary = true;
-                }
-            }
-        }
-
-        if could_be_user {
-            if let Some(text) = extract_non_meta_user_text(&json) {
-                if result.first_user_message.is_none() && is_real_user_prompt(&text) {
-                    result.first_user_message = Some(truncate_summary(&text, 100));
-                }
-            }
-        }
-
-        if still_need_auto {
-            if let Some(text) = extract_text_for_automation(&json) {
-                if let Some(tool) = session::detect_automation(&text) {
-                    result.automation = Some(tool.to_string());
-                }
-            }
-        }
+        scan_middle_line(
+            &mut result,
+            &line,
+            needs,
+            &still,
+            in_tail_region,
+            latest_chain,
+        );
     }
 
     result
@@ -617,11 +732,10 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
 /// 3. `scan_middle`: remaining lines for anything head/tail missed
 ///
 /// Uses last message timestamp (falls back to file mtime) for accurate recency sorting.
-pub fn extract_summary(path: &Path) -> Option<RecentSession> {
-    let path_str = path.to_str().unwrap_or("");
-    let source = SessionSource::from_path(path_str);
-    let project = extract_project_from_path(path_str);
-    let cwd = (SessionProvider::from_path(path_str) == SessionProvider::Codex)
+/// Canonicalized `cwd` recorded in Codex rollout metadata; `None` for other
+/// providers (Claude sessions encode the project in the file path itself).
+fn codex_cwd_for_path(path_str: &str) -> Option<String> {
+    (SessionProvider::from_path(path_str) == SessionProvider::Codex)
         .then(|| session::read_codex_session_cwd(path_str))
         .flatten()
         .map(|raw| {
@@ -629,7 +743,137 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
                 .ok()
                 .and_then(|p| p.to_str().map(String::from))
                 .unwrap_or(raw)
-        });
+        })
+}
+
+/// Merge head + tail scan results. Tail wins for summaries (the last summary
+/// record is the freshest); metadata titles and last-prompt only exist in the
+/// tail scan.
+fn merge_head_and_tail(head: &ScanResult, tail: &ScanResult) -> ScanResult {
+    let mut merged = ScanResult {
+        session_id: head.session_id.clone(),
+        first_user_message: head.first_user_message.clone(),
+        last_summary: head.last_summary.clone(),
+        last_summary_sid: head.last_summary_sid.clone(),
+        metadata_title: tail.metadata_title.clone(),
+        last_prompt: tail.last_prompt.clone(),
+        automation: head.automation.clone(),
+        branch: head.branch.clone(),
+        lines_scanned: head.lines_scanned,
+        saw_off_chain_summary: head.saw_off_chain_summary || tail.saw_off_chain_summary,
+        last_timestamp: None,
+    };
+
+    if tail.last_summary.is_some() {
+        let tail_sid = tail.last_summary_sid.clone();
+        merged.session_id = tail_sid.clone().or(merged.session_id);
+        merged.last_summary = tail.last_summary.clone();
+        merged.last_summary_sid = tail_sid;
+    }
+
+    merged
+}
+
+/// Which fields the middle scan should look for, given what head + tail found.
+fn middle_scan_needs(merged: &ScanResult, source: SessionSource) -> ScanNeeds {
+    ScanNeeds {
+        summary: merged.last_summary.is_none(),
+        user_message: merged.first_user_message.is_none(),
+        session_id: merged.last_summary_sid.is_none() && merged.session_id.is_none(),
+        automation: merged.automation.is_none(),
+        branch: merged.branch.is_none() && source == SessionSource::CLI,
+    }
+}
+
+fn should_scan_middle(needs: &ScanNeeds, tail_start: u64) -> bool {
+    (needs.summary && tail_start > 0)
+        || needs.user_message
+        || needs.session_id
+        || needs.automation
+        || needs.branch
+}
+
+/// Fold middle-scan findings into the merged head+tail result, filling only
+/// fields that are still empty (head and tail take precedence).
+fn merge_middle_into(merged: &mut ScanResult, middle: ScanResult) {
+    if merged.session_id.is_none() {
+        merged.session_id = middle.session_id;
+    }
+    if merged.last_summary.is_none() {
+        merged.last_summary = middle.last_summary;
+        if merged.last_summary.is_some() {
+            merged.last_summary_sid = middle.last_summary_sid;
+        }
+    }
+    if merged.first_user_message.is_none() {
+        merged.first_user_message = middle.first_user_message;
+    }
+    if merged.automation.is_none() {
+        merged.automation = middle.automation;
+    }
+    if merged.branch.is_none() {
+        merged.branch = middle.branch;
+    }
+    merged.saw_off_chain_summary = merged.saw_off_chain_summary || middle.saw_off_chain_summary;
+}
+
+/// Resolve the (session_id, summary, preview_role) triple according to the
+/// documented priority order: metadata title, summary record, last-prompt,
+/// then first user message (or the latest on-chain user message when an
+/// off-chain summary was seen). `None` when no usable summary exists.
+fn resolve_summary(
+    path: &Path,
+    merged: ScanResult,
+    head_session_id: Option<String>,
+    latest_chain: Option<&HashSet<String>>,
+) -> Option<(String, String, MessageRole)> {
+    let ScanResult {
+        session_id,
+        first_user_message,
+        last_summary,
+        last_summary_sid,
+        metadata_title,
+        last_prompt,
+        saw_off_chain_summary,
+        ..
+    } = merged;
+
+    if let Some(title) = metadata_title {
+        let sid = last_summary_sid.or(session_id).or(head_session_id)?;
+        return Some((sid, title, MessageRole::Assistant));
+    }
+
+    if let Some(summary_text) = last_summary {
+        let sid = last_summary_sid.or(session_id)?;
+        return Some((sid, summary_text, MessageRole::Assistant));
+    }
+
+    if let Some(prompt) = last_prompt {
+        return Some((session_id?, prompt, MessageRole::User));
+    }
+
+    let session_id = session_id?;
+    let summary = if saw_off_chain_summary {
+        latest_chain
+            .and_then(|chain| extract_latest_user_message_on_chain(path, chain))
+            .or(first_user_message)
+            .unwrap_or_default()
+    } else {
+        first_user_message.unwrap_or_default()
+    };
+
+    if summary.is_empty() {
+        return None;
+    }
+
+    Some((session_id, summary, MessageRole::User))
+}
+
+pub fn extract_summary(path: &Path) -> Option<RecentSession> {
+    let path_str = path.to_str().unwrap_or("");
+    let source = SessionSource::from_path(path_str);
+    let project = extract_project_from_path(path_str);
+    let cwd = codex_cwd_for_path(path_str);
     const TAIL_BYTES: u64 = 256 * 1024;
     let latest_chain = SessionDag::from_file(path, DisplayFilter::Standard)
         .ok()
@@ -648,43 +892,12 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
     let tail_start = file_len.saturating_sub(TAIL_BYTES);
     let tail = scan_tail(path, TAIL_BYTES, latest_chain.as_ref()).unwrap_or_default();
 
-    // Merge head + tail
-    let mut session_id = head.session_id.clone();
-    let mut first_user_message = head.first_user_message.clone();
-    let mut last_summary = head.last_summary.clone();
-    let mut last_summary_sid = head.last_summary_sid.clone();
-    let mut automation = head.automation.clone();
-    let mut branch = head.branch.clone();
-    let mut saw_off_chain_summary = head.saw_off_chain_summary || tail.saw_off_chain_summary;
-
-    if tail.last_summary.is_some() {
-        let tail_sid = tail.last_summary_sid.clone();
-        session_id = tail_sid.clone().or(session_id);
-        last_summary = tail.last_summary.clone();
-        last_summary_sid = tail_sid;
-    }
+    let mut merged = merge_head_and_tail(&head, &tail);
 
     // Conditionally scan the middle region for anything head/tail missed
-    let need_summary = last_summary.is_none();
-    let need_user_msg = first_user_message.is_none();
-    let need_sid = last_summary_sid.is_none() && session_id.is_none();
-    let need_automation = automation.is_none();
-    let need_branch = branch.is_none() && source == SessionSource::CLI;
-    let should_scan_middle = (need_summary && tail_start > 0)
-        || need_user_msg
-        || need_sid
-        || need_automation
-        || need_branch;
-
+    let needs = middle_scan_needs(&merged, source);
     let mut middle_timestamp = None;
-    if should_scan_middle && head.lines_scanned >= HEAD_SCAN_LINES {
-        let needs = ScanNeeds {
-            summary: need_summary,
-            user_message: need_user_msg,
-            session_id: need_sid,
-            automation: need_automation,
-            branch: need_branch,
-        };
+    if should_scan_middle(&needs, tail_start) && head.lines_scanned >= HEAD_SCAN_LINES {
         let middle = scan_middle(
             path,
             head.lines_scanned,
@@ -692,27 +905,8 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
             &needs,
             latest_chain.as_ref(),
         );
-
-        if session_id.is_none() {
-            session_id = middle.session_id;
-        }
-        if last_summary.is_none() {
-            last_summary = middle.last_summary;
-            if last_summary.is_some() {
-                last_summary_sid = middle.last_summary_sid;
-            }
-        }
-        if first_user_message.is_none() {
-            first_user_message = middle.first_user_message;
-        }
-        if automation.is_none() {
-            automation = middle.automation;
-        }
-        if branch.is_none() {
-            branch = middle.branch;
-        }
-        saw_off_chain_summary = saw_off_chain_summary || middle.saw_off_chain_summary;
         middle_timestamp = middle.last_timestamp;
+        merge_middle_into(&mut merged, middle);
     }
 
     let content_timestamp = [head.last_timestamp, tail.last_timestamp, middle_timestamp]
@@ -724,73 +918,10 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         (count > 0).then_some(count)
     });
 
-    if let Some(title) = tail.metadata_title {
-        let sid = last_summary_sid
-            .or(session_id)
-            .or_else(|| head.session_id.clone())?;
-        return Some(RecentSession {
-            session_id: sid,
-            file_path: path_str.to_string(),
-            project,
-            source,
-            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
-            summary: title,
-            automation,
-            branch,
-            message_count,
-            preview_role: MessageRole::Assistant,
-            cwd: cwd.clone(),
-        });
-    }
-
-    if let Some(summary_text) = last_summary {
-        let sid = last_summary_sid.or(session_id)?;
-        return Some(RecentSession {
-            session_id: sid,
-            file_path: path_str.to_string(),
-            project,
-            source,
-            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
-            summary: summary_text,
-            automation,
-            branch,
-            message_count,
-            preview_role: MessageRole::Assistant,
-            cwd: cwd.clone(),
-        });
-    }
-
-    if let Some(prompt) = tail.last_prompt {
-        let session_id = session_id?;
-        return Some(RecentSession {
-            session_id,
-            file_path: path_str.to_string(),
-            project,
-            source,
-            timestamp: content_timestamp.unwrap_or(mtime_timestamp),
-            summary: prompt,
-            automation,
-            branch,
-            message_count,
-            preview_role: MessageRole::User,
-            cwd: cwd.clone(),
-        });
-    }
-
-    let session_id = session_id?;
-    let summary = if saw_off_chain_summary {
-        latest_chain
-            .as_ref()
-            .and_then(|chain| extract_latest_user_message_on_chain(path, chain))
-            .or(first_user_message)
-            .unwrap_or_default()
-    } else {
-        first_user_message.unwrap_or_default()
-    };
-
-    if summary.is_empty() {
-        return None;
-    }
+    let automation = merged.automation.take();
+    let branch = merged.branch.take();
+    let (session_id, summary, preview_role) =
+        resolve_summary(path, merged, head.session_id.clone(), latest_chain.as_ref())?;
 
     Some(RecentSession {
         session_id,
@@ -802,7 +933,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         automation,
         branch,
         message_count,
-        preview_role: MessageRole::User,
+        preview_role,
         cwd,
     })
 }
@@ -1332,6 +1463,56 @@ mod tests {
             "explicit DB that doesn't exist must produce no fallback: {:?}",
             resolved
         );
+    }
+
+    #[test]
+    fn test_opencode_summary_to_recent_uses_title() {
+        let ts = Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap();
+        let summary = OpencodeSessionSummary {
+            id: "ses_42".to_string(),
+            project_id: "prj_1".to_string(),
+            project_label: None,
+            title: "Fix the flaky scanner test".to_string(),
+            directory: Some("/definitely/does/not/exist/project-dir".to_string()),
+            updated_at: ts,
+            message_count: 7,
+            session_file: PathBuf::from("/tmp/opencode.db#ses_42"),
+        };
+
+        let db = Path::new("/definitely/does/not/exist/opencode.db");
+        let result = opencode_summary_to_recent(db, &summary).unwrap();
+        assert_eq!(result.session_id, "ses_42");
+        assert_eq!(result.summary, "Fix the flaky scanner test");
+        assert_eq!(result.preview_role, MessageRole::Assistant);
+        // No project label -> falls back to the directory basename.
+        assert_eq!(result.project, "project-dir");
+        assert_eq!(result.message_count, Some(7));
+        assert_eq!(result.timestamp, ts);
+        // Directory doesn't exist -> canonicalize fails -> raw value kept.
+        assert_eq!(
+            result.cwd.as_deref(),
+            Some("/definitely/does/not/exist/project-dir")
+        );
+    }
+
+    #[test]
+    fn test_opencode_summary_to_recent_empty_title_missing_db_is_none() {
+        // With no title, the fallback loads messages from the database; a
+        // missing database yields no messages, so no session is produced.
+        let ts = Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap();
+        let summary = OpencodeSessionSummary {
+            id: "ses_43".to_string(),
+            project_id: "prj_1".to_string(),
+            project_label: Some("proj".to_string()),
+            title: "   ".to_string(),
+            directory: None,
+            updated_at: ts,
+            message_count: 0,
+            session_file: PathBuf::from("/tmp/opencode.db#ses_43"),
+        };
+
+        let db = Path::new("/definitely/does/not/exist/opencode.db");
+        assert!(opencode_summary_to_recent(db, &summary).is_none());
     }
 
     #[test]
