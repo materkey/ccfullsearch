@@ -50,13 +50,7 @@ impl App {
     pub fn on_down(&mut self) {
         // Recent sessions navigation
         if self.in_recent_sessions_mode() {
-            if !self.recent.filtered.is_empty()
-                && self.recent.cursor < self.recent.filtered.len().saturating_sub(1)
-            {
-                self.recent.cursor += 1;
-                self.recent
-                    .adjust_scroll(self.recent_sessions_visible_items());
-            }
+            self.on_down_recent();
             return;
         }
 
@@ -66,17 +60,8 @@ impl App {
 
         let old_cursor = (self.search.group_cursor, self.search.sub_cursor);
 
-        if self.search.expanded {
-            if let Some(group) = self.selected_group() {
-                if self.search.sub_cursor < group.matches.len().saturating_sub(1) {
-                    self.search.sub_cursor += 1;
-                    // Force full redraw in preview mode
-                    if self.preview_mode {
-                        self.needs_full_redraw = true;
-                    }
-                    return;
-                }
-            }
+        if self.search.expanded && self.on_down_sub_cursor() {
+            return;
         }
 
         if self.search.group_cursor < self.search.groups.len().saturating_sub(1) {
@@ -89,6 +74,33 @@ impl App {
         if self.preview_mode && (self.search.group_cursor, self.search.sub_cursor) != old_cursor {
             self.needs_full_redraw = true;
         }
+    }
+
+    /// Move the recent-sessions cursor one row down.
+    fn on_down_recent(&mut self) {
+        if !self.recent.filtered.is_empty()
+            && self.recent.cursor < self.recent.filtered.len().saturating_sub(1)
+        {
+            self.recent.cursor += 1;
+            self.recent
+                .adjust_scroll(self.recent_sessions_visible_items());
+        }
+    }
+
+    /// Advance the sub-cursor within the expanded group, forcing a full
+    /// redraw in preview mode. Returns true if the sub-cursor moved.
+    fn on_down_sub_cursor(&mut self) -> bool {
+        let Some(group) = self.selected_group() else {
+            return false;
+        };
+        if self.search.sub_cursor >= group.matches.len().saturating_sub(1) {
+            return false;
+        }
+        self.search.sub_cursor += 1;
+        if self.preview_mode {
+            self.needs_full_redraw = true;
+        }
+        true
     }
 
     pub fn on_right(&mut self) {
@@ -374,6 +386,70 @@ mod tests {
         // Without groups, preview should not toggle
         app.on_tab();
         assert!(!app.preview_mode);
+    }
+
+    fn make_match(file_path: &str) -> RipgrepMatch {
+        RipgrepMatch {
+            file_path: file_path.to_string(),
+            message: None,
+            source: SessionSource::CLI,
+        }
+    }
+
+    fn make_group_with_matches(session_id: &str, match_count: usize) -> SessionGroup {
+        let file_path = format!("/{}.jsonl", session_id);
+        SessionGroup {
+            session_id: session_id.to_string(),
+            file_path: file_path.clone(),
+            matches: (0..match_count).map(|_| make_match(&file_path)).collect(),
+            automation: None,
+            message_count: None,
+            message_count_compacted: false,
+        }
+    }
+
+    #[test]
+    fn test_on_down_expanded_advances_sub_cursor_then_moves_to_next_group() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.groups = vec![
+            make_group_with_matches("g1", 2),
+            make_group_with_matches("g2", 1),
+        ];
+        app.search.expanded = true;
+
+        // Within the expanded group: advance the sub-cursor.
+        app.on_down();
+        assert_eq!(app.search.group_cursor, 0);
+        assert_eq!(app.search.sub_cursor, 1);
+        assert!(app.search.expanded);
+
+        // At the last match: move to the next group and collapse.
+        app.on_down();
+        assert_eq!(app.search.group_cursor, 1);
+        assert_eq!(app.search.sub_cursor, 0);
+        assert!(!app.search.expanded);
+
+        // At the last group: stay put.
+        app.on_down();
+        assert_eq!(app.search.group_cursor, 1);
+        assert_eq!(app.search.sub_cursor, 0);
+    }
+
+    #[test]
+    fn test_on_down_expanded_in_preview_forces_redraw() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.groups = vec![make_group_with_matches("g1", 2)];
+        app.search.expanded = true;
+        app.preview_mode = true;
+        app.needs_full_redraw = false;
+
+        app.on_down();
+
+        assert_eq!(app.search.sub_cursor, 1);
+        assert!(
+            app.needs_full_redraw,
+            "advancing the sub-cursor in preview mode must force a full redraw"
+        );
     }
 
     #[test]

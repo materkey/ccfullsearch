@@ -179,6 +179,64 @@ impl App {
 mod tests {
     use crate::tui::state::AppOutcome;
     use crate::tui::App;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn test_enter_tree_mode_direct_with_file_path_loads_tree() {
+        let mut app = App::new(vec!["/nonexistent".to_string()]);
+
+        app.enter_tree_mode_direct("tests/fixtures/linear_session.jsonl");
+
+        assert!(app.tree_mode);
+        assert!(app.tree.tree_mode_standalone);
+        assert!(app.tree.tree_loading);
+
+        // Poll tick() until the background loader delivers the tree.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.tree.tree_loading && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!app.tree.tree_loading);
+        assert!(app.search.error.is_none());
+        let tree = app.tree.session_tree.as_ref().expect("tree should load");
+        assert_eq!(tree.session_id, "sess-linear-001");
+        assert!(!tree.rows.is_empty());
+    }
+
+    #[test]
+    fn test_enter_tree_mode_direct_unknown_session_id_sets_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = App::new(vec![dir.path().to_string_lossy().to_string()]);
+
+        app.enter_tree_mode_direct("no-such-session");
+
+        assert!(!app.tree_mode);
+        assert!(!app.tree.tree_mode_standalone);
+        assert_eq!(
+            app.search.error.as_deref(),
+            Some("Session not found: no-such-session")
+        );
+    }
+
+    #[test]
+    fn test_enter_tree_mode_direct_resolves_session_id_in_search_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_file = dir.path().join("sess-direct.jsonl");
+        std::fs::write(
+            &session_file,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"sess-direct","timestamp":"2025-06-01T10:00:00Z"}"#,
+        )
+        .unwrap();
+        let mut app = App::new(vec![dir.path().to_string_lossy().to_string()]);
+
+        app.enter_tree_mode_direct("sess-direct");
+
+        assert!(app.tree_mode);
+        assert!(app.tree.tree_mode_standalone);
+        assert!(app.search.error.is_none());
+    }
 
     #[test]
     fn test_exit_tree_mode_returns_to_search() {

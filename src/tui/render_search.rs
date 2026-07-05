@@ -1,5 +1,6 @@
 use crate::search::{
-    extract_context, extract_project_from_path, sanitize_content, RipgrepMatch, SessionGroup,
+    extract_context, extract_project_from_path, sanitize_content, Message, RipgrepMatch,
+    SessionGroup,
 };
 use crate::session::record::MessageRole;
 use crate::session::SessionProvider;
@@ -302,7 +303,24 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     );
     frame.render_widget(header, header_area);
 
-    // Input — switch between normal search and AI query
+    render_search_input(frame, app, input_area);
+
+    frame.render_widget(Paragraph::new(Line::from(status_span(app))), status_area);
+
+    // List of results (grouped view)
+    if app.preview_mode {
+        render_preview(frame, app, list_area);
+    } else {
+        render_groups(frame, app, list_area);
+    }
+
+    let hints = build_search_hints(app);
+    let help = Paragraph::new(build_help_line(&hints, help_area.width));
+    frame.render_widget(help, help_area);
+}
+
+/// Input box — switches between normal search and AI query.
+fn render_search_input(frame: &mut Frame, app: &AppView, input_area: ratatui::layout::Rect) {
     let (display_text, display_cursor) = if app.ai.active {
         (app.ai.query.text(), app.ai.query.cursor_pos())
     } else {
@@ -315,6 +333,20 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     } else {
         Style::default().fg(Color::White)
     };
+    let search_title = search_input_title(app);
+    let title_style = search_title_style(app);
+    let input = Paragraph::new(display_text).style(input_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(search_title.as_str())
+            .title_style(title_style),
+    );
+    frame.render_widget(input, input_area);
+    let cursor_x = display_text[..display_cursor].chars().count() as u16;
+    frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
+}
+
+fn search_input_title(app: &AppView) -> String {
     use crate::tui::state::AutomationFilter;
     let mut search_title = if app.ai.active {
         String::from("AI")
@@ -335,93 +367,89 @@ pub fn render(frame: &mut Frame, view: &AppView) {
         AutomationFilter::Manual => search_title.push_str(" [Manual]"),
         AutomationFilter::Auto => search_title.push_str(" [Auto]"),
     }
+    search_title
+}
+
+fn search_title_style(app: &AppView) -> Style {
+    use crate::tui::state::AutomationFilter;
     let has_active_filter = app.ai.active
         || app.regex_mode
         || app.project_filter
         || app.automation_filter != AutomationFilter::All;
-    let title_style = if has_active_filter {
+    if has_active_filter {
         Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-    };
-    let input = Paragraph::new(display_text).style(input_style).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(search_title.as_str())
-            .title_style(title_style),
-    );
-    frame.render_widget(input, input_area);
-    let cursor_x = display_text[..display_cursor].chars().count() as u16;
-    frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
+    }
+}
 
-    // Status — AI mode takes priority
-    let status = if app.ai.active && app.ai.thinking {
-        Span::styled(
+/// Yellow italic used for transient activity states (typing, loading, ...).
+fn busy_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// Status bar content — AI mode takes priority.
+fn status_span(app: &AppView) -> Span<'static> {
+    if app.ai.active {
+        return ai_status_span(app);
+    }
+    if app.typing {
+        return Span::styled("Typing...", busy_style());
+    }
+    if app.is_searching() {
+        return Span::styled("Searching...", busy_style());
+    }
+    if let Some(ref err) = app.search.error {
+        return Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red));
+    }
+    if let Some(text) = search_results_status_text(app) {
+        return Span::styled(text, Style::default().fg(DIM_FG));
+    }
+    if let Some(text) = recent_sessions_status_text(app) {
+        let style = if app.recent.loading {
+            busy_style()
+        } else {
+            Style::default().fg(DIM_FG)
+        };
+        return Span::styled(text, style);
+    }
+    Span::raw("")
+}
+
+fn ai_status_span(app: &AppView) -> Span<'static> {
+    if app.ai.thinking {
+        return Span::styled(
             "AI thinking...",
             Style::default()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::ITALIC),
-        )
-    } else if app.ai.active {
-        if let Some(ref err) = app.ai.error {
-            Span::styled(format!("AI: {}", err), Style::default().fg(Color::Red))
-        } else if let Some(n) = app.ai.ranked_count {
-            Span::styled(
-                format!("AI: {} sessions ranked", n),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled(
-                "Type query, Enter to rank",
-                Style::default().fg(Color::Magenta),
-            )
-        }
-    } else if app.typing {
-        Span::styled(
-            "Typing...",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        )
-    } else if app.is_searching() {
-        Span::styled(
-            "Searching...",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        )
-    } else if let Some(ref err) = app.search.error {
-        Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))
-    } else if let Some(text) = search_results_status_text(app) {
-        Span::styled(text, Style::default().fg(DIM_FG))
-    } else if let Some(text) = recent_sessions_status_text(app) {
-        let style = if app.recent.loading {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC)
-        } else {
-            Style::default().fg(DIM_FG)
-        };
-        Span::styled(text, style)
-    } else {
-        Span::raw("")
-    };
-    frame.render_widget(Paragraph::new(Line::from(status)), status_area);
-
-    // List of results (grouped view)
-    if app.preview_mode {
-        render_preview(frame, app, list_area);
-    } else {
-        render_groups(frame, app, list_area);
+        );
     }
+    if let Some(ref err) = app.ai.error {
+        Span::styled(format!("AI: {}", err), Style::default().fg(Color::Red))
+    } else if let Some(n) = app.ai.ranked_count {
+        Span::styled(
+            format!("AI: {} sessions ranked", n),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            "Type query, Enter to rank",
+            Style::default().fg(Color::Magenta),
+        )
+    }
+}
 
-    // Help — show current filter mode inline with color
+/// `[Ctrl+H] <All|Manual|Auto>` hint — shows the current filter mode inline
+/// with color.
+fn automation_filter_hint(app: &AppView) -> HintItem<'static> {
     use crate::tui::state::AutomationFilter as AF;
-    let in_recent_mode = app.in_recent_sessions_mode() && !app.recent.filtered.is_empty();
     let filter_label = match app.automation_filter {
         AF::All => "All",
         AF::Manual => "Manual",
@@ -433,146 +461,146 @@ pub fn render(frame: &mut Frame, view: &AppView) {
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
     };
-
-    let dim = Style::default().fg(DIM_FG);
-
-    let hints: Vec<HintItem> = if app.ai.active {
-        build_ai_hints(app.ai.ranked_count)
-    } else {
-        let filter_hint = HintItem {
-            spans: vec![
-                Span::styled("[Ctrl+H] ", dim),
-                Span::styled(filter_label, filter_style),
-            ],
-            min_width: 60,
-        };
-
-        if app.preview_mode {
-            vec![
-                HintItem {
-                    spans: vec![Span::styled("[Tab/Ctrl+V/Enter] Close preview", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
-                    min_width: 70,
-                },
-                filter_hint,
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
-                    min_width: 90,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Esc] Quit", dim)],
-                    min_width: 0,
-                },
-            ]
-        } else if in_recent_mode {
-            vec![
-                HintItem {
-                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Enter] Resume", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+G] AI", dim)],
-                    min_width: 80,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
-                    min_width: 70,
-                },
-                filter_hint,
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
-                    min_width: 90,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Esc] Quit", dim)],
-                    min_width: 0,
-                },
-            ]
-        } else if !app.search.groups.is_empty() {
-            vec![
-                HintItem {
-                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[→←] Expand", dim)],
-                    min_width: 100,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
-                    min_width: 90,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Enter] Resume", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+G] AI", dim)],
-                    min_width: 80,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
-                    min_width: 70,
-                },
-                filter_hint,
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
-                    min_width: 90,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
-                    min_width: 100,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Esc] Quit", dim)],
-                    min_width: 0,
-                },
-            ]
-        } else {
-            vec![
-                HintItem {
-                    spans: vec![Span::styled("[↑↓] Navigate", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
-                    min_width: 80,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Enter] Resume", dim)],
-                    min_width: 0,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+A] Project", dim)],
-                    min_width: 70,
-                },
-                filter_hint,
-                HintItem {
-                    spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
-                    min_width: 90,
-                },
-                HintItem {
-                    spans: vec![Span::styled("[Esc] Quit", dim)],
-                    min_width: 0,
-                },
-            ]
-        }
-    };
-
-    let help = Paragraph::new(build_help_line(&hints, help_area.width));
-    frame.render_widget(help, help_area);
+    HintItem {
+        spans: vec![
+            Span::styled("[Ctrl+H] ", Style::default().fg(DIM_FG)),
+            Span::styled(filter_label, filter_style),
+        ],
+        min_width: 60,
+    }
 }
 
-fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
-    // Clear the area by filling with spaces - more reliable than Clear widget
-    // This handles wide Unicode characters better
+fn build_search_hints(app: &AppView) -> Vec<HintItem<'static>> {
+    if app.ai.active {
+        return build_ai_hints(app.ai.ranked_count);
+    }
+
+    let dim = Style::default().fg(DIM_FG);
+    let filter_hint = automation_filter_hint(app);
+    let in_recent_mode = app.in_recent_sessions_mode() && !app.recent.filtered.is_empty();
+
+    if app.preview_mode {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[Tab/Ctrl+V/Enter] Close preview", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 70,
+            },
+            filter_hint,
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ]
+    } else if in_recent_mode {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+G] AI", dim)],
+                min_width: 80,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 70,
+            },
+            filter_hint,
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ]
+    } else if !app.search.groups.is_empty() {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[→←] Expand", dim)],
+                min_width: 100,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+G] AI", dim)],
+                min_width: 80,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 70,
+            },
+            filter_hint,
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+B] Tree", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                min_width: 100,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ]
+    } else {
+        vec![
+            HintItem {
+                spans: vec![Span::styled("[↑↓] Navigate", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Tab/Ctrl+V] Preview", dim)],
+                min_width: 80,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Enter] Resume", dim)],
+                min_width: 0,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+A] Project", dim)],
+                min_width: 70,
+            },
+            filter_hint,
+            HintItem {
+                spans: vec![Span::styled("[Ctrl+R] Regex", dim)],
+                min_width: 90,
+            },
+            HintItem {
+                spans: vec![Span::styled("[Esc] Quit", dim)],
+                min_width: 0,
+            },
+        ]
+    }
+}
+
+/// Clear the area by filling with spaces - more reliable than Clear widget
+/// This handles wide Unicode characters better
+pub(crate) fn clear_area(frame: &mut Frame, area: ratatui::layout::Rect) {
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
@@ -582,16 +610,19 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
             }
         }
     }
+}
 
-    // Show recent sessions when input is empty and no search results
-    if app.input.is_empty() && app.search.groups.is_empty() {
-        render_recent_sessions(frame, app, area);
-        return;
-    }
+/// Per-frame-stable inputs for the collapsed group preview: the compiled
+/// regex, lowercased query and width budgets are identical for every row in
+/// the draw pass, so they are hoisted out of the render loop.
+struct CollapsedPreviewParams {
+    preview_regex: Option<regex::Regex>,
+    query_lower: String,
+    context_chars: usize,
+    max_content: usize,
+}
 
-    let mut items: Vec<ListItem> = vec![];
-    let mut selected_item_idx = 0usize;
-
+fn collapsed_preview_params(app: &AppView, area_width: usize) -> CollapsedPreviewParams {
     // Pre-compile regex and lowercase query once for preview matching
     let preview_regex = if app.regex_mode && !app.search.results_query.is_empty() {
         RegexBuilder::new(&app.search.results_query)
@@ -607,14 +638,132 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
     // PREVIEW_PREFIX_* constants are fixed-length; centring context around
     // the match depends on the query length, which is also stable across
     // the whole draw pass.
-    let area_width = area.width as usize;
-    let preview_max_content = area_width.saturating_sub(PREVIEW_PREFIX_LEN);
+    let max_content = area_width.saturating_sub(PREVIEW_PREFIX_LEN);
     let query_chars = app.search.results_query.chars().count();
-    let preview_context_chars = preview_max_content
+    let context_chars = max_content
         .saturating_sub(query_chars)
         .saturating_sub(6) // two "..." markers
         / 2;
-    let preview_context_chars = preview_context_chars.max(1);
+
+    CollapsedPreviewParams {
+        preview_regex,
+        query_lower,
+        context_chars: context_chars.max(1),
+        max_content,
+    }
+}
+
+/// Pick the message shown on a collapsed group's preview line.
+fn select_preview_message<'a>(
+    app: &AppView,
+    group: &'a SessionGroup,
+    params: &CollapsedPreviewParams,
+) -> Option<&'a Message> {
+    let matches_iter = || group.matches.iter().filter_map(|m| m.message.as_ref());
+    // Phase 1: prefer message where text_content contains the query
+    let preview_msg = if !app.search.results_query.is_empty() {
+        matches_iter().find(|msg| {
+            if msg.text_content.trim().is_empty() {
+                return false;
+            }
+            if app.regex_mode {
+                params
+                    .preview_regex
+                    .as_ref()
+                    .is_some_and(|re| re.is_match(&msg.text_content))
+            } else {
+                msg.text_content
+                    .to_lowercase()
+                    .contains(&params.query_lower)
+            }
+        })
+    } else {
+        None
+    };
+    // Phase 2: first with non-empty text_content
+    let preview_msg =
+        preview_msg.or_else(|| matches_iter().find(|msg| !msg.text_content.trim().is_empty()));
+    // Phase 3: first with non-empty content
+    preview_msg.or_else(|| matches_iter().find(|msg| !msg.content.trim().is_empty()))
+}
+
+/// Preview line for collapsed groups (like recent sessions show summaries).
+fn build_collapsed_preview_item(
+    app: &AppView,
+    group: &SessionGroup,
+    params: &CollapsedPreviewParams,
+    is_selected: bool,
+) -> Option<ListItem<'static>> {
+    let msg = select_preview_message(app, group, params)?;
+    let query = &app.search.results_query;
+    let text_content_matches = if query.is_empty() {
+        true
+    } else if app.regex_mode {
+        params
+            .preview_regex
+            .as_ref()
+            .is_some_and(|re| re.is_match(&msg.text_content))
+    } else {
+        msg.text_content
+            .to_lowercase()
+            .contains(&params.query_lower)
+    };
+    let preview_text = if msg.text_content.trim().is_empty() {
+        &msg.content
+    } else if !text_content_matches {
+        // text_content doesn't contain the search query (match is
+        // likely in a tool_result block) — fall back to full content
+        // so the matched portion is visible in the preview.
+        &msg.content
+    } else {
+        &msg.text_content
+    };
+    let content = sanitize_single_line(preview_text);
+    let preview_prefix = if msg.role == "user" {
+        PREVIEW_PREFIX_USER
+    } else {
+        assistant_prefix_for(&group.file_path)
+    };
+    // Centre the preview on the first query occurrence so the
+    // match stays visible even when it sits past column 120 in a
+    // long message. `render_sub_match` does the same for
+    // expanded rows.
+    let centered = if query.is_empty() {
+        content
+    } else {
+        extract_context(&content, query, params.context_chars)
+    };
+    let truncated = truncate_to_width(&centered, params.max_content);
+    // Keep the role prefix dim, but render summary text brighter
+    // than scaffolding. Purple trailing cells come from the outer
+    // ListItem style below; we do NOT also paint bg on the span
+    // base to avoid double-styling every styled cell.
+    let prefix_style = Style::default().fg(DIM_FG);
+    let content_style = preview_content_style(is_selected);
+    let mut spans = vec![Span::styled(preview_prefix, prefix_style)];
+    let highlighted = highlight_line_with_base(&truncated, query, content_style);
+    spans.extend(highlighted.spans);
+    let mut preview_item = ListItem::new(Line::from(spans));
+    if is_selected {
+        preview_item = preview_item.style(Style::default().bg(SELECTION_BG));
+    }
+    Some(preview_item)
+}
+
+fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
+    clear_area(frame, area);
+
+    // Show recent sessions when input is empty and no search results
+    if app.input.is_empty() && app.search.groups.is_empty() {
+        render_recent_sessions(frame, app, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = vec![];
+    let mut selected_item_idx = 0usize;
+
+    let area_width = area.width as usize;
+    let params = collapsed_preview_params(app, area_width);
 
     // Only build ListItems for groups in the visible slice — every
     // collapsed row goes through `sanitize_single_line` +
@@ -666,87 +815,7 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         let header = render_group_header(group, is_selected, is_expanded, area_width);
         items.push(header);
 
-        // Preview line for collapsed groups (like recent sessions show summaries)
-        if !is_expanded {
-            let matches_iter = || group.matches.iter().filter_map(|m| m.message.as_ref());
-            // Phase 1: prefer message where text_content contains the query
-            let preview_msg = if !app.search.results_query.is_empty() {
-                matches_iter().find(|msg| {
-                    if msg.text_content.trim().is_empty() {
-                        return false;
-                    }
-                    if app.regex_mode {
-                        preview_regex
-                            .as_ref()
-                            .is_some_and(|re| re.is_match(&msg.text_content))
-                    } else {
-                        msg.text_content.to_lowercase().contains(&query_lower)
-                    }
-                })
-            } else {
-                None
-            };
-            // Phase 2: first with non-empty text_content
-            let preview_msg = preview_msg
-                .or_else(|| matches_iter().find(|msg| !msg.text_content.trim().is_empty()));
-            // Phase 3: first with non-empty content
-            let preview_msg =
-                preview_msg.or_else(|| matches_iter().find(|msg| !msg.content.trim().is_empty()));
-            if let Some(msg) = preview_msg {
-                let query = &app.search.results_query;
-                let text_content_matches = if query.is_empty() {
-                    true
-                } else if app.regex_mode {
-                    preview_regex
-                        .as_ref()
-                        .is_some_and(|re| re.is_match(&msg.text_content))
-                } else {
-                    msg.text_content.to_lowercase().contains(&query_lower)
-                };
-                let preview_text = if msg.text_content.trim().is_empty() {
-                    &msg.content
-                } else if !text_content_matches {
-                    // text_content doesn't contain the search query (match is
-                    // likely in a tool_result block) — fall back to full content
-                    // so the matched portion is visible in the preview.
-                    &msg.content
-                } else {
-                    &msg.text_content
-                };
-                let content = sanitize_single_line(preview_text);
-                let preview_prefix = if msg.role == "user" {
-                    PREVIEW_PREFIX_USER
-                } else {
-                    assistant_prefix_for(&group.file_path)
-                };
-                // Centre the preview on the first query occurrence so the
-                // match stays visible even when it sits past column 120 in a
-                // long message. `render_sub_match` does the same for
-                // expanded rows.
-                let centered = if query.is_empty() {
-                    content
-                } else {
-                    extract_context(&content, query, preview_context_chars)
-                };
-                let truncated = truncate_to_width(&centered, preview_max_content);
-                // Keep the role prefix dim, but render summary text brighter
-                // than scaffolding. Purple trailing cells come from the outer
-                // ListItem style below; we do NOT also paint bg on the span
-                // base to avoid double-styling every styled cell.
-                let prefix_style = Style::default().fg(DIM_FG);
-                let content_style = preview_content_style(is_selected);
-                let mut spans = vec![Span::styled(preview_prefix, prefix_style)];
-                let highlighted = highlight_line_with_base(&truncated, query, content_style);
-                spans.extend(highlighted.spans);
-                let mut preview_item = ListItem::new(Line::from(spans));
-                if is_selected {
-                    preview_item = preview_item.style(Style::default().bg(SELECTION_BG));
-                }
-                items.push(preview_item);
-            }
-        }
-
-        // If expanded, show individual messages
+        // If expanded, show individual messages; otherwise show the preview line
         if is_expanded {
             let latest_chain = app.search.latest_chains.get(&group.file_path);
             for (j, m) in group.matches.iter().enumerate() {
@@ -759,6 +828,10 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
                 );
                 items.push(sub_item);
             }
+        } else if let Some(preview_item) =
+            build_collapsed_preview_item(app, group, &params, is_selected)
+        {
+            items.push(preview_item);
         }
     }
 
@@ -1501,17 +1574,7 @@ fn find_case_insensitive_match(
 }
 
 fn render_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
-    // Clear the area by filling with spaces - more reliable than Clear widget
-    // This handles wide Unicode characters better
-    let buf = frame.buffer_mut();
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol(" ");
-                cell.set_style(Style::default());
-            }
-        }
-    }
+    clear_area(frame, area);
 
     let Some(m) = app.selected_match() else {
         // Render empty block if no match selected
@@ -4013,6 +4076,93 @@ mod tests {
             !buffer_contains(terminal.backend().buffer(), 100, 24, "[PICK]"),
             "Status bar should NOT contain [PICK] indicator in normal mode"
         );
+    }
+
+    fn render_to_buffer(app: &App) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("render must not panic");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn test_render_ai_mode_thinking_status() {
+        let mut app = make_test_app_with_groups();
+        app.ai.active = true;
+        app.ai.thinking = true;
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "AI thinking..."));
+        assert!(buffer_contains(&buffer, 120, 24, "AI"));
+    }
+
+    #[test]
+    fn test_render_ai_mode_error_status() {
+        let mut app = make_test_app_with_groups();
+        app.ai.active = true;
+        app.ai.error = Some("boom".to_string());
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "AI: boom"));
+    }
+
+    #[test]
+    fn test_render_ai_mode_ranked_status() {
+        let mut app = make_test_app_with_groups();
+        app.ai.active = true;
+        app.ai.ranked_count = Some(2);
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "AI: 2 sessions ranked"));
+        assert!(buffer_contains(&buffer, 120, 24, "[Enter] Resume"));
+    }
+
+    #[test]
+    fn test_render_ai_mode_prompt_status() {
+        let mut app = make_test_app_with_groups();
+        app.ai.active = true;
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(
+            &buffer,
+            120,
+            24,
+            "Type query, Enter to rank"
+        ));
+        assert!(buffer_contains(&buffer, 120, 24, "[Enter] AI Rank"));
+    }
+
+    #[test]
+    fn test_render_typing_status() {
+        let mut app = make_test_app_with_groups();
+        app.typing = true;
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "Typing..."));
+    }
+
+    #[test]
+    fn test_render_search_error_status() {
+        let mut app = make_test_app_with_groups();
+        app.search.error = Some("rg exploded".to_string());
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "Error: rg exploded"));
+    }
+
+    #[test]
+    fn test_render_title_shows_active_filter_flags() {
+        let mut app = make_test_app_with_groups();
+        app.regex_mode = true;
+        app.project_filter = true;
+        app.automation_filter = crate::tui::state::AutomationFilter::Auto;
+
+        let buffer = render_to_buffer(&app);
+        assert!(buffer_contains(&buffer, 120, 24, "[Regex]"));
+        assert!(buffer_contains(&buffer, 120, 24, "[Project]"));
+        assert!(buffer_contains(&buffer, 120, 24, "[Auto]"));
     }
 
     fn line_to_string(line: &Line) -> String {
