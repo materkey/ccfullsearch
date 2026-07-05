@@ -1,5 +1,6 @@
 use crate::search::{extract_project_from_path, sanitize_content};
-use crate::tui::render_search::{build_help_line, truncate_to_width, HintItem, DIM_FG};
+use crate::tree::TreeRow;
+use crate::tui::render_search::{build_help_line, clear_area, truncate_to_width, HintItem, DIM_FG};
 use crate::tui::view::AppView;
 use chrono::Local;
 use ratatui::{
@@ -96,16 +97,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
 }
 
 fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
-    // Clear area
-    let buf = frame.buffer_mut();
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol(" ");
-                cell.set_style(Style::default());
-            }
-        }
-    }
+    clear_area(frame, area);
 
     let Some(ref tree) = app.tree.session_tree else {
         if app.tree.tree_loading {
@@ -135,131 +127,145 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     for i in start..end {
         let row = &tree.rows[i];
         let is_selected = i == app.tree.tree_cursor;
-
-        let mut spans = Vec::new();
-
-        // Graph gutter
-        let graph_style = if row.is_on_latest_chain {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(DIM_FG)
-        };
-        spans.push(Span::styled(&row.graph_symbols, graph_style));
-
-        // Calculate prefix width (graph gutter) using char count for display width
-        let graph_width = row.graph_symbols.chars().count();
-
-        // Compaction events get special rendering
-        if row.is_compaction {
-            let compact_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(255, 140, 0))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(Color::Rgb(255, 140, 0))
-                    .add_modifier(Modifier::BOLD)
-            };
-            spans.push(Span::styled("~", compact_style));
-            spans.push(Span::raw(" "));
-
-            let time_str = row
-                .timestamp
-                .with_timezone(&Local)
-                .format("%m/%d %H:%M")
-                .to_string();
-            spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
-            spans.push(Span::raw("  "));
-
-            spans.push(Span::styled("[COMPACT] ", compact_style));
-
-            // ~(1) + space(1) + time(11) + spaces(2) + [COMPACT](10) = 25
-            let prefix_width = graph_width + 25;
-            let max_content = (area.width as usize).saturating_sub(prefix_width);
-            let preview = truncate_to_width(&row.content_preview, max_content);
-            spans.push(Span::styled(preview, compact_style));
-        } else {
-            // Regular message rendering
-            // Role indicator
-            let (role_char, role_style) = if row.role == "user" {
-                (
-                    "U",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (
-                    "C",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )
-            };
-            spans.push(Span::styled(role_char, role_style));
-            spans.push(Span::raw(" "));
-
-            // Timestamp (compact)
-            let time_str = row
-                .timestamp
-                .with_timezone(&Local)
-                .format("%m/%d %H:%M")
-                .to_string();
-            spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
-            spans.push(Span::raw("  "));
-
-            // Branch indicator
-            let fork_width = if row.is_branch_point {
-                spans.push(Span::styled(
-                    "[fork] ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                7
-            } else {
-                0
-            };
-
-            // Content preview — role(1) + space(1) + time(11) + spaces(2) + fork
-            let prefix_width = graph_width + 15 + fork_width;
-            let max_content = (area.width as usize).saturating_sub(prefix_width);
-            let preview = truncate_to_width(&row.content_preview, max_content);
-
-            let content_style = if is_selected {
-                Style::default().fg(Color::Yellow)
-            } else if !row.is_on_latest_chain {
-                Style::default().fg(DIM_FG)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            spans.push(Span::styled(preview, content_style));
-        }
-
-        let item_style = if is_selected {
-            Style::default().bg(crate::tui::render_search::SELECTION_BG)
-        } else {
-            Style::default()
-        };
-        items.push(ListItem::new(Line::from(spans)).style(item_style));
+        items.push(build_tree_row_item(row, is_selected, area.width as usize));
     }
 
     let list = List::new(items).block(Block::default().borders(Borders::NONE));
     frame.render_widget(list, area);
 }
 
-fn render_tree_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
-    // Clear area
-    let buf = frame.buffer_mut();
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol(" ");
-                cell.set_style(Style::default());
-            }
-        }
+fn build_tree_row_item(row: &TreeRow, is_selected: bool, area_width: usize) -> ListItem<'_> {
+    let mut spans = Vec::new();
+
+    // Graph gutter
+    let graph_style = if row.is_on_latest_chain {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(DIM_FG)
+    };
+    spans.push(Span::styled(&row.graph_symbols, graph_style));
+
+    // Calculate prefix width (graph gutter) using char count for display width
+    let graph_width = row.graph_symbols.chars().count();
+
+    // Compaction events get special rendering
+    if row.is_compaction {
+        push_compaction_spans(&mut spans, row, is_selected, graph_width, area_width);
+    } else {
+        push_message_spans(&mut spans, row, is_selected, graph_width, area_width);
     }
+
+    let item_style = if is_selected {
+        Style::default().bg(crate::tui::render_search::SELECTION_BG)
+    } else {
+        Style::default()
+    };
+    ListItem::new(Line::from(spans)).style(item_style)
+}
+
+fn push_compaction_spans(
+    spans: &mut Vec<Span<'_>>,
+    row: &TreeRow,
+    is_selected: bool,
+    graph_width: usize,
+    area_width: usize,
+) {
+    let compact_style = if is_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(255, 140, 0))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Rgb(255, 140, 0))
+            .add_modifier(Modifier::BOLD)
+    };
+    spans.push(Span::styled("~", compact_style));
+    spans.push(Span::raw(" "));
+
+    let time_str = row
+        .timestamp
+        .with_timezone(&Local)
+        .format("%m/%d %H:%M")
+        .to_string();
+    spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
+    spans.push(Span::raw("  "));
+
+    spans.push(Span::styled("[COMPACT] ", compact_style));
+
+    // ~(1) + space(1) + time(11) + spaces(2) + [COMPACT](10) = 25
+    let prefix_width = graph_width + 25;
+    let max_content = area_width.saturating_sub(prefix_width);
+    let preview = truncate_to_width(&row.content_preview, max_content);
+    spans.push(Span::styled(preview, compact_style));
+}
+
+fn push_message_spans(
+    spans: &mut Vec<Span<'_>>,
+    row: &TreeRow,
+    is_selected: bool,
+    graph_width: usize,
+    area_width: usize,
+) {
+    // Regular message rendering
+    // Role indicator
+    let (role_char, role_style) = if row.role == "user" {
+        (
+            "U",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            "C",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    spans.push(Span::styled(role_char, role_style));
+    spans.push(Span::raw(" "));
+
+    // Timestamp (compact)
+    let time_str = row
+        .timestamp
+        .with_timezone(&Local)
+        .format("%m/%d %H:%M")
+        .to_string();
+    spans.push(Span::styled(time_str, Style::default().fg(DIM_FG)));
+    spans.push(Span::raw("  "));
+
+    // Branch indicator
+    let fork_width = if row.is_branch_point {
+        spans.push(Span::styled(
+            "[fork] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        7
+    } else {
+        0
+    };
+
+    // Content preview — role(1) + space(1) + time(11) + spaces(2) + fork
+    let prefix_width = graph_width + 15 + fork_width;
+    let max_content = area_width.saturating_sub(prefix_width);
+    let preview = truncate_to_width(&row.content_preview, max_content);
+
+    let content_style = if is_selected {
+        Style::default().fg(Color::Yellow)
+    } else if !row.is_on_latest_chain {
+        Style::default().fg(DIM_FG)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    spans.push(Span::styled(preview, content_style));
+}
+
+fn render_tree_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
+    clear_area(frame, area);
 
     let Some(ref tree) = app.tree.session_tree else {
         return;
