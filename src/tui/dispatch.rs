@@ -108,41 +108,70 @@ fn classify_tree_key(key: KeyEvent) -> KeyAction {
 }
 
 fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
-    // --- Ctrl combinations (checked first, before plain keys) ---
+    // Order matters: Ctrl chords first, then word motion/deletion (which
+    // consume some Ctrl/Alt combinations), then toggles, then plain keys.
+    if let Some(action) = classify_search_ctrl_chord(key, ctx) {
+        return action;
+    }
+    if let Some(action) = classify_word_motion(key) {
+        return action;
+    }
+    if let Some(action) = classify_word_delete(key) {
+        return action;
+    }
+    if let Some(action) = classify_search_toggle(key, ctx) {
+        return action;
+    }
+    classify_search_plain(key, ctx)
+}
 
+/// Ctrl combinations checked first, before word motion and plain keys.
+fn classify_search_ctrl_chord(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        if ctx.ai_mode {
-            return if ctx.ai_input_empty {
-                KeyAction::ExitAiMode
-            } else {
-                KeyAction::ClearInput
-            };
-        }
-        return if ctx.input_empty {
-            KeyAction::Quit
+        return Some(classify_ctrl_c(ctx));
+    }
+
+    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(KeyAction::ToggleRegex);
+    }
+
+    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(classify_ctrl_b(ctx));
+    }
+
+    None
+}
+
+fn classify_ctrl_c(ctx: &KeyContext) -> KeyAction {
+    if ctx.ai_mode {
+        return if ctx.ai_input_empty {
+            KeyAction::ExitAiMode
         } else {
             KeyAction::ClearInput
         };
     }
-
-    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return KeyAction::ToggleRegex;
+    if ctx.input_empty {
+        KeyAction::Quit
+    } else {
+        KeyAction::ClearInput
     }
+}
 
-    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return if ctx.in_recent_sessions_mode {
-            if ctx.has_recent_sessions {
-                KeyAction::EnterTreeModeRecent
-            } else {
-                KeyAction::Noop
-            }
-        } else if ctx.has_groups {
-            KeyAction::EnterTreeMode
+fn classify_ctrl_b(ctx: &KeyContext) -> KeyAction {
+    if ctx.in_recent_sessions_mode {
+        if ctx.has_recent_sessions {
+            KeyAction::EnterTreeModeRecent
         } else {
             KeyAction::Noop
-        };
+        }
+    } else if ctx.has_groups {
+        KeyAction::EnterTreeMode
+    } else {
+        KeyAction::Noop
     }
+}
 
+fn classify_word_motion(key: KeyEvent) -> Option<KeyAction> {
     // Word-movement: Alt+Left / Ctrl+Left / Alt+B
     if key.code == KeyCode::Left
         && key
@@ -150,7 +179,7 @@ fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
             .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
         || key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::ALT)
     {
-        return KeyAction::MoveWordLeft;
+        return Some(KeyAction::MoveWordLeft);
     }
 
     // Word-movement: Alt+Right / Ctrl+Right / Alt+F
@@ -160,65 +189,87 @@ fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
             .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
         || key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT)
     {
-        return KeyAction::MoveWordRight;
+        return Some(KeyAction::MoveWordRight);
     }
 
+    None
+}
+
+fn classify_word_delete(key: KeyEvent) -> Option<KeyAction> {
     // Alt+Backspace -> delete word left
     if key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::ALT) {
-        return KeyAction::DeleteWordLeft;
+        return Some(KeyAction::DeleteWordLeft);
     }
 
     // Alt+D -> delete word right
     if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::ALT) {
-        return KeyAction::DeleteWordRight;
+        return Some(KeyAction::DeleteWordRight);
     }
 
     // Ctrl+W -> delete word left
     if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return KeyAction::DeleteWordLeft;
+        return Some(KeyAction::DeleteWordLeft);
     }
 
+    None
+}
+
+fn classify_search_toggle(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> {
     // Ctrl+A -> toggle project filter
     if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return KeyAction::ToggleProjectFilter;
+        return Some(KeyAction::ToggleProjectFilter);
     }
 
     // Ctrl+H / Ctrl+Backspace -> toggle automation filter
     if is_ctrl_h(key) {
-        return KeyAction::ToggleAutomationFilter;
+        return Some(KeyAction::ToggleAutomationFilter);
     }
 
     // Ctrl+V -> toggle preview (same as Tab)
     if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return KeyAction::TogglePreview;
+        return Some(KeyAction::TogglePreview);
     }
 
     // Ctrl+E -> move cursor to end
     if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return KeyAction::MoveEnd;
+        return Some(KeyAction::MoveEnd);
     }
 
     // Ctrl+G -> toggle AI search mode
     if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return if ctx.ai_mode {
+        return Some(if ctx.ai_mode {
             KeyAction::ExitAiMode
         } else {
             KeyAction::EnterAiMode
-        };
+        });
     }
 
-    // --- Plain keys ---
+    None
+}
 
+fn classify_search_esc(ctx: &KeyContext) -> KeyAction {
+    if ctx.ai_mode {
+        KeyAction::ExitAiMode
+    } else if ctx.preview_mode {
+        KeyAction::ExitPreview
+    } else {
+        KeyAction::Quit
+    }
+}
+
+/// Plain (unmodified) keys — editing keys here, navigation delegated.
+fn classify_search_plain(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
     match key.code {
-        KeyCode::Esc => {
-            if ctx.ai_mode {
-                KeyAction::ExitAiMode
-            } else if ctx.preview_mode {
-                KeyAction::ExitPreview
-            } else {
-                KeyAction::Quit
-            }
-        }
+        KeyCode::Esc => classify_search_esc(ctx),
+        KeyCode::Backspace => KeyAction::Backspace,
+        KeyCode::Delete => KeyAction::Delete,
+        KeyCode::Char(c) => KeyAction::InputChar(c),
+        _ => classify_search_nav(key),
+    }
+}
+
+fn classify_search_nav(key: KeyEvent) -> KeyAction {
+    match key.code {
         KeyCode::Home => KeyAction::MoveHome,
         KeyCode::End => KeyAction::MoveEnd,
         KeyCode::Up => KeyAction::Up,
@@ -227,9 +278,6 @@ fn classify_search_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
         KeyCode::Right => KeyAction::Right,
         KeyCode::Tab => KeyAction::Tab,
         KeyCode::Enter => KeyAction::Enter,
-        KeyCode::Backspace => KeyAction::Backspace,
-        KeyCode::Delete => KeyAction::Delete,
-        KeyCode::Char(c) => KeyAction::InputChar(c),
         _ => KeyAction::Noop,
     }
 }

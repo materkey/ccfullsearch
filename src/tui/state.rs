@@ -674,6 +674,21 @@ fn apply_recent_automation_to_groups(
     }
 }
 
+/// Update the message count in place for every group backed by `file_path`.
+fn set_group_message_count(
+    groups: &mut [SessionGroup],
+    file_path: &str,
+    count: usize,
+    compacted: bool,
+) {
+    for group in groups {
+        if group.file_path == file_path {
+            group.message_count = Some(count);
+            group.message_count_compacted = compacted;
+        }
+    }
+}
+
 /// A session selected in picker mode, ready for output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickedSession {
@@ -1174,124 +1189,157 @@ impl App {
 
     /// Dispatch a `KeyAction` to the appropriate handler.
     pub fn handle_action(&mut self, action: KeyAction) {
-        // While AI mode is active, route text-editing keys to the AI query buffer
-        if self.ai.active {
-            match action {
-                KeyAction::InputChar(c) => {
-                    self.ai.query.push_char(c);
-                    self.invalidate_ai_rank();
-                    return;
-                }
-                KeyAction::Backspace => {
-                    if self.ai.query.backspace() {
-                        self.invalidate_ai_rank();
-                    }
-                    return;
-                }
-                KeyAction::Delete => {
-                    if self.ai.query.delete_forward() {
-                        self.invalidate_ai_rank();
-                    }
-                    return;
-                }
-                KeyAction::ClearInput => {
-                    if !self.ai.query.is_empty() {
-                        self.ai.query.clear();
-                        self.invalidate_ai_rank();
-                    }
-                    return;
-                }
-                KeyAction::DeleteWordLeft => {
-                    if self.ai.query.delete_word_left() {
-                        self.invalidate_ai_rank();
-                    }
-                    return;
-                }
-                KeyAction::DeleteWordRight => {
-                    if self.ai.query.delete_word_right() {
-                        self.invalidate_ai_rank();
-                    }
-                    return;
-                }
-                KeyAction::MoveWordLeft => {
-                    self.ai.query.move_word_left();
-                    return;
-                }
-                KeyAction::MoveWordRight => {
-                    self.ai.query.move_word_right();
-                    return;
-                }
-                KeyAction::MoveHome => {
-                    self.ai.query.move_home();
-                    return;
-                }
-                KeyAction::MoveEnd => {
-                    self.ai.query.move_end();
-                    return;
-                }
-                KeyAction::Left => {
-                    self.ai.query.move_left();
-                    return;
-                }
-                KeyAction::Right => {
-                    self.ai.query.move_right();
-                    return;
-                }
-                KeyAction::Enter => {
-                    if self.ai.ranked_count.is_some() {
-                        self.on_enter_inner();
-                    } else {
-                        self.submit_ai_query();
-                    }
-                    return;
-                }
-                _ => {} // fall through for Up/Down navigation, Esc, Ctrl+G, etc.
-            }
+        // While AI mode is active, text-editing keys and Enter are consumed
+        // by the AI query buffer; Up/Down navigation, Esc, Ctrl+G, etc. fall
+        // through to the regular handlers below.
+        if self.ai.active && self.handle_ai_action(&action) {
+            return;
         }
+        let handled = self.handle_search_nav_action(&action)
+            || self.handle_input_edit_action(&action)
+            || self.handle_cursor_move_action(&action)
+            || self.handle_toggle_action(&action)
+            || self.handle_mode_switch_action(&action)
+            || self.handle_tree_action(&action);
+        if handled {
+            return;
+        }
+        if let KeyAction::Quit = action {
+            self.should_quit = true;
+        }
+        // KeyAction::Noop: do nothing.
+    }
 
+    /// Route an action to the AI query buffer while AI mode is active.
+    /// Returns true if the action was consumed; anything else (Up/Down
+    /// navigation, Esc, Ctrl+G, etc.) falls through to the regular handlers.
+    fn handle_ai_action(&mut self, action: &KeyAction) -> bool {
+        if let KeyAction::Enter = action {
+            self.on_ai_enter();
+            return true;
+        }
+        self.handle_ai_query_edit(action) || self.handle_ai_cursor_move(action)
+    }
+
+    /// Enter in AI mode: resume the selection once a rank is applied,
+    /// otherwise submit the query for ranking.
+    fn on_ai_enter(&mut self) {
+        if self.ai.ranked_count.is_some() {
+            self.on_enter_inner();
+        } else {
+            self.submit_ai_query();
+        }
+    }
+
+    /// AI query mutations. Any change to the buffer invalidates the current
+    /// rank (so Enter re-ranks and a stale in-flight response cannot restore
+    /// the applied-rank flag). Returns true if the action was consumed.
+    fn handle_ai_query_edit(&mut self, action: &KeyAction) -> bool {
+        let changed = match action {
+            KeyAction::InputChar(c) => {
+                self.ai.query.push_char(*c);
+                true
+            }
+            KeyAction::Backspace => self.ai.query.backspace(),
+            KeyAction::Delete => self.ai.query.delete_forward(),
+            KeyAction::ClearInput => {
+                let had_text = !self.ai.query.is_empty();
+                self.ai.query.clear();
+                had_text
+            }
+            KeyAction::DeleteWordLeft => self.ai.query.delete_word_left(),
+            KeyAction::DeleteWordRight => self.ai.query.delete_word_right(),
+            _ => return false,
+        };
+        if changed {
+            self.invalidate_ai_rank();
+        }
+        true
+    }
+
+    /// AI query cursor movement — never invalidates the rank.
+    /// Returns true if the action was consumed.
+    fn handle_ai_cursor_move(&mut self, action: &KeyAction) -> bool {
         match action {
-            KeyAction::Quit => self.should_quit = true,
+            KeyAction::MoveWordLeft => self.ai.query.move_word_left(),
+            KeyAction::MoveWordRight => self.ai.query.move_word_right(),
+            KeyAction::MoveHome => self.ai.query.move_home(),
+            KeyAction::MoveEnd => self.ai.query.move_end(),
+            KeyAction::Left => self.ai.query.move_left(),
+            KeyAction::Right => self.ai.query.move_right(),
+            _ => return false,
+        }
+        true
+    }
 
-            // Search mode: navigation
+    /// Search mode: result-list navigation. Returns true if handled.
+    fn handle_search_nav_action(&mut self, action: &KeyAction) -> bool {
+        match action {
             KeyAction::Up => self.on_up(),
             KeyAction::Down => self.on_down(),
             KeyAction::Left => self.on_left(),
             KeyAction::Right => self.on_right(),
             KeyAction::Tab => self.on_tab(),
             KeyAction::Enter => self.on_enter(),
+            _ => return false,
+        }
+        true
+    }
 
-            // Search mode: editing
-            KeyAction::InputChar(c) => self.on_key(c),
+    /// Search mode: input editing. Returns true if handled.
+    fn handle_input_edit_action(&mut self, action: &KeyAction) -> bool {
+        match action {
+            KeyAction::InputChar(c) => self.on_key(*c),
             KeyAction::Backspace => self.on_backspace(),
             KeyAction::Delete => self.on_delete(),
             KeyAction::ClearInput => self.clear_input(),
             KeyAction::DeleteWordLeft => self.delete_word_left(),
             KeyAction::DeleteWordRight => self.delete_word_right(),
+            _ => return false,
+        }
+        true
+    }
 
-            // Search mode: cursor movement
+    /// Search mode: cursor movement within the input. Returns true if handled.
+    fn handle_cursor_move_action(&mut self, action: &KeyAction) -> bool {
+        match action {
             KeyAction::MoveWordLeft => self.move_cursor_word_left(),
             KeyAction::MoveWordRight => self.move_cursor_word_right(),
             KeyAction::MoveHome => self.move_cursor_home(),
             KeyAction::MoveEnd => self.move_cursor_end(),
+            _ => return false,
+        }
+        true
+    }
 
-            // Search mode: toggles
+    /// Search mode: filter and preview toggles. Returns true if handled.
+    fn handle_toggle_action(&mut self, action: &KeyAction) -> bool {
+        match action {
             KeyAction::ToggleRegex => self.on_toggle_regex(),
             KeyAction::ToggleProjectFilter => self.toggle_project_filter(),
             KeyAction::ToggleAutomationFilter => self.toggle_automation_filter(),
             KeyAction::TogglePreview => self.on_tab(),
-            KeyAction::ExitPreview => {
-                self.preview_mode = false;
-            }
+            KeyAction::ExitPreview => self.preview_mode = false,
+            _ => return false,
+        }
+        true
+    }
 
-            // AI mode
+    /// AI and tree mode entry/exit. Returns true if handled.
+    fn handle_mode_switch_action(&mut self, action: &KeyAction) -> bool {
+        match action {
             KeyAction::EnterAiMode => self.enter_ai_mode(),
             KeyAction::ExitAiMode => self.exit_ai_mode(),
-
-            // Search mode: tree entry
             KeyAction::EnterTreeMode => self.enter_tree_mode(),
             KeyAction::EnterTreeModeRecent => self.enter_tree_mode_recent(),
+            _ => return false,
+        }
+        true
+    }
 
-            // Tree mode
+    /// Tree mode: navigation and selection. Returns true if handled.
+    fn handle_tree_action(&mut self, action: &KeyAction) -> bool {
+        match action {
             KeyAction::TreeUp => self.on_up_tree(),
             KeyAction::TreeDown => self.on_down_tree(),
             KeyAction::TreeLeft => self.on_left_tree(),
@@ -1299,12 +1347,40 @@ impl App {
             KeyAction::TreeTab => self.on_tab_tree(),
             KeyAction::TreeEnter => self.on_enter_tree(),
             KeyAction::ExitTreeMode => self.exit_tree_mode(),
-
-            KeyAction::Noop => {}
+            _ => return false,
         }
+        true
     }
 
     pub fn tick(&mut self) {
+        self.poll_recent_loads();
+        self.poll_tree_load();
+        self.poll_message_counts();
+        self.poll_ai_result();
+
+        // Check for search results from background threads
+        while let Ok(result) = self.search.search_rx.try_recv() {
+            self.handle_search_result(result);
+        }
+
+        self.process_debounce();
+    }
+
+    /// Whether the filtered lists are frozen by an applied or in-flight AI
+    /// rank. Rebuilding an applied rank destroys its order; rebuilding while
+    /// a rank is in flight makes `handle_ai_result` sort a different list
+    /// than the one `submit_ai_query` snapshotted, so the delivered rank
+    /// lands on a mismatched candidate set. After `invalidate_ai_rank`
+    /// clears both `ranked_count` and `thinking`, refreshed data can reach
+    /// `filtered` / `groups` so the next `submit_ai_query` snapshot reflects
+    /// the new candidate set.
+    fn ai_rank_pinned(&self) -> bool {
+        self.ai.ranked_count.is_some() || self.ai.thinking
+    }
+
+    /// Poll the recent-session background loaders and refresh the filtered
+    /// views (unless an AI rank pins them — see `ai_rank_pinned`).
+    fn poll_recent_loads(&mut self) {
         let (global_loaded, project_loaded) = self.recent.poll();
         if global_loaded {
             apply_recent_automation_to_groups(
@@ -1312,101 +1388,95 @@ impl App {
                 &self.recent.all,
                 &mut self.automation_cache,
             );
-            // Freeze the filtered lists while an AI rank is applied or
-            // in flight. Rebuilding an applied rank destroys its order;
-            // rebuilding while a rank is in flight makes `handle_ai_result`
-            // sort a different list than the one `submit_ai_query`
-            // snapshotted, so the delivered rank lands on a mismatched
-            // candidate set. After `invalidate_ai_rank` clears both
-            // `ranked_count` and `thinking`, the refreshed data can reach
-            // `filtered` / `groups` so the next `submit_ai_query` snapshot
-            // reflects the new candidate set.
-            if self.ai.ranked_count.is_none() && !self.ai.thinking {
+            if !self.ai_rank_pinned() {
                 self.apply_groups_filter();
                 self.apply_recent_sessions_filter();
             }
         }
-        if project_loaded && self.ai.ranked_count.is_none() && !self.ai.thinking {
+        if project_loaded && !self.ai_rank_pinned() {
             self.apply_recent_sessions_filter();
         }
+    }
 
-        // Check for tree load results
-        if let Some(ref rx) = self.tree.tree_load_rx {
-            if let Ok(result) = rx.try_recv() {
-                match result {
-                    Ok(tree) => {
-                        self.tree.session_tree = Some(tree);
-                        self.tree.tree_loading = false;
-                        self.needs_full_redraw = true;
-                    }
-                    Err(e) => {
-                        self.search.error = Some(format!("Tree load error: {}", e));
-                        self.tree.tree_loading = false;
-                        self.tree_mode = false;
-                        self.needs_full_redraw = true;
-                    }
-                }
-                self.tree.tree_load_rx = None;
+    /// Poll the background tree loader and install the result.
+    fn poll_tree_load(&mut self) {
+        let Some(ref rx) = self.tree.tree_load_rx else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        match result {
+            Ok(tree) => {
+                self.tree.session_tree = Some(tree);
+                self.tree.tree_loading = false;
+                self.needs_full_redraw = true;
+            }
+            Err(e) => {
+                self.search.error = Some(format!("Tree load error: {}", e));
+                self.tree.tree_loading = false;
+                self.tree_mode = false;
+                self.needs_full_redraw = true;
             }
         }
+        self.tree.tree_load_rx = None;
+    }
 
-        // Poll background message counts. Update the count in both the
-        // `all_groups` store and the currently-filtered `groups` view in
-        // place — a `message_count` update never changes which groups pass
-        // the automation filter, so cloning `all_groups` via
-        // `apply_groups_filter` on every trickled update is pure waste. In
-        // debug builds that clone was dominating per-keystroke latency when
-        // scrolling while background count workers were still finishing.
-        if let Some(ref rx) = self.search.message_count_rx {
-            while let Ok((file_path, count, compacted)) = rx.try_recv() {
-                for group in &mut self.search.all_groups {
-                    if group.file_path == file_path {
-                        group.message_count = Some(count);
-                        group.message_count_compacted = compacted;
-                    }
-                }
-                for group in &mut self.search.groups {
-                    if group.file_path == file_path {
-                        group.message_count = Some(count);
-                        group.message_count_compacted = compacted;
-                    }
-                }
-            }
+    /// Drain background message counts. Update the count in both the
+    /// `all_groups` store and the currently-filtered `groups` view in
+    /// place — a `message_count` update never changes which groups pass
+    /// the automation filter, so cloning `all_groups` via
+    /// `apply_groups_filter` on every trickled update is pure waste. In
+    /// debug builds that clone was dominating per-keystroke latency when
+    /// scrolling while background count workers were still finishing.
+    fn poll_message_counts(&mut self) {
+        let Some(ref rx) = self.search.message_count_rx else {
+            return;
+        };
+        while let Ok((file_path, count, compacted)) = rx.try_recv() {
+            set_group_message_count(&mut self.search.all_groups, &file_path, count, compacted);
+            set_group_message_count(&mut self.search.groups, &file_path, count, compacted);
         }
+    }
 
-        // Check for AI ranking result
-        if let Some(ref rx) = self.ai.result_rx {
-            if let Ok(result) = rx.try_recv() {
-                self.ai.result_rx = None;
-                self.ai.thinking = false;
-                self.handle_ai_result(result);
-            }
+    /// Poll the AI ranking channel and apply a delivered result.
+    fn poll_ai_result(&mut self) {
+        let Some(ref rx) = self.ai.result_rx else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        self.ai.result_rx = None;
+        self.ai.thinking = false;
+        self.handle_ai_result(result);
+    }
+
+    /// Fire the debounced search once the debounce period has elapsed.
+    fn process_debounce(&mut self) {
+        let Some(last) = self.last_keystroke else {
+            return;
+        };
+        if last.elapsed() < Duration::from_millis(DEBOUNCE_MS) {
+            return;
         }
+        self.last_keystroke = None;
+        self.typing = false;
+        self.apply_debounced_search();
+    }
 
-        // Check for search results from background thread
-        while let Ok(result) = self.search.search_rx.try_recv() {
-            self.handle_search_result(result);
-        }
-
-        // Check if debounce period passed
-        if let Some(last) = self.last_keystroke {
-            if last.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
-                self.last_keystroke = None;
-                self.typing = false;
-
-                // Re-search if query, regex mode, or search scope changed
-                let query_changed = self.input.text() != self.last_query;
-                let mode_changed = self.regex_mode != self.last_regex_mode;
-                let scope_changed = self.search_paths != self.last_search_paths
-                    || self.project_filter != self.last_project_filter;
-                if query_changed && self.input.is_empty() {
-                    // User backspaced to empty — reset to idle state
-                    self.reset_search_state();
-                } else if !self.input.is_empty() && (query_changed || mode_changed || scope_changed)
-                {
-                    self.start_search();
-                }
-            }
+    /// Re-search if the query, regex mode, or search scope changed; reset
+    /// to the idle state when the user backspaced to empty.
+    fn apply_debounced_search(&mut self) {
+        let query_changed = self.input.text() != self.last_query;
+        let mode_changed = self.regex_mode != self.last_regex_mode;
+        let scope_changed = self.search_paths != self.last_search_paths
+            || self.project_filter != self.last_project_filter;
+        if query_changed && self.input.is_empty() {
+            // User backspaced to empty — reset to idle state
+            self.reset_search_state();
+        } else if !self.input.is_empty() && (query_changed || mode_changed || scope_changed) {
+            self.start_search();
         }
     }
 
@@ -1594,14 +1664,10 @@ impl App {
         }
     }
 
-    fn submit_ai_query(&mut self) {
-        if self.ai.query.is_empty() || self.ai.thinking {
-            return;
-        }
-        let query = self.ai.query.text().to_string();
-
-        // Snapshot lightweight session descriptors — no file I/O on main thread
-        let sessions: Vec<crate::ai::SessionInfo> = if self.in_recent_sessions_mode() {
+    /// Snapshot lightweight session descriptors from the visible list —
+    /// no file I/O on the main thread.
+    fn ai_rank_candidates(&self) -> Vec<crate::ai::SessionInfo> {
+        if self.in_recent_sessions_mode() {
             self.recent
                 .filtered
                 .iter()
@@ -1623,12 +1689,25 @@ impl App {
                     summary: String::new(),
                 })
                 .collect()
-        };
+        }
+    }
 
+    fn submit_ai_query(&mut self) {
+        if self.ai.query.is_empty() || self.ai.thinking {
+            return;
+        }
+        let sessions = self.ai_rank_candidates();
         if sessions.is_empty() {
             return;
         }
+        let query = self.ai.query.text().to_string();
+        self.start_ai_rank(query, sessions);
+    }
 
+    /// Spawn the background `claude -p` ranking call and record the pending
+    /// receiver. Kept separate from `submit_ai_query` so the guards above
+    /// stay testable without invoking the real binary.
+    fn start_ai_rank(&mut self, query: String, sessions: Vec<crate::ai::SessionInfo>) {
         match crate::ai::spawn_ai_rank(query, sessions) {
             Ok(rx) => {
                 self.ai.thinking = true;
@@ -1654,50 +1733,58 @@ impl App {
 
         self.ai.error = None;
 
-        let rank: std::collections::HashMap<&str, usize> = result
+        let rank: HashMap<&str, usize> = result
             .ranked_ids
             .iter()
             .enumerate()
             .map(|(i, id)| (id.as_str(), i))
             .collect();
 
-        if self.in_recent_sessions_mode() {
-            if self.ai.original_recent_order.is_none() {
-                self.ai.original_recent_order = Some(self.recent.filtered.clone());
-            }
-            self.recent.filtered.sort_by_key(|s| {
-                rank.get(s.session_id.as_str())
-                    .copied()
-                    .unwrap_or(usize::MAX)
-            });
-            self.recent.cursor = 0;
-            self.recent.scroll_offset = 0;
-        } else {
-            if self.ai.original_groups_order.is_none() {
-                self.ai.original_groups_order = Some(self.search.groups.clone());
-            }
-            self.search.groups.sort_by_key(|g| {
-                rank.get(g.session_id.as_str())
-                    .copied()
-                    .unwrap_or(usize::MAX)
-            });
-            self.search.group_cursor = 0;
-        }
-
         let matched_count = if self.in_recent_sessions_mode() {
-            self.recent
-                .filtered
-                .iter()
-                .filter(|s| rank.contains_key(s.session_id.as_str()))
-                .count()
+            self.apply_ai_rank_to_recent(&rank)
         } else {
-            self.search
-                .groups
-                .iter()
-                .filter(|g| rank.contains_key(g.session_id.as_str()))
-                .count()
+            self.apply_ai_rank_to_groups(&rank)
         };
         self.ai.ranked_count = Some(matched_count);
+    }
+
+    /// Re-order the recent-sessions view by AI rank (saving the original
+    /// order once) and count how many sessions the rank matched.
+    fn apply_ai_rank_to_recent(&mut self, rank: &HashMap<&str, usize>) -> usize {
+        if self.ai.original_recent_order.is_none() {
+            self.ai.original_recent_order = Some(self.recent.filtered.clone());
+        }
+        self.recent.filtered.sort_by_key(|s| {
+            rank.get(s.session_id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        self.recent.cursor = 0;
+        self.recent.scroll_offset = 0;
+        self.recent
+            .filtered
+            .iter()
+            .filter(|s| rank.contains_key(s.session_id.as_str()))
+            .count()
+    }
+
+    /// Re-order the search-result groups by AI rank (saving the original
+    /// order once) and count how many groups the rank matched.
+    fn apply_ai_rank_to_groups(&mut self, rank: &HashMap<&str, usize>) -> usize {
+        if self.ai.original_groups_order.is_none() {
+            self.ai.original_groups_order = Some(self.search.groups.clone());
+        }
+        self.search.groups.sort_by_key(|g| {
+            rank.get(g.session_id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        self.search.group_cursor = 0;
+        self.search
+            .groups
+            .iter()
+            .filter(|g| rank.contains_key(g.session_id.as_str()))
+            .count()
     }
 
     /// Start an async search by spawning a dedicated per-request thread.
@@ -4711,5 +4798,320 @@ mod tests {
             observer.load(Ordering::Relaxed),
             "Drop on App must set the message-count cancel flag"
         );
+    }
+
+    // =========================================================================
+    // handle_action dispatch tests
+    // =========================================================================
+
+    // Drives one action from every dispatch category through `handle_action`
+    // so each sub-dispatcher arm is exercised. The semantics of the
+    // individual handlers are covered by their own tests; this pins the
+    // wiring from `KeyAction` variant to handler.
+    #[test]
+    fn handle_action_dispatches_every_variant_without_panic() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        // Keep the project toggle deterministic across machines: no project
+        // scope and no cwd means ToggleProjectFilter early-returns.
+        app.current_project_paths = vec![];
+        app.current_cwd = None;
+
+        let actions = vec![
+            KeyAction::Up,
+            KeyAction::Down,
+            KeyAction::Left,
+            KeyAction::Right,
+            KeyAction::Tab,
+            KeyAction::Enter,
+            KeyAction::InputChar('q'),
+            KeyAction::Backspace,
+            KeyAction::Delete,
+            KeyAction::ClearInput,
+            KeyAction::DeleteWordLeft,
+            KeyAction::DeleteWordRight,
+            KeyAction::MoveWordLeft,
+            KeyAction::MoveWordRight,
+            KeyAction::MoveHome,
+            KeyAction::MoveEnd,
+            KeyAction::ToggleRegex,
+            KeyAction::ToggleProjectFilter,
+            KeyAction::ToggleAutomationFilter,
+            KeyAction::TogglePreview,
+            KeyAction::ExitPreview,
+            KeyAction::EnterAiMode,
+            KeyAction::ExitAiMode,
+            KeyAction::EnterTreeMode,
+            KeyAction::EnterTreeModeRecent,
+            KeyAction::TreeUp,
+            KeyAction::TreeDown,
+            KeyAction::TreeLeft,
+            KeyAction::TreeRight,
+            KeyAction::TreeTab,
+            KeyAction::TreeEnter,
+            KeyAction::ExitTreeMode,
+            KeyAction::Noop,
+        ];
+        for action in actions {
+            app.handle_action(action);
+        }
+
+        assert!(!app.should_quit, "no non-Quit action may quit the TUI");
+        assert!(app.regex_mode, "ToggleRegex must flip regex_mode");
+        assert_eq!(
+            app.automation_filter,
+            AutomationFilter::Auto,
+            "ToggleAutomationFilter must advance Manual -> Auto"
+        );
+        assert!(!app.ai.active, "ExitAiMode must leave AI mode");
+        assert!(app.outcome.is_none());
+
+        app.handle_action(KeyAction::Quit);
+        assert!(app.should_quit, "Quit must set should_quit");
+    }
+
+    // =========================================================================
+    // tick() polling-phase tests
+    // =========================================================================
+
+    #[test]
+    fn tick_applies_message_count_updates_in_place() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.all_groups = vec![make_group("s1", "/sessions/s1.jsonl")];
+        app.search.groups = vec![make_group("s1", "/sessions/s1.jsonl")];
+        let (tx, rx) = mpsc::channel();
+        app.search.message_count_rx = Some(rx);
+        tx.send(("/sessions/s1.jsonl".to_string(), 42, true))
+            .unwrap();
+
+        app.tick();
+
+        assert_eq!(app.search.all_groups[0].message_count, Some(42));
+        assert!(app.search.all_groups[0].message_count_compacted);
+        assert_eq!(
+            app.search.groups[0].message_count,
+            Some(42),
+            "the filtered view must be updated in place too"
+        );
+        assert!(app.search.groups[0].message_count_compacted);
+    }
+
+    #[test]
+    fn tick_tree_load_success_installs_tree() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.tree_mode = true;
+        app.tree.tree_loading = true;
+        let (tx, rx) = mpsc::channel();
+        app.tree.tree_load_rx = Some(rx);
+        tx.send(Ok(SessionTree::new_for_test(
+            "sess-tree".to_string(),
+            "/sessions/tree.jsonl".to_string(),
+            SessionSource::CLI,
+            vec![],
+        )))
+        .unwrap();
+
+        app.tick();
+
+        assert!(app.tree.session_tree.is_some());
+        assert!(!app.tree.tree_loading);
+        assert!(app.tree.tree_load_rx.is_none());
+        assert!(app.needs_full_redraw);
+        assert!(app.tree_mode, "successful load must stay in tree mode");
+    }
+
+    #[test]
+    fn tick_tree_load_error_surfaces_and_exits_tree_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.tree_mode = true;
+        app.tree.tree_loading = true;
+        let (tx, rx) = mpsc::channel();
+        app.tree.tree_load_rx = Some(rx);
+        tx.send(Err("boom".to_string())).unwrap();
+
+        app.tick();
+
+        assert_eq!(app.search.error.as_deref(), Some("Tree load error: boom"));
+        assert!(!app.tree_mode, "load error must fall back to search mode");
+        assert!(!app.tree.tree_loading);
+        assert!(app.tree.tree_load_rx.is_none());
+        assert!(app.needs_full_redraw);
+    }
+
+    #[test]
+    fn tick_delivers_ai_result_and_clears_thinking() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.thinking = true;
+        let (tx, rx) = mpsc::channel();
+        app.ai.result_rx = Some(rx);
+        tx.send(crate::ai::AiRankResult {
+            ranked_ids: vec![],
+            error: Some("model unavailable".to_string()),
+        })
+        .unwrap();
+
+        app.tick();
+
+        assert!(!app.ai.thinking, "delivered result must clear thinking");
+        assert!(app.ai.result_rx.is_none(), "one-shot channel must be taken");
+        assert_eq!(app.ai.error.as_deref(), Some("model unavailable"));
+    }
+
+    // =========================================================================
+    // AI rank candidate / submit / result tests
+    // =========================================================================
+
+    #[test]
+    fn ai_rank_candidates_snapshots_recent_sessions_in_recent_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.filtered = vec![make_recent_session("/sessions/a.jsonl")];
+
+        let candidates = app.ai_rank_candidates();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session_id, "/sessions/a.jsonl");
+        assert_eq!(candidates[0].file_path, "/sessions/a.jsonl");
+        assert_eq!(candidates[0].project, "proj");
+        assert_eq!(candidates[0].summary, "summary");
+    }
+
+    #[test]
+    fn ai_rank_candidates_snapshots_groups_in_search_mode() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.groups = vec![make_group(
+            "g1",
+            "/home/u/.claude/projects/-Users-u-projects-myproj/g1.jsonl",
+        )];
+
+        let candidates = app.ai_rank_candidates();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session_id, "g1");
+        assert_eq!(candidates[0].project, "myproj");
+        assert!(
+            candidates[0].summary.is_empty(),
+            "group candidates carry no summary"
+        );
+    }
+
+    #[test]
+    fn submit_ai_query_without_candidates_is_noop() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.query.set_text("find something");
+        // No recent sessions and no groups — nothing to rank.
+
+        app.submit_ai_query();
+
+        assert!(!app.ai.thinking, "no candidates must not start a rank");
+        assert!(app.ai.result_rx.is_none());
+        assert!(app.ai.error.is_none());
+    }
+
+    #[test]
+    fn submit_ai_query_while_thinking_is_noop() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.ai.query.set_text("find something");
+        app.recent.filtered = vec![make_recent_session("/sessions/a.jsonl")];
+        app.ai.thinking = true;
+
+        app.submit_ai_query();
+
+        assert!(
+            app.ai.result_rx.is_none(),
+            "the thinking guard must prevent a second spawn"
+        );
+    }
+
+    #[test]
+    fn handle_ai_result_error_is_surfaced() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+
+        app.handle_ai_result(crate::ai::AiRankResult {
+            ranked_ids: vec![],
+            error: Some("boom".to_string()),
+        });
+
+        assert_eq!(app.ai.error.as_deref(), Some("boom"));
+        assert!(app.ai.ranked_count.is_none());
+    }
+
+    #[test]
+    fn handle_ai_result_reorders_recent_sessions_and_counts_matches() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        // make_recent_session uses the file path as session_id.
+        app.recent.filtered = vec![
+            make_recent_session("/sessions/a.jsonl"),
+            make_recent_session("/sessions/b.jsonl"),
+            make_recent_session("/sessions/c.jsonl"),
+        ];
+        app.recent.cursor = 2;
+        app.recent.scroll_offset = 1;
+
+        app.handle_ai_result(crate::ai::AiRankResult {
+            ranked_ids: vec![
+                "/sessions/c.jsonl".to_string(),
+                "/sessions/a.jsonl".to_string(),
+            ],
+            error: None,
+        });
+
+        let ids: Vec<&str> = app
+            .recent
+            .filtered
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "/sessions/c.jsonl",
+                "/sessions/a.jsonl",
+                "/sessions/b.jsonl"
+            ],
+            "ranked sessions first (in rank order), unranked keep relative order"
+        );
+        assert_eq!(app.ai.ranked_count, Some(2));
+        assert_eq!(app.recent.cursor, 0);
+        assert_eq!(app.recent.scroll_offset, 0);
+        assert!(
+            app.ai.original_recent_order.is_some(),
+            "original order must be saved for exit_ai_mode"
+        );
+        assert!(app.ai.error.is_none());
+    }
+
+    #[test]
+    fn handle_ai_result_reorders_groups_and_counts_matches() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.enter_ai_mode();
+        app.search.groups = vec![
+            make_group("g1", "/sessions/g1.jsonl"),
+            make_group("g2", "/sessions/g2.jsonl"),
+        ];
+        app.search.group_cursor = 1;
+
+        app.handle_ai_result(crate::ai::AiRankResult {
+            ranked_ids: vec!["g2".to_string()],
+            error: None,
+        });
+
+        let ids: Vec<&str> = app
+            .search
+            .groups
+            .iter()
+            .map(|g| g.session_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["g2", "g1"]);
+        assert_eq!(app.ai.ranked_count, Some(1));
+        assert_eq!(app.search.group_cursor, 0);
+        assert!(
+            app.ai.original_groups_order.is_some(),
+            "original order must be saved for exit_ai_mode"
+        );
+        assert!(app.ai.error.is_none());
     }
 }
