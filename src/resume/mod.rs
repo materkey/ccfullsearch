@@ -29,6 +29,88 @@ enum ResumeMode {
     Child,
 }
 
+/// Debug-log label for a resume mode.
+fn resume_label(mode: ResumeMode) -> &'static str {
+    match mode {
+        ResumeMode::Exec => "resume",
+        ResumeMode::Child => "resume_child",
+    }
+}
+
+/// Launcher functions for one `ResumeMode`. Selecting the table by mode and
+/// the entry by provider/source keeps the dispatch decision pure and testable
+/// while the actual exec/spawn stays in `launcher`.
+struct LauncherTable {
+    codex: fn(&str, &str) -> Result<(), String>,
+    opencode: fn(&str, &str) -> Result<(), String>,
+    claude_cli: fn(&str, &str) -> Result<(), String>,
+    claude_desktop: fn() -> Result<(), String>,
+}
+
+static EXEC_LAUNCHERS: LauncherTable = LauncherTable {
+    codex: launcher::resume_codex,
+    opencode: launcher::resume_opencode,
+    claude_cli: launcher::resume_cli,
+    claude_desktop: launcher::resume_desktop,
+};
+
+static CHILD_LAUNCHERS: LauncherTable = LauncherTable {
+    codex: launcher::resume_codex_child,
+    opencode: launcher::resume_opencode_child,
+    claude_cli: launcher::resume_cli_child,
+    claude_desktop: launcher::resume_desktop_child,
+};
+
+fn launcher_table(mode: ResumeMode) -> &'static LauncherTable {
+    match mode {
+        ResumeMode::Exec => &EXEC_LAUNCHERS,
+        ResumeMode::Child => &CHILD_LAUNCHERS,
+    }
+}
+
+/// Route a resume to the launcher matching the session's provider and source.
+fn dispatch_launch(
+    table: &LauncherTable,
+    provider: SessionProvider,
+    source: SessionSource,
+    session_id: &str,
+    file_path: &str,
+) -> Result<(), String> {
+    match (provider, source) {
+        (SessionProvider::Codex, _) => (table.codex)(session_id, file_path),
+        (SessionProvider::Opencode, _) => (table.opencode)(session_id, file_path),
+        (SessionProvider::Claude, SessionSource::CLI) => (table.claude_cli)(session_id, file_path),
+        (SessionProvider::Claude, SessionSource::ClaudeDesktop) => (table.claude_desktop)(),
+    }
+}
+
+/// Pure decision: forking is only considered for Claude Code CLI sessions when
+/// `resolve_parent_session` kept the original file. When the file changed, the
+/// message UUID belongs to the original (auxiliary/agent) file and won't exist
+/// in the parent session.
+fn fork_applies(file_changed: bool, provider: SessionProvider, source: SessionSource) -> bool {
+    !file_changed && provider == SessionProvider::Claude && source == SessionSource::CLI
+}
+
+/// Returns the UUID to fork from when resuming `message_uuid` requires a
+/// branch-aware fork; `None` means resume the session tip directly.
+fn fork_uuid<'a>(
+    message_uuid: Option<&'a str>,
+    file_changed: bool,
+    provider: SessionProvider,
+    source: SessionSource,
+    resolved_file_path: &str,
+) -> Option<&'a str> {
+    let uuid = message_uuid?;
+    if fork_applies(file_changed, provider, source)
+        && fork::should_fork_for_resume(resolved_file_path, uuid)
+    {
+        Some(uuid)
+    } else {
+        None
+    }
+}
+
 /// Core resume logic shared by `resume()` and `resume_child()`.
 ///
 /// # Why we use fork.rs instead of Claude's `--fork-session`
@@ -62,10 +144,7 @@ fn resume_inner(
     message_uuid: Option<&str>,
     mode: ResumeMode,
 ) -> Result<(), String> {
-    let label = match mode {
-        ResumeMode::Exec => "resume",
-        ResumeMode::Child => "resume_child",
-    };
+    let label = resume_label(mode);
     ccs_debug!(
         "[ccs:{}] input: session_id={}, file_path={}, source={:?}, uuid={:?}",
         label,
@@ -87,54 +166,26 @@ fn resume_inner(
         file_changed
     );
 
-    // When resolve_parent_session changes the file, the message UUID belongs to
-    // the original (auxiliary/agent) file and won't exist in the parent session.
-    if let Some(uuid) = message_uuid {
-        if !file_changed
-            && provider == SessionProvider::Claude
-            && source == SessionSource::CLI
-            && fork::should_fork_for_resume(&resolved_file_path, uuid)
-        {
-            let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
-            ccs_debug!(
-                "[ccs:{}] forking: fork_session_id={}, fork_file_path={}",
-                label,
-                fork_session_id,
-                fork_file_path
-            );
-            return match mode {
-                ResumeMode::Exec => launcher::resume_cli(&fork_session_id, &fork_file_path),
-                ResumeMode::Child => launcher::resume_cli_child(&fork_session_id, &fork_file_path),
-            };
-        }
+    let table = launcher_table(mode);
+
+    if let Some(uuid) = fork_uuid(
+        message_uuid,
+        file_changed,
+        provider,
+        source,
+        &resolved_file_path,
+    ) {
+        let (fork_session_id, fork_file_path) = fork::create_fork(&resolved_file_path, uuid)?;
+        ccs_debug!(
+            "[ccs:{}] forking: fork_session_id={}, fork_file_path={}",
+            label,
+            fork_session_id,
+            fork_file_path
+        );
+        return (table.claude_cli)(&fork_session_id, &fork_file_path);
     }
 
-    match (provider, source, mode) {
-        (SessionProvider::Codex, _, ResumeMode::Exec) => {
-            launcher::resume_codex(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Codex, _, ResumeMode::Child) => {
-            launcher::resume_codex_child(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Opencode, _, ResumeMode::Exec) => {
-            launcher::resume_opencode(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Opencode, _, ResumeMode::Child) => {
-            launcher::resume_opencode_child(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Claude, SessionSource::CLI, ResumeMode::Exec) => {
-            launcher::resume_cli(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Claude, SessionSource::CLI, ResumeMode::Child) => {
-            launcher::resume_cli_child(&session_id, &resolved_file_path)
-        }
-        (SessionProvider::Claude, SessionSource::ClaudeDesktop, ResumeMode::Exec) => {
-            launcher::resume_desktop()
-        }
-        (SessionProvider::Claude, SessionSource::ClaudeDesktop, ResumeMode::Child) => {
-            launcher::resume_desktop_child()
-        }
-    }
+    dispatch_launch(table, provider, source, &session_id, &resolved_file_path)
 }
 
 /// Resume a session based on its provider and source.
@@ -176,6 +227,134 @@ pub fn resume_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stub_codex(_: &str, _: &str) -> Result<(), String> {
+        Err("stub-codex".to_string())
+    }
+    fn stub_opencode(_: &str, _: &str) -> Result<(), String> {
+        Err("stub-opencode".to_string())
+    }
+    fn stub_cli(_: &str, _: &str) -> Result<(), String> {
+        Err("stub-cli".to_string())
+    }
+    fn stub_desktop() -> Result<(), String> {
+        Err("stub-desktop".to_string())
+    }
+
+    #[test]
+    fn test_resume_label() {
+        assert_eq!(resume_label(ResumeMode::Exec), "resume");
+        assert_eq!(resume_label(ResumeMode::Child), "resume_child");
+    }
+
+    #[test]
+    fn test_launcher_table_selects_table_by_mode() {
+        assert!(std::ptr::eq(
+            launcher_table(ResumeMode::Exec),
+            &EXEC_LAUNCHERS
+        ));
+        assert!(std::ptr::eq(
+            launcher_table(ResumeMode::Child),
+            &CHILD_LAUNCHERS
+        ));
+    }
+
+    #[test]
+    fn test_dispatch_launch_routes_by_provider_and_source() {
+        let table = LauncherTable {
+            codex: stub_codex,
+            opencode: stub_opencode,
+            claude_cli: stub_cli,
+            claude_desktop: stub_desktop,
+        };
+        let cases = [
+            (SessionProvider::Codex, SessionSource::CLI, "stub-codex"),
+            (
+                SessionProvider::Codex,
+                SessionSource::ClaudeDesktop,
+                "stub-codex",
+            ),
+            (
+                SessionProvider::Opencode,
+                SessionSource::CLI,
+                "stub-opencode",
+            ),
+            (
+                SessionProvider::Opencode,
+                SessionSource::ClaudeDesktop,
+                "stub-opencode",
+            ),
+            (SessionProvider::Claude, SessionSource::CLI, "stub-cli"),
+            (
+                SessionProvider::Claude,
+                SessionSource::ClaudeDesktop,
+                "stub-desktop",
+            ),
+        ];
+        for (provider, source, expected) in cases {
+            let got = dispatch_launch(&table, provider, source, "sid", "path").unwrap_err();
+            assert_eq!(got, expected, "provider={:?} source={:?}", provider, source);
+        }
+    }
+
+    #[test]
+    fn test_fork_applies_only_for_claude_cli_with_unchanged_file() {
+        assert!(fork_applies(
+            false,
+            SessionProvider::Claude,
+            SessionSource::CLI
+        ));
+        assert!(!fork_applies(
+            true,
+            SessionProvider::Claude,
+            SessionSource::CLI
+        ));
+        assert!(!fork_applies(
+            false,
+            SessionProvider::Codex,
+            SessionSource::CLI
+        ));
+        assert!(!fork_applies(
+            false,
+            SessionProvider::Opencode,
+            SessionSource::CLI
+        ));
+        assert!(!fork_applies(
+            false,
+            SessionProvider::Claude,
+            SessionSource::ClaudeDesktop
+        ));
+    }
+
+    #[test]
+    fn test_fork_uuid_decision() {
+        use std::fs;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let jsonl = dir.path().join("session.jsonl");
+        {
+            let mut f = fs::File::create(&jsonl).unwrap();
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"uuid":"uuid-1","sessionId":"s","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+            writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hello"}},"uuid":"uuid-2","parentUuid":"uuid-1","sessionId":"s","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        }
+        let path = jsonl.to_str().unwrap();
+        let claude = SessionProvider::Claude;
+        let cli = SessionSource::CLI;
+
+        // No uuid selected → no fork.
+        assert_eq!(fork_uuid(None, false, claude, cli, path), None);
+        // File changed → uuid belongs to the original file, never fork.
+        assert_eq!(fork_uuid(Some("uuid-1"), true, claude, cli, path), None);
+        // Selected uuid is the current resumable tip → resume directly.
+        assert_eq!(fork_uuid(Some("uuid-2"), false, claude, cli, path), None);
+        // Ancestor uuid off the resumable tip → fork from it.
+        assert_eq!(
+            fork_uuid(Some("uuid-1"), false, claude, cli, path),
+            Some("uuid-1")
+        );
+    }
 
     #[test]
     fn test_resolve_skips_fork_when_file_changed() {
