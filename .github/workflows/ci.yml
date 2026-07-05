@@ -11,15 +11,177 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup component add clippy rustfmt
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
 
       - name: Check
         run: make check
+
+  # Skip the expensive coverage job when nothing that can move the metric
+  # changed (docs-only PRs and pushes). GitHub treats the skipped job as
+  # passing for required checks, and the badge job's needs-result filter
+  # treats "skipped" as "leave the badge and baseline alone".
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - '.cargo-crap.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/**'
+
+  # CRAP metric (complexity × lack of coverage). Regression-based gate, not
+  # absolute: the code already has functions over threshold, so a PR fails only
+  # when a score worsens vs the baseline saved by main (see scripts).
+  # threshold/epsilon live in .cargo-crap.toml — shared with local runs.
+  crap:
+    name: CRAP score
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # checkout + fetching the badges-branch baseline; a permissions block
+      # sets every unlisted scope to none
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # On PRs analyze the head commit, not the synthetic merge commit:
+          # line numbers must match the head.sha used for the comment's source
+          # links, and a merge-based tree would report main's own post-branch
+          # changes as PR regressions. Empty on push → default checkout.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - uses: cargo-bins/cargo-binstall@v1.20.1
+      - name: Install cargo-crap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # avoid the anonymous API rate limit
+        # Pinned: the gate and the comment script parse this exact version's
+        # JSON schema — an unpinned breaking release would either hard-fail
+        # every PR (unparseable baseline) or silently zero the jq counts.
+        run: cargo binstall -y cargo-crap@0.3.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      # Generate the README badge; the separate `badge` job pushes it.
+      - name: Generate badge JSON (main only)
+        if: github.ref == 'refs/heads/main'
+        run: cargo crap --lcov lcov.info --format shields --output crap-badge.json
+      - name: Upload badge artifact (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v6
+        with:
+          name: crap-badge
+          path: crap-badge.json
+
+      # The baseline is published to the badges branch by the badge job; this
+      # artifact only carries it between the two jobs of this run.
+      - name: Generate baseline (main only)
+        if: github.ref == 'refs/heads/main'
+        run: cargo crap --lcov lcov.info --format json --output crap-current.json
+      - name: Upload baseline (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v6
+        with:
+          name: crap-baseline
+          path: crap-current.json
+
+      # The badges branch tip always holds the newest main baseline (see
+      # crap-push-badge.sh) — one git fetch, no API scan, no artifact expiry.
+      - name: Fetch baseline (PRs only)
+        if: github.event_name == 'pull_request'
+        run: bash .github/scripts/crap-fetch-baseline.sh
+
+      # Fails on a regression OR a new function over threshold — cargo-crap's
+      # --fail-regression catches only the former (see script).
+      - name: Regression check (PRs only)
+        if: github.event_name == 'pull_request'
+        run: bash .github/scripts/crap-regression-gate.sh
+
+      # head.sha, not github.sha (the synthetic merge commit), so the comment's
+      # source links resolve. always() so failures get reported too.
+      - name: Generate PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          COMMIT_REF: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/crap-generate-comment.sh
+
+      # Body only — pr-comment.yml resolves the target PR from the trusted
+      # workflow_run event, never from this (fork-controllable) artifact.
+      - name: Upload PR comment artifact (PRs only)
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v6
+        with:
+          name: crap-pr-comment
+          path: crap-comment.md
+          if-no-files-found: ignore
+
+  # Separate job so contents:write is scoped to it alone, and only on main.
+  badge:
+    name: Publish CRAP badge
+    needs: [crap]
+    # Publish on crap success AND failure — when the crap job failed before
+    # generating a badge, crap-push-badge.sh publishes an explicit
+    # "unavailable" badge instead of leaving the previous score up. "skipped"
+    # (docs-only push, via the changes gate) deliberately leaves the badge
+    # and baseline untouched.
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && contains(fromJSON('["success", "failure"]'), needs.crap.result)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      # Either artifact may be missing when the crap job failed mid-way; the
+      # push script substitutes an "unavailable" badge and carries the
+      # previous baseline forward.
+      - name: Download badge artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: crap-badge
+          path: .
+        continue-on-error: true
+      - name: Download baseline artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: crap-baseline
+          path: .
+        continue-on-error: true
+      - name: Push badge and baseline to the badges branch
+        run: bash .github/scripts/crap-push-badge.sh

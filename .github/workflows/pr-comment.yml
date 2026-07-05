@@ -1,0 +1,45 @@
+# Posts the CRAP comment via workflow_run, so it runs in the base-repo context
+# with write access even for fork PRs (where CI's own token is read-only).
+#
+# SECURITY: the artifact comes from the (fork-controllable) CI run, so it's
+# untrusted — used only as the comment body. The target PR is resolved from the
+# trusted workflow_run event, never from the artifact.
+name: Post CRAP PR Comment
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read # checkout — a permissions block sets every unlisted scope to none
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    name: Post or update PR comment
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      # Checkout (base repo, trusted) BEFORE the download — checkout cleans the
+      # workspace, so doing it after would wipe the artifact.
+      - uses: actions/checkout@v5
+
+      # Isolate the untrusted artifact in its own dir so it can't overwrite the
+      # trusted post-pr-comment.js that the next step require()s (RCE vector).
+      - name: Download PR comment artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: crap-pr-comment
+          path: pr-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const post = require('./.github/scripts/post-pr-comment.js')
+            await post({ github, context, core })
