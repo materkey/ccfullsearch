@@ -5,9 +5,11 @@ use crate::session::{self, SessionProvider, SessionSource};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::iter::Peekable;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::str::Chars;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -299,57 +301,7 @@ fn search_single_path(
     extra_args: &[String],
 ) -> Result<(Vec<RipgrepMatch>, bool), String> {
     let args = build_ripgrep_args_with_extra(query, search_path, use_regex, extra_args);
-
-    let mut child = Command::new("rg")
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to run ripgrep: {}", e))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ripgrep stdout was not captured".to_string())?;
-    let reader = BufReader::new(stdout);
-
-    // Drain stderr on a dedicated thread so a chatty `rg` (warnings about
-    // unreadable files, regex diagnostics, etc.) cannot fill the pipe buffer
-    // (~64 KiB on Linux) and block the child while we are stuck waiting for
-    // stdout / `child.wait()`. We cap the *retained* bytes at
-    // `STDERR_KEEP_BYTES` (~64 KiB) — beyond that we keep reading (and
-    // discarding) so the pipe never fills, but stop appending. The
-    // captured prefix is surfaced in any failure message, restoring the
-    // diagnostics that the previous `Command::output()` path included.
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "ripgrep stderr was not captured".to_string())?;
-    let stderr_handle = thread::spawn(move || {
-        let mut keep: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 8 * 1024];
-        let mut reader = BufReader::new(stderr);
-        let mut truncated = false;
-        // First, fill `keep` up to the cap.
-        while keep.len() < STDERR_KEEP_BYTES {
-            let remaining = STDERR_KEEP_BYTES - keep.len();
-            let buf_len = buf.len().min(remaining);
-            match reader.read(&mut buf[..buf_len]) {
-                Ok(0) => return (keep, false),
-                Ok(n) => keep.extend_from_slice(&buf[..n]),
-                Err(_) => return (keep, false),
-            }
-        }
-        // Then, drain (and discard) anything else so the pipe never blocks.
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => truncated = true,
-                Err(_) => break,
-            }
-        }
-        (keep, truncated)
-    });
+    let (child, reader, stderr_handle) = spawn_ripgrep(&args)?;
 
     // Wrap the child in `Arc<Mutex<Option<Child>>>` so the watchdog thread
     // can call `kill()` on it from outside the blocking read loop. Without
@@ -365,56 +317,9 @@ fn search_single_path(
     // parked inside `thread::sleep(50ms)`. Without the wakeable wait every
     // uncancelled search would stall up to 50 ms per path on `join()`.
     let done = Arc::new((Mutex::new(false), Condvar::new()));
+    let watchdog_handle = spawn_watchdog(cancel.clone(), done.clone(), child.clone());
 
-    let watchdog_cancel = cancel.clone();
-    let watchdog_done = done.clone();
-    let watchdog_child = child.clone();
-    let watchdog_handle = thread::spawn(move || {
-        let (lock, cvar) = &*watchdog_done;
-        let mut done_guard = lock.lock().unwrap();
-        while !*done_guard {
-            if watchdog_cancel.load(Ordering::Relaxed) {
-                if let Ok(mut guard) = watchdog_child.lock() {
-                    if let Some(c) = guard.as_mut() {
-                        let _ = c.kill();
-                    }
-                }
-                return;
-            }
-            let (new_guard, _timeout) = cvar
-                .wait_timeout(done_guard, Duration::from_millis(50))
-                .unwrap();
-            done_guard = new_guard;
-        }
-    });
-
-    let mut results = Vec::new();
-    let mut truncated = false;
-    let mut file_match_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-
-    let query_lower = query.to_lowercase();
-    let mut resolve_cache: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new();
-    let mut codex_subagent_cache: std::collections::HashMap<String, bool> =
-        std::collections::HashMap::new();
-
-    // Helper: take the child out of the mutex and reap it. Returns the
-    // `Child` so the caller can call `wait()` on it directly without
-    // holding the mutex (avoiding any contention with the watchdog).
-    fn take_child(child: &Arc<Mutex<Option<Child>>>) -> Option<Child> {
-        child.lock().ok().and_then(|mut g| g.take())
-    }
-
-    // Helper: signal the watchdog to exit and wake it from any
-    // `wait_timeout` so it does not stall the join in `thread::sleep`.
-    let signal_done = |done: &Arc<(Mutex<bool>, Condvar)>| {
-        let (lock, cvar) = &**done;
-        if let Ok(mut guard) = lock.lock() {
-            *guard = true;
-            cvar.notify_one();
-        }
-    };
+    let mut processor = MatchProcessor::new(query, regex_matcher);
 
     for line in reader.lines().map_while(Result::ok) {
         if cancel.load(Ordering::Relaxed) {
@@ -424,64 +329,14 @@ fn search_single_path(
             // `InvalidInput` which we ignore — the operation is idempotent
             // for our purposes.
             signal_done(&done);
-            if let Some(mut c) = take_child(&child) {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
+            kill_and_reap_child(&child);
             // Reap helper threads so we do not leak them or their pipes.
             let _ = watchdog_handle.join();
             let _ = stderr_handle.join();
             return Err(CANCELLED_ERR.into());
         }
 
-        if let Some(mut m) = parse_ripgrep_json(&line) {
-            // Track raw ripgrep matches per file to detect --max-count truncation.
-            // Uses a HashMap so interleaved multi-threaded ripgrep output is handled
-            // correctly. Count uses the original file path (before agent resolution)
-            // because that is what ripgrep's --max-count applies to.
-            let count = file_match_counts.entry(m.file_path.clone()).or_insert(0);
-            *count += 1;
-            if *count >= MAX_COUNT_PER_FILE {
-                truncated = true;
-            }
-
-            // Resolve Claude agent/subagent files and Codex spawned-subagent
-            // rollout files to their parent session.
-            let needs_parent_resolution = if is_agent_or_subagent_path(&m.file_path) {
-                true
-            } else {
-                *codex_subagent_cache
-                    .entry(m.file_path.clone())
-                    .or_insert_with(|| {
-                        session::codex_parent_thread_id_from_file(Path::new(&m.file_path)).is_some()
-                    })
-            };
-            if needs_parent_resolution {
-                let Some(ref msg) = m.message else {
-                    continue; // No message to resolve — skip
-                };
-                let (resolved_sid, resolved_path) = resolve_cache
-                    .entry(m.file_path.clone())
-                    .or_insert_with(|| resolve_parent_session(&msg.session_id, &m.file_path))
-                    .clone();
-                m.file_path = resolved_path;
-                if let Some(msg) = m.message.as_mut() {
-                    msg.session_id = resolved_sid;
-                }
-            }
-            // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
-            // This filters out false positives where query matched file path or metadata
-            if let Some(ref msg) = m.message {
-                let matches = if let Some(re) = regex_matcher {
-                    re.is_match(&msg.content)
-                } else {
-                    msg.content.to_lowercase().contains(&query_lower)
-                };
-                if matches {
-                    results.push(m);
-                }
-            }
-        }
+        processor.process_line(&line);
     }
 
     // The for-loop exited either because rg's stdout reached EOF (normal
@@ -498,9 +353,7 @@ fn search_single_path(
     // contract instead of treating the killed child's exit status as a
     // search failure.
     if cancel.load(Ordering::Relaxed) {
-        if let Some(mut c) = take_child(&child) {
-            let _ = c.wait();
-        }
+        reap_child(&child);
         let _ = stderr_handle.join();
         return Err(CANCELLED_ERR.into());
     }
@@ -515,28 +368,294 @@ fn search_single_path(
     // thread panicked, which is not actionable for the caller.
     let (stderr_bytes, stderr_truncated) = stderr_handle.join().unwrap_or_default();
 
-    // ripgrep exit code 1 means "no matches" — that is success for our purposes.
-    if !status.success() && status.code() != Some(1) {
-        let stderr_text = String::from_utf8_lossy(&stderr_bytes);
-        let trimmed = stderr_text.trim();
-        let suffix = if stderr_truncated {
-            " [stderr truncated]"
-        } else {
-            ""
-        };
-        if trimmed.is_empty() {
-            return Err(format!(
-                "ripgrep search failed: exit status {}{}",
-                status, suffix
-            ));
+    check_ripgrep_status(&status, &stderr_bytes, stderr_truncated)?;
+
+    Ok((processor.results, processor.truncated))
+}
+
+/// Join handle of the stderr drain thread; yields the captured stderr
+/// prefix and a flag telling whether the prefix was truncated.
+type StderrDrainHandle = thread::JoinHandle<(Vec<u8>, bool)>;
+
+/// Spawn `rg` with piped stdout/stderr and start the stderr drain thread.
+/// Returns the child, a buffered stdout reader, and the drain thread handle.
+fn spawn_ripgrep(
+    args: &[String],
+) -> Result<(Child, BufReader<ChildStdout>, StderrDrainHandle), String> {
+    let mut child = Command::new("rg")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run ripgrep: {}", e))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ripgrep stdout was not captured".to_string())?;
+    let reader = BufReader::new(stdout);
+
+    // Drain stderr on a dedicated thread so a chatty `rg` (warnings about
+    // unreadable files, regex diagnostics, etc.) cannot fill the pipe buffer
+    // (~64 KiB on Linux) and block the child while we are stuck waiting for
+    // stdout / `child.wait()`.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "ripgrep stderr was not captured".to_string())?;
+    let stderr_handle = thread::spawn(move || drain_stderr(stderr));
+
+    Ok((child, reader, stderr_handle))
+}
+
+/// Drain a child's stderr pipe to completion. We cap the *retained* bytes at
+/// `STDERR_KEEP_BYTES` (~64 KiB) — beyond that we keep reading (and
+/// discarding) so the pipe never fills, but stop appending. The captured
+/// prefix is surfaced in any failure message, restoring the diagnostics that
+/// the previous `Command::output()` path included.
+/// Returns `(captured_prefix, truncated)`.
+fn drain_stderr(stderr: ChildStderr) -> (Vec<u8>, bool) {
+    let mut keep: Vec<u8> = Vec::new();
+    let mut reader = BufReader::new(stderr);
+    // First, fill `keep` up to the cap.
+    if !fill_stderr_prefix(&mut reader, &mut keep) {
+        return (keep, false);
+    }
+    // Then, drain (and discard) anything else so the pipe never blocks.
+    let truncated = discard_remaining_stderr(&mut reader);
+    (keep, truncated)
+}
+
+/// Read from `reader` into `keep` until `STDERR_KEEP_BYTES` is reached.
+/// Returns `false` when EOF (or a read error) ended the stream before the
+/// cap — nothing further remains to drain — and `true` when the cap was
+/// reached with the stream still open.
+fn fill_stderr_prefix(reader: &mut impl Read, keep: &mut Vec<u8>) -> bool {
+    let mut buf = [0u8; 8 * 1024];
+    while keep.len() < STDERR_KEEP_BYTES {
+        let remaining = STDERR_KEEP_BYTES - keep.len();
+        let buf_len = buf.len().min(remaining);
+        match reader.read(&mut buf[..buf_len]) {
+            Ok(0) => return false,
+            Ok(n) => keep.extend_from_slice(&buf[..n]),
+            Err(_) => return false,
         }
+    }
+    true
+}
+
+/// Read `reader` to EOF, discarding everything. Returns `true` when at
+/// least one extra byte was discarded (the retained prefix is truncated).
+fn discard_remaining_stderr(reader: &mut impl Read) -> bool {
+    let mut buf = [0u8; 8 * 1024];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => truncated = true,
+            Err(_) => break,
+        }
+    }
+    truncated
+}
+
+/// Spawn the cancellation watchdog: polls the `cancel` flag every 50 ms and
+/// kills the `rg` child as soon as the flag flips, guaranteeing responsive
+/// cancellation even while the main thread is parked in `read_line()`.
+fn spawn_watchdog(
+    cancel: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
+    child: Arc<Mutex<Option<Child>>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || watchdog_loop(&cancel, &done, &child))
+}
+
+/// Watchdog body: wait (wakeably) in 50 ms slices until either the search
+/// completes (`done` flips) or the cancel flag is observed — then kill `rg`.
+fn watchdog_loop(cancel: &AtomicBool, done: &(Mutex<bool>, Condvar), child: &Mutex<Option<Child>>) {
+    let (lock, cvar) = done;
+    let mut done_guard = lock.lock().unwrap();
+    while !*done_guard {
+        if cancel.load(Ordering::Relaxed) {
+            kill_locked_child(child);
+            return;
+        }
+        let (new_guard, _timeout) = cvar
+            .wait_timeout(done_guard, Duration::from_millis(50))
+            .unwrap();
+        done_guard = new_guard;
+    }
+}
+
+/// Kill the child (if still present) without taking it out of the mutex, so
+/// the main thread can still reap it via `take_child` + `wait()`.
+fn kill_locked_child(child: &Mutex<Option<Child>>) {
+    if let Ok(mut guard) = child.lock() {
+        if let Some(c) = guard.as_mut() {
+            let _ = c.kill();
+        }
+    }
+}
+
+/// Take the child out of the mutex. Returns the `Child` so the caller can
+/// call `wait()` on it directly without holding the mutex (avoiding any
+/// contention with the watchdog).
+fn take_child(child: &Arc<Mutex<Option<Child>>>) -> Option<Child> {
+    child.lock().ok().and_then(|mut g| g.take())
+}
+
+/// Kill and reap the child (cooperative-cancel path in the read loop).
+fn kill_and_reap_child(child: &Arc<Mutex<Option<Child>>>) {
+    if let Some(mut c) = take_child(child) {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// Reap the child without killing it (the watchdog already killed it).
+fn reap_child(child: &Arc<Mutex<Option<Child>>>) {
+    if let Some(mut c) = take_child(child) {
+        let _ = c.wait();
+    }
+}
+
+/// Signal the watchdog to exit and wake it from any `wait_timeout` so it
+/// does not stall the join in its 50 ms sleep.
+fn signal_done(done: &Arc<(Mutex<bool>, Condvar)>) {
+    let (lock, cvar) = &**done;
+    if let Ok(mut guard) = lock.lock() {
+        *guard = true;
+        cvar.notify_one();
+    }
+}
+
+/// Map a ripgrep exit status to the search result contract: exit code 1
+/// means "no matches" — that is success for our purposes. Any other failure
+/// is surfaced with the captured stderr prefix (if any).
+fn check_ripgrep_status(
+    status: &ExitStatus,
+    stderr_bytes: &[u8],
+    stderr_truncated: bool,
+) -> Result<(), String> {
+    if status.success() || status.code() == Some(1) {
+        return Ok(());
+    }
+    let stderr_text = String::from_utf8_lossy(stderr_bytes);
+    let trimmed = stderr_text.trim();
+    let suffix = if stderr_truncated {
+        " [stderr truncated]"
+    } else {
+        ""
+    };
+    if trimmed.is_empty() {
         return Err(format!(
-            "ripgrep search failed: exit status {}: {}{}",
-            status, trimmed, suffix
+            "ripgrep search failed: exit status {}{}",
+            status, suffix
         ));
     }
+    Err(format!(
+        "ripgrep search failed: exit status {}: {}{}",
+        status, trimmed, suffix
+    ))
+}
 
-    Ok((results, truncated))
+/// Streaming post-processor for ripgrep JSON match lines: tracks per-file
+/// `--max-count` truncation, resolves agent/subagent files to their parent
+/// session (with caches), and applies the content post-filter.
+struct MatchProcessor<'a> {
+    query_lower: String,
+    regex_matcher: Option<&'a regex::Regex>,
+    results: Vec<RipgrepMatch>,
+    truncated: bool,
+    file_match_counts: HashMap<String, usize>,
+    resolve_cache: HashMap<String, (String, String)>,
+    codex_subagent_cache: HashMap<String, bool>,
+}
+
+impl<'a> MatchProcessor<'a> {
+    fn new(query: &str, regex_matcher: Option<&'a regex::Regex>) -> Self {
+        Self {
+            query_lower: query.to_lowercase(),
+            regex_matcher,
+            results: Vec::new(),
+            truncated: false,
+            file_match_counts: HashMap::new(),
+            resolve_cache: HashMap::new(),
+            codex_subagent_cache: HashMap::new(),
+        }
+    }
+
+    fn process_line(&mut self, line: &str) {
+        let Some(mut m) = parse_ripgrep_json(line) else {
+            return;
+        };
+        self.track_file_truncation(&m.file_path);
+        if self.needs_parent_resolution(&m.file_path) && !self.resolve_to_parent(&mut m) {
+            return; // No message to resolve — skip
+        }
+        // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
+        // This filters out false positives where query matched file path or metadata
+        if let Some(ref msg) = m.message {
+            if self.content_matches(&msg.content) {
+                self.results.push(m);
+            }
+        }
+    }
+
+    /// Track raw ripgrep matches per file to detect --max-count truncation.
+    /// Uses a HashMap so interleaved multi-threaded ripgrep output is handled
+    /// correctly. Count uses the original file path (before agent resolution)
+    /// because that is what ripgrep's --max-count applies to.
+    fn track_file_truncation(&mut self, file_path: &str) {
+        let count = self
+            .file_match_counts
+            .entry(file_path.to_string())
+            .or_insert(0);
+        *count += 1;
+        if *count >= MAX_COUNT_PER_FILE {
+            self.truncated = true;
+        }
+    }
+
+    /// Whether the match comes from a Claude agent/subagent file or a Codex
+    /// spawned-subagent rollout file and must be resolved to its parent.
+    fn needs_parent_resolution(&mut self, file_path: &str) -> bool {
+        if is_agent_or_subagent_path(file_path) {
+            return true;
+        }
+        *self
+            .codex_subagent_cache
+            .entry(file_path.to_string())
+            .or_insert_with(|| {
+                session::codex_parent_thread_id_from_file(Path::new(file_path)).is_some()
+            })
+    }
+
+    /// Rewrite the match's file path and session id to the parent session.
+    /// Returns `false` when the match carries no message to resolve.
+    fn resolve_to_parent(&mut self, m: &mut RipgrepMatch) -> bool {
+        let Some(ref msg) = m.message else {
+            return false;
+        };
+        let (resolved_sid, resolved_path) = self
+            .resolve_cache
+            .entry(m.file_path.clone())
+            .or_insert_with(|| resolve_parent_session(&msg.session_id, &m.file_path))
+            .clone();
+        m.file_path = resolved_path;
+        if let Some(msg) = m.message.as_mut() {
+            msg.session_id = resolved_sid;
+        }
+        true
+    }
+
+    fn content_matches(&self, content: &str) -> bool {
+        if let Some(re) = self.regex_matcher {
+            re.is_match(content)
+        } else {
+            content.to_lowercase().contains(&self.query_lower)
+        }
+    }
 }
 
 fn is_opencode_storage_path(path: &str) -> bool {
@@ -736,72 +855,23 @@ pub fn extract_project_from_path(path: &str) -> String {
         }
     }
 
-    // Opencode synthetic path: `<db>#<session_id>`. Resolve through the DB
-    // so the project label matches what `list_sessions_for_recent` / recent uses.
     if SessionProvider::from_path(path) == SessionProvider::Opencode {
-        if let Ok(cache) = OPENCODE_PROJECT_CACHE.lock() {
-            if let Some(hit) = cache.get(path) {
-                return hit.clone();
-            }
-        }
-        if let Some(resolved) = resolve_opencode_project_label(path) {
-            if let Ok(mut cache) = OPENCODE_PROJECT_CACHE.lock() {
-                cache.insert(path.to_string(), resolved.clone());
-            }
-            return resolved;
-        }
-        return "Opencode".to_string();
+        return opencode_project_from_path(path);
     }
 
     // Check for Desktop session name in path (e.g., -sessions-wizardly-vibrant-dirac)
-    if let Some(sessions_idx) = path.find("-sessions-") {
-        let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
-                                                         // Get the name (before the next /)
-        let name = after_sessions.split('/').next().unwrap_or("");
-        if !name.is_empty() {
-            return name.to_string();
-        }
+    if let Some(name) = desktop_session_name_from_path(path) {
+        return name;
     }
 
     // Check for CLI project name (e.g., -Users-user-projects-myapp)
-    if let Some(projects_idx) = path.find("projects/") {
-        let after_projects = &path[projects_idx + 9..]; // Skip "projects/"
-
-        // Get the directory name (before the next /)
-        let dir_name = after_projects.split('/').next().unwrap_or("");
-
-        if !dir_name.is_empty() {
-            // The project name is the last part after splitting by -projects-
-            // e.g., "-Users-user-projects-myapp" -> "myapp"
-            if let Some(last_projects_idx) = dir_name.rfind("-projects-") {
-                return dir_name[last_projects_idx + 10..].to_string();
-            }
-
-            // No -projects- segment: extract last meaningful part from encoded dir name
-            // e.g., "-Users-user" -> "~"
-            // e.g., "-Users-user--claude-skills-gist" -> "~/.claude/skills/gist"
-            // e.g., "-private-tmp" -> "/tmp"
-            return decode_dir_name_short(dir_name);
-        }
+    if let Some(project) = cli_project_from_path(path) {
+        return project;
     }
 
     // Desktop audit.jsonl: try to read title from sibling JSON metadata file
     if path.contains("local-agent-mode-sessions") {
-        if let Some(title) = read_desktop_session_title(path) {
-            return title;
-        }
-
-        // Fallback: extract from local_xxx part
-        for part in path.split('/') {
-            if part.starts_with("local_") {
-                let session_id = part.trim_start_matches("local_");
-                if session_id.len() > 8 {
-                    return format!("Desktop:{}", &session_id[..8]);
-                }
-                return format!("Desktop:{}", session_id);
-            }
-        }
-        return "Desktop".to_string();
+        return desktop_project_from_path(path);
     }
 
     // Fallback: return basename without extension
@@ -810,6 +880,80 @@ pub fn extract_project_from_path(path: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(".jsonl")
         .to_string()
+}
+
+/// Opencode synthetic path: `<db>#<session_id>`. Resolve through the DB
+/// so the project label matches what `list_sessions_for_recent` / recent uses.
+fn opencode_project_from_path(path: &str) -> String {
+    if let Ok(cache) = OPENCODE_PROJECT_CACHE.lock() {
+        if let Some(hit) = cache.get(path) {
+            return hit.clone();
+        }
+    }
+    if let Some(resolved) = resolve_opencode_project_label(path) {
+        if let Ok(mut cache) = OPENCODE_PROJECT_CACHE.lock() {
+            cache.insert(path.to_string(), resolved.clone());
+        }
+        return resolved;
+    }
+    "Opencode".to_string()
+}
+
+/// Extract the Desktop session name from a `-sessions-<name>` path segment
+/// (e.g., `-sessions-wizardly-vibrant-dirac` -> `wizardly-vibrant-dirac`).
+fn desktop_session_name_from_path(path: &str) -> Option<String> {
+    let sessions_idx = path.find("-sessions-")?;
+    let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
+                                                     // Get the name (before the next /)
+    let name = after_sessions.split('/').next().unwrap_or("");
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Extract the project label from a CLI-style `projects/<encoded-dir>` path.
+fn cli_project_from_path(path: &str) -> Option<String> {
+    let projects_idx = path.find("projects/")?;
+    let after_projects = &path[projects_idx + 9..]; // Skip "projects/"
+
+    // Get the directory name (before the next /)
+    let dir_name = after_projects.split('/').next().unwrap_or("");
+    if dir_name.is_empty() {
+        return None;
+    }
+
+    // The project name is the last part after splitting by -projects-
+    // e.g., "-Users-user-projects-myapp" -> "myapp"
+    if let Some(last_projects_idx) = dir_name.rfind("-projects-") {
+        return Some(dir_name[last_projects_idx + 10..].to_string());
+    }
+
+    // No -projects- segment: extract last meaningful part from encoded dir name
+    // e.g., "-Users-user" -> "~"
+    // e.g., "-Users-user--claude-skills-gist" -> "~/.claude/skills/gist"
+    // e.g., "-private-tmp" -> "/tmp"
+    Some(decode_dir_name_short(dir_name))
+}
+
+/// Label a Desktop `audit.jsonl` session: sibling JSON metadata title first,
+/// then a `Desktop:<id-prefix>` fallback derived from the `local_xxx` segment.
+fn desktop_project_from_path(path: &str) -> String {
+    if let Some(title) = read_desktop_session_title(path) {
+        return title;
+    }
+
+    // Fallback: extract from local_xxx part
+    for part in path.split('/') {
+        if part.starts_with("local_") {
+            let session_id = part.trim_start_matches("local_");
+            if session_id.len() > 8 {
+                return format!("Desktop:{}", &session_id[..8]);
+            }
+            return format!("Desktop:{}", session_id);
+        }
+    }
+    "Desktop".to_string()
 }
 
 fn resolve_opencode_project_label(path: &str) -> Option<String> {
@@ -902,51 +1046,7 @@ pub fn sanitize_content(content: &str) -> String {
     while let Some(c) = chars.next() {
         // Skip ANSI escape sequences starting with ESC
         if c == '\x1b' {
-            match chars.peek() {
-                // CSI sequence: ESC [ ... (letter)
-                Some(&'[') => {
-                    chars.next(); // consume '['
-                                  // Skip until we hit a letter (the terminator)
-                                  // This handles colors, cursor movement, etc.
-                    while let Some(&next) = chars.peek() {
-                        chars.next();
-                        if next.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-                // OSC sequence: ESC ] ... (BEL or ESC \)
-                Some(&']') => {
-                    chars.next(); // consume ']'
-                                  // Skip until BEL (\x07) or ST (ESC \)
-                    while let Some(next) = chars.next() {
-                        if next == '\x07' {
-                            break; // BEL terminator
-                        }
-                        if next == '\x1b' {
-                            // Check for ST (ESC \)
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                                break;
-                            }
-                        }
-                    }
-                }
-                // DEC special: ESC ( or ESC ) followed by a char
-                Some(&'(') | Some(&')') => {
-                    chars.next(); // consume '(' or ')'
-                    chars.next(); // consume the character set selector
-                }
-                // SS2/SS3: ESC N or ESC O
-                Some(&'N') | Some(&'O') => {
-                    chars.next();
-                }
-                // Other single-char escapes: ESC followed by one char
-                Some(_) => {
-                    chars.next();
-                }
-                None => {}
-            }
+            skip_ansi_escape(&mut chars);
             continue;
         }
 
@@ -971,6 +1071,61 @@ pub fn sanitize_content(content: &str) -> String {
     }
 
     result
+}
+
+/// Skip one ANSI escape sequence; the leading ESC has already been consumed.
+fn skip_ansi_escape(chars: &mut Peekable<Chars<'_>>) {
+    match chars.peek() {
+        // CSI sequence: ESC [ ... (letter)
+        Some(&'[') => {
+            chars.next(); // consume '['
+            skip_csi_sequence(chars);
+        }
+        // OSC sequence: ESC ] ... (BEL or ESC \)
+        Some(&']') => {
+            chars.next(); // consume ']'
+            skip_osc_sequence(chars);
+        }
+        // DEC special: ESC ( or ESC ) followed by a char
+        Some(&'(') | Some(&')') => {
+            chars.next(); // consume '(' or ')'
+            chars.next(); // consume the character set selector
+        }
+        // SS2/SS3: ESC N or ESC O
+        Some(&'N') | Some(&'O') => {
+            chars.next();
+        }
+        // Other single-char escapes: ESC followed by one char
+        Some(_) => {
+            chars.next();
+        }
+        None => {}
+    }
+}
+
+/// Skip a CSI sequence body until we hit a letter (the terminator).
+/// This handles colors, cursor movement, etc.
+fn skip_csi_sequence(chars: &mut Peekable<Chars<'_>>) {
+    while let Some(&next) = chars.peek() {
+        chars.next();
+        if next.is_ascii_alphabetic() {
+            break;
+        }
+    }
+}
+
+/// Skip an OSC sequence body until BEL (\x07) or ST (ESC \).
+fn skip_osc_sequence(chars: &mut Peekable<Chars<'_>>) {
+    while let Some(next) = chars.next() {
+        if next == '\x07' {
+            break; // BEL terminator
+        }
+        // Check for ST (ESC \)
+        if next == '\x1b' && chars.peek() == Some(&'\\') {
+            chars.next();
+            break;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1590,6 +1745,148 @@ mod tests {
         let content = "\x1b(0Line drawing\x1b(B";
         let result = sanitize_content(content);
         assert_eq!(result, "Line drawing");
+    }
+
+    #[test]
+    fn test_sanitize_content_ss2_ss3() {
+        // SS2/SS3: ESC N / ESC O — the shift marker itself is dropped
+        let content = "\x1bNAfter\x1bOMore";
+        let result = sanitize_content(content);
+        assert_eq!(result, "AfterMore");
+    }
+
+    #[test]
+    fn test_sanitize_content_single_char_escape() {
+        // Other single-char escapes: ESC = (keypad mode) drops ESC + one char
+        let content = "\x1b=Keypad";
+        let result = sanitize_content(content);
+        assert_eq!(result, "Keypad");
+    }
+
+    #[test]
+    fn test_sanitize_content_trailing_escape() {
+        // ESC at end of input has nothing to consume and is dropped
+        let content = "text\x1b";
+        let result = sanitize_content(content);
+        assert_eq!(result, "text");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_ripgrep_status_exit_codes() {
+        use std::os::unix::process::ExitStatusExt;
+
+        // Exit 0 and exit 1 ("no matches") are both success.
+        let ok = ExitStatus::from_raw(0);
+        assert!(check_ripgrep_status(&ok, b"", false).is_ok());
+        let no_matches = ExitStatus::from_raw(1 << 8);
+        assert!(check_ripgrep_status(&no_matches, b"ignored", false).is_ok());
+
+        // Any other exit code fails; empty stderr yields the opaque message.
+        let failed = ExitStatus::from_raw(2 << 8);
+        let err = check_ripgrep_status(&failed, b"", false).unwrap_err();
+        assert!(err.starts_with("ripgrep search failed: exit status"));
+        assert!(!err.contains("[stderr truncated]"));
+
+        // Captured stderr text is included (trimmed).
+        let err = check_ripgrep_status(&failed, b"  boom happened  ", false).unwrap_err();
+        assert!(err.contains("boom happened"), "got: {err}");
+
+        // Truncation suffix appears with and without stderr text.
+        let err = check_ripgrep_status(&failed, b"partial", true).unwrap_err();
+        assert!(err.contains("partial"));
+        assert!(err.ends_with("[stderr truncated]"));
+        let err = check_ripgrep_status(&failed, b"", true).unwrap_err();
+        assert!(err.ends_with("[stderr truncated]"));
+    }
+
+    #[test]
+    fn test_fill_stderr_prefix_stops_at_eof() {
+        let mut reader = std::io::Cursor::new(b"short stderr".to_vec());
+        let mut keep = Vec::new();
+        assert!(!fill_stderr_prefix(&mut reader, &mut keep));
+        assert_eq!(keep, b"short stderr");
+    }
+
+    #[test]
+    fn test_fill_stderr_prefix_caps_at_keep_bytes() {
+        let payload = vec![b'x'; STDERR_KEEP_BYTES + 1000];
+        let mut reader = std::io::Cursor::new(payload);
+        let mut keep = Vec::new();
+        assert!(fill_stderr_prefix(&mut reader, &mut keep));
+        assert_eq!(keep.len(), STDERR_KEEP_BYTES);
+        assert!(
+            discard_remaining_stderr(&mut reader),
+            "leftover bytes past the cap must flag truncation"
+        );
+    }
+
+    #[test]
+    fn test_discard_remaining_stderr_empty_stream_is_not_truncated() {
+        let mut reader = std::io::Cursor::new(Vec::new());
+        assert!(!discard_remaining_stderr(&mut reader));
+    }
+
+    #[test]
+    fn test_stderr_drain_helpers_tolerate_read_errors() {
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("boom"))
+            }
+        }
+
+        let mut keep = Vec::new();
+        assert!(!fill_stderr_prefix(&mut FailingReader, &mut keep));
+        assert!(keep.is_empty());
+        assert!(!discard_remaining_stderr(&mut FailingReader));
+    }
+
+    #[test]
+    fn test_extract_project_from_desktop_audit_short_id() {
+        // local_ id of 8 chars or fewer is used as-is (no prefix slice)
+        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_abc/audit.jsonl";
+
+        let project = extract_project_from_path(path);
+
+        assert_eq!(project, "Desktop:abc");
+    }
+
+    #[test]
+    fn test_extract_project_from_desktop_path_without_local_dir() {
+        let path = "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/audit.jsonl";
+
+        let project = extract_project_from_path(path);
+
+        assert_eq!(project, "Desktop");
+    }
+
+    #[test]
+    fn test_extract_project_from_path_fallback_basename() {
+        let project = extract_project_from_path("/tmp/some/dir/session.jsonl");
+
+        assert_eq!(project, "session");
+    }
+
+    #[test]
+    fn test_search_skips_agent_matches_without_message() {
+        // A raw-text hit inside an agent file whose line is not a message
+        // (e.g. a summary record) has no session to resolve to — it must be
+        // skipped, not surfaced with a dangling parent path.
+        let temp_dir = TempDir::new().unwrap();
+        create_test_session(
+            &temp_dir,
+            "agent-task9.jsonl",
+            r#"{"type":"summary","summary":"needle in summary"}"#,
+        );
+
+        let results =
+            search("needle", temp_dir.path().to_str().unwrap()).expect("Search should succeed");
+
+        assert!(
+            results.is_empty(),
+            "agent-file match without a parseable message must be skipped"
+        );
     }
 
     #[test]
