@@ -5,7 +5,7 @@
 #
 # The built-in default exclusions (tests/**, benches/**, examples/**) already
 # cover everything this repo needs — no `exclude` entries required.
-threshold = 30.0
+threshold = 15.0
 # Slack for run-to-run coverage jitter (the tests exercise timing-dependent
 # code: debounce, thread spawn/cancel): a score must worsen by more than this
 # vs the baseline to count as regressed.
