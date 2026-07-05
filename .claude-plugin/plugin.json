@@ -13,5 +13,5 @@
     "tui",
     "picker"
   ],
-  "skills": "../.claude/skills/"
+  "skills": "./.claude/skills/"
 }
