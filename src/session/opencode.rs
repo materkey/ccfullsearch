@@ -350,16 +350,38 @@ pub struct OpencodeMessage {
     pub content_blocks: Vec<ContentBlock>,
 }
 
+/// A raw `message` table row: `(id, session_id, time_created, data)`.
+type MessageRow = (String, String, i64, String);
+
 /// Load every message + part for a given session, ordered chronologically.
+///
+/// Fetches messages first, then fetches parts in a single query and buckets
+/// them by message_id. Doing this in two passes (instead of N+1 queries)
+/// keeps tree loads fast even for sessions with hundreds of messages.
 pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
     let Ok(conn) = open_db(db_path) else {
         return Vec::new();
     };
 
-    // Fetch messages first, then fetch parts in a single query and bucket
-    // them by message_id. Doing this in two passes (instead of N+1 queries)
-    // keeps tree loads fast even for sessions with hundreds of messages.
-    let mut msg_stmt = match conn.prepare(
+    let msg_rows = fetch_message_rows(&conn, session_id);
+    if msg_rows.is_empty() {
+        return Vec::new();
+    }
+
+    let mut parts_by_msg = bucket_parts_by_message(fetch_part_rows(&conn, session_id));
+
+    let mut out = Vec::with_capacity(msg_rows.len());
+    for row in msg_rows {
+        if let Some(msg) = build_message(row, &mut parts_by_msg) {
+            out.push(msg);
+        }
+    }
+    out
+}
+
+/// Fetch all message rows for a session, ordered chronologically.
+fn fetch_message_rows(conn: &Connection, session_id: &str) -> Vec<MessageRow> {
+    let mut stmt = match conn.prepare(
         "SELECT id, session_id, data, time_created \
          FROM message WHERE session_id = ?1 \
          ORDER BY time_created ASC, id ASC",
@@ -371,38 +393,36 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
         }
     };
 
-    let msg_rows: Vec<(String, String, i64, String)> =
-        match msg_stmt.query_map([session_id], |row| {
-            Ok((
-                row.get::<_, String>("id")?,
-                row.get::<_, String>("session_id")?,
-                row.get::<_, i64>("time_created")?,
-                row.get::<_, String>("data")?,
-            ))
-        }) {
-            Ok(iter) => iter
-                .filter_map(|r| match r {
-                    Ok(row) => Some(row),
-                    Err(e) => {
-                        crate::ccs_debug!("opencode load_messages message row dropped: {e}");
-                        None
-                    }
-                })
-                .collect(),
-            Err(e) => {
-                crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
-                return Vec::new();
-            }
-        };
-
-    if msg_rows.is_empty() {
-        return Vec::new();
+    let rows = stmt.query_map([session_id], |row| {
+        Ok((
+            row.get::<_, String>("id")?,
+            row.get::<_, String>("session_id")?,
+            row.get::<_, i64>("time_created")?,
+            row.get::<_, String>("data")?,
+        ))
+    });
+    match rows {
+        Ok(iter) => iter
+            .filter_map(|r| match r {
+                Ok(row) => Some(row),
+                Err(e) => {
+                    crate::ccs_debug!("opencode load_messages message row dropped: {e}");
+                    None
+                }
+            })
+            .collect(),
+        Err(e) => {
+            crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
+            Vec::new()
+        }
     }
+}
 
-    // Parts: fetch all rows for this session in one query, sorted by
-    // (message_id, time_created, id) so blocks within a message stay in
-    // creation order.
-    let mut part_stmt = match conn.prepare(
+/// Fetch all `(message_id, data)` part rows for a session in one query,
+/// sorted by (message_id, time_created, id) so blocks within a message stay
+/// in creation order.
+fn fetch_part_rows(conn: &Connection, session_id: &str) -> Vec<(String, String)> {
+    let mut stmt = match conn.prepare(
         "SELECT message_id, data \
          FROM part WHERE session_id = ?1 \
          ORDER BY message_id ASC, time_created ASC, id ASC",
@@ -413,12 +433,14 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
             return Vec::new();
         }
     };
-    let part_rows: Vec<(String, String)> = match part_stmt.query_map([session_id], |row| {
+
+    let rows = stmt.query_map([session_id], |row| {
         Ok((
             row.get::<_, String>("message_id")?,
             row.get::<_, String>("data")?,
         ))
-    }) {
+    });
+    match rows {
         Ok(iter) => iter
             .filter_map(|r| match r {
                 Ok(row) => Some(row),
@@ -430,10 +452,16 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
             .collect(),
         Err(e) => {
             crate::ccs_debug!("opencode load_messages query_map(part) failed: {e}");
-            return Vec::new();
+            Vec::new()
         }
-    };
+    }
+}
 
+/// Parse each part's JSON payload and bucket its content blocks by
+/// message_id. Malformed part rows are skipped.
+fn bucket_parts_by_message(
+    part_rows: Vec<(String, String)>,
+) -> std::collections::HashMap<String, Vec<ContentBlock>> {
     let mut parts_by_msg: std::collections::HashMap<String, Vec<ContentBlock>> =
         std::collections::HashMap::new();
     for (msg_id, data) in part_rows {
@@ -442,38 +470,54 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
         };
         push_blocks_from_part(&json, parts_by_msg.entry(msg_id).or_default());
     }
+    parts_by_msg
+}
 
-    let mut out = Vec::with_capacity(msg_rows.len());
-    for (id, session_id, time_created, data) in msg_rows {
-        let Ok(meta) = serde_json::from_str::<Value>(&data) else {
-            continue;
-        };
-        let role = match meta.get("role").and_then(|v| v.as_str()) {
-            Some("user") => MessageRole::User,
-            Some("assistant") => MessageRole::Assistant,
-            _ => continue,
-        };
-        let parent_id = meta
-            .get("parentID")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let created_at = meta
-            .get("time")
-            .and_then(|t| t.get("created"))
-            .and_then(|v| v.as_i64())
-            .and_then(millis_to_datetime)
-            .unwrap_or_else(|| millis_to_datetime(time_created).unwrap_or_else(Utc::now));
-        let content_blocks = parts_by_msg.remove(&id).unwrap_or_default();
-        out.push(OpencodeMessage {
-            id,
-            session_id,
-            role,
-            parent_id,
-            created_at,
-            content_blocks,
-        });
+/// Assemble one `OpencodeMessage` from a raw message row plus its bucketed
+/// content blocks. Returns `None` for malformed JSON or non-user/assistant
+/// roles so callers skip system/meta records.
+fn build_message(
+    row: MessageRow,
+    parts_by_msg: &mut std::collections::HashMap<String, Vec<ContentBlock>>,
+) -> Option<OpencodeMessage> {
+    let (id, session_id, time_created, data) = row;
+    let meta = serde_json::from_str::<Value>(&data).ok()?;
+    let role = parse_message_role(&meta)?;
+    let parent_id = meta
+        .get("parentID")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let created_at = message_created_at(&meta, time_created);
+    let content_blocks = parts_by_msg.remove(&id).unwrap_or_default();
+    Some(OpencodeMessage {
+        id,
+        session_id,
+        role,
+        parent_id,
+        created_at,
+        content_blocks,
+    })
+}
+
+/// Parse the `role` field of a message's JSON envelope. Returns `None` for
+/// anything other than user/assistant.
+fn parse_message_role(meta: &Value) -> Option<MessageRole> {
+    match meta.get("role").and_then(|v| v.as_str()) {
+        Some("user") => Some(MessageRole::User),
+        Some("assistant") => Some(MessageRole::Assistant),
+        _ => None,
     }
-    out
+}
+
+/// Resolve a message's creation time from its JSON envelope
+/// (`time.created`), falling back to the row's `time_created` column, then
+/// to `Utc::now`.
+fn message_created_at(meta: &Value, fallback_ms: i64) -> DateTime<Utc> {
+    meta.get("time")
+        .and_then(|t| t.get("created"))
+        .and_then(|v| v.as_i64())
+        .and_then(millis_to_datetime)
+        .unwrap_or_else(|| millis_to_datetime(fallback_ms).unwrap_or_else(Utc::now))
 }
 
 fn push_blocks_from_part(json: &Value, blocks: &mut Vec<ContentBlock>) {
@@ -633,30 +677,65 @@ where
     let conn =
         open_db(db_path).map_err(|e| format!("opencode db open failed ({db_path:?}): {e}"))?;
 
-    // Lowercase the query only when the Fixed-mode post-filter needs it;
-    // Regex mode matches case-sensitively against the original text.
-    let lower_query = match mode {
-        SearchMode::Fixed => Some(query.to_lowercase()),
-        SearchMode::Regex(_) => None,
-    };
-    let (sql, params): (&str, Vec<String>) = match mode {
-        SearchMode::Fixed => (
-            SQL_PART_SEARCH_FIXED,
-            vec![format!(
-                "%{}%",
-                escape_like(lower_query.as_deref().unwrap_or(""))
-            )],
-        ),
-        SearchMode::Regex(_) => (SQL_PART_SEARCH_REGEX, vec![]),
-    };
-
+    let plan = plan_part_search(query, mode);
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(plan.sql)
         .map_err(|e| format!("opencode search prepare failed: {e}"))?;
-    let mut rows = stmt
-        .query(rusqlite::params_from_iter(params.iter()))
+    let rows = stmt
+        .query(rusqlite::params_from_iter(plan.params.iter()))
         .map_err(|e| format!("opencode search query failed: {e}"))?;
 
+    stream_match_rows(
+        rows,
+        mode,
+        plan.lower_query.as_deref(),
+        cancel,
+        db_path,
+        &mut on_match,
+    )
+}
+
+/// SQL text + bind params + lowercase needle for one part search.
+struct PartSearchPlan {
+    sql: &'static str,
+    params: Vec<String>,
+    /// Lowercased query for the Fixed-mode post-filter; `None` in Regex
+    /// mode, which matches case-sensitively against the original text.
+    lower_query: Option<String>,
+}
+
+fn plan_part_search(query: &str, mode: SearchMode<'_>) -> PartSearchPlan {
+    match mode {
+        SearchMode::Fixed => {
+            let lower = query.to_lowercase();
+            let params = vec![format!("%{}%", escape_like(&lower))];
+            PartSearchPlan {
+                sql: SQL_PART_SEARCH_FIXED,
+                params,
+                lower_query: Some(lower),
+            }
+        }
+        SearchMode::Regex(_) => PartSearchPlan {
+            sql: SQL_PART_SEARCH_REGEX,
+            params: Vec::new(),
+            lower_query: None,
+        },
+    }
+}
+
+/// Drive the row loop of [`search_parts_streaming`]: poll the cancel token,
+/// filter each raw row into a match, and feed hits to the callback.
+fn stream_match_rows<F>(
+    mut rows: rusqlite::Rows<'_>,
+    mode: SearchMode<'_>,
+    lower_query: Option<&str>,
+    cancel: &Arc<AtomicBool>,
+    db_path: &Path,
+    on_match: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(OpencodeMatchRow) -> ControlFlow<()>,
+{
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut row_count: usize = 0;
 
@@ -668,75 +747,101 @@ where
         };
 
         row_count += 1;
-        if row_count.is_multiple_of(CANCEL_POLL_INTERVAL) && cancel.load(Ordering::Relaxed) {
-            return Err(crate::search::CANCELLED_ERR.into());
-        }
+        poll_cancel(row_count, cancel)?;
 
-        let session_id: String = row.get(0).map_err(|e| format!("row get session_id: {e}"))?;
-        let message_id: String = row.get(1).map_err(|e| format!("row get message_id: {e}"))?;
-        let part_data: String = row.get(2).map_err(|e| format!("row get part_data: {e}"))?;
-        let message_data: String = row
-            .get(3)
-            .map_err(|e| format!("row get message_data: {e}"))?;
-        let message_time: i64 = row
-            .get(4)
-            .map_err(|e| format!("row get message_time: {e}"))?;
-
-        let Ok(part_json) = serde_json::from_str::<Value>(&part_data) else {
+        let raw = read_part_row(row)?;
+        let Some(hit) = filter_match_row(raw, mode, lower_query, &mut seen, db_path) else {
             continue;
         };
-        let Some(text) = render_part_text(&part_json) else {
-            continue;
-        };
-        let matched = match mode {
-            SearchMode::Fixed => text
-                .to_lowercase()
-                .contains(lower_query.as_deref().unwrap_or("")),
-            SearchMode::Regex(re) => re.is_match(&text),
-        };
-        if !matched {
-            continue;
-        }
 
-        // Collapse multiple parts of the same message into one hit to mirror
-        // ripgrep's behaviour (one match per session/message pair surfaces in
-        // the UI; users expand the session to see all hits).
-        if !seen.insert(format!("{}:{}", session_id, message_id)) {
-            continue;
-        }
-
-        let Ok(msg_json) = serde_json::from_str::<Value>(&message_data) else {
-            continue;
-        };
-        let role = match msg_json.get("role").and_then(|v| v.as_str()) {
-            Some("user") => MessageRole::User,
-            Some("assistant") => MessageRole::Assistant,
-            _ => continue,
-        };
-        let timestamp = msg_json
-            .get("time")
-            .and_then(|t| t.get("created"))
-            .and_then(|v| v.as_i64())
-            .and_then(millis_to_datetime)
-            .unwrap_or_else(|| millis_to_datetime(message_time).unwrap_or_else(Utc::now));
-
-        let session_file = PathBuf::from(synthetic_session_path(db_path, &session_id));
-
-        let row_out = OpencodeMatchRow {
-            session_id,
-            message_id,
-            role,
-            timestamp,
-            text,
-            session_file,
-        };
-
-        if let ControlFlow::Break(()) = on_match(row_out) {
+        if let ControlFlow::Break(()) = on_match(hit) {
             return Ok(());
         }
     }
 
     Ok(())
+}
+
+/// Return `Err("cancelled")` when the cancel token is set on a poll boundary
+/// (every `CANCEL_POLL_INTERVAL` rows).
+fn poll_cancel(row_count: usize, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+    if row_count.is_multiple_of(CANCEL_POLL_INTERVAL) && cancel.load(Ordering::Relaxed) {
+        return Err(crate::search::CANCELLED_ERR.into());
+    }
+    Ok(())
+}
+
+/// One raw row from the part-search JOIN, prior to JSON parsing/filtering.
+struct RawPartRow {
+    session_id: String,
+    message_id: String,
+    part_data: String,
+    message_data: String,
+    message_time: i64,
+}
+
+fn read_part_row(row: &Row<'_>) -> Result<RawPartRow, String> {
+    Ok(RawPartRow {
+        session_id: row.get(0).map_err(|e| format!("row get session_id: {e}"))?,
+        message_id: row.get(1).map_err(|e| format!("row get message_id: {e}"))?,
+        part_data: row.get(2).map_err(|e| format!("row get part_data: {e}"))?,
+        message_data: row
+            .get(3)
+            .map_err(|e| format!("row get message_data: {e}"))?,
+        message_time: row
+            .get(4)
+            .map_err(|e| format!("row get message_time: {e}"))?,
+    })
+}
+
+/// JSON-parse, render, match, and dedup one raw row. Returns `None` when the
+/// part is structural, doesn't match the query, repeats an already-seen
+/// `(session_id, message_id)` pair, or has a malformed message envelope.
+fn filter_match_row(
+    raw: RawPartRow,
+    mode: SearchMode<'_>,
+    lower_query: Option<&str>,
+    seen: &mut std::collections::HashSet<String>,
+    db_path: &Path,
+) -> Option<OpencodeMatchRow> {
+    let part_json = serde_json::from_str::<Value>(&raw.part_data).ok()?;
+    let text = render_part_text(&part_json)?;
+    if !part_text_matches(&text, mode, lower_query) {
+        return None;
+    }
+
+    // Collapse multiple parts of the same message into one hit to mirror
+    // ripgrep's behaviour (one match per session/message pair surfaces in
+    // the UI; users expand the session to see all hits).
+    if !seen.insert(format!("{}:{}", raw.session_id, raw.message_id)) {
+        return None;
+    }
+
+    build_match_row(raw, text, db_path)
+}
+
+fn part_text_matches(text: &str, mode: SearchMode<'_>, lower_query: Option<&str>) -> bool {
+    match mode {
+        SearchMode::Fixed => text.to_lowercase().contains(lower_query.unwrap_or("")),
+        SearchMode::Regex(re) => re.is_match(text),
+    }
+}
+
+/// Parse the message envelope and assemble the final match row. Returns
+/// `None` when the envelope is malformed or the role is not user/assistant.
+fn build_match_row(raw: RawPartRow, text: String, db_path: &Path) -> Option<OpencodeMatchRow> {
+    let msg_json = serde_json::from_str::<Value>(&raw.message_data).ok()?;
+    let role = parse_message_role(&msg_json)?;
+    let timestamp = message_created_at(&msg_json, raw.message_time);
+    let session_file = PathBuf::from(synthetic_session_path(db_path, &raw.session_id));
+    Some(OpencodeMatchRow {
+        session_id: raw.session_id,
+        message_id: raw.message_id,
+        role,
+        timestamp,
+        text,
+        session_file,
+    })
 }
 
 // Both queries inner-join `session` so orphaned `message`/`part` rows whose
@@ -1107,6 +1212,70 @@ mod tests {
             .content_blocks
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolResult(_))));
+    }
+
+    #[test]
+    fn test_load_messages_missing_db_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db"); // never created on disk
+        assert!(load_messages(&db, "ses_TEST").is_empty());
+    }
+
+    #[test]
+    fn test_load_messages_unknown_session_returns_empty() {
+        let (_dir, db) = build_db_fixture();
+        assert!(load_messages(&db, "ses_NOPE").is_empty());
+    }
+
+    #[test]
+    fn test_load_messages_skips_malformed_and_non_chat_rows() {
+        // A message with invalid JSON data, a message with a non-user/assistant
+        // role, and a part with invalid JSON must all be dropped without
+        // affecting the well-formed rows.
+        let (_dir, db) = build_db_fixture();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('msg_bad', 'ses_TEST', 5, 5, 'not-json')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('msg_sys', 'ses_TEST', 6, 6, ?1)",
+            [r#"{"role":"system","time":{"created":6}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('prt_bad', 'msg_user1', 'ses_TEST', 9, 9, 'not-json')",
+            [],
+        )
+        .unwrap();
+
+        let messages = load_messages(&db, "ses_TEST");
+        assert_eq!(
+            messages.len(),
+            2,
+            "malformed and non-user/assistant rows must be skipped"
+        );
+        assert!(messages
+            .iter()
+            .all(|m| m.id != "msg_bad" && m.id != "msg_sys"));
+    }
+
+    #[test]
+    fn test_load_messages_falls_back_to_row_timestamp() {
+        // A message whose JSON envelope has no `time.created` must fall back
+        // to the row's `time_created` column.
+        let (_dir, db) = build_db_fixture();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('msg_late', 'ses_TEST', 1769762600000, 1769762600000, ?1)",
+            [r#"{"role":"user"}"#],
+        )
+        .unwrap();
+
+        let messages = load_messages(&db, "ses_TEST");
+        let late = messages.iter().find(|m| m.id == "msg_late").unwrap();
+        assert_eq!(late.created_at, millis_to_datetime(1769762600000).unwrap());
     }
 
     #[test]
