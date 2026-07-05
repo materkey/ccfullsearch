@@ -993,6 +993,95 @@ mod tests {
         assert_eq!(fpath, parent_file.to_string_lossy());
     }
 
+    /// Create a Codex rollout file `rollout-<timestamp>-<session_id>.jsonl`
+    /// under `dir` (creating intermediate directories) and return its path.
+    fn write_codex_rollout(dir: &Path, timestamp: &str, session_id: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("rollout-{timestamp}-{session_id}.jsonl"));
+        std::fs::write(&path, "{}").unwrap();
+        path
+    }
+
+    #[test]
+    fn test_find_codex_rollout_near_same_directory() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let day = dir.path().join(".codex/sessions/2026/05/03");
+        let parent = write_codex_rollout(&day, "2026-05-03T10-00-00", "parent-id");
+        let child = write_codex_rollout(&day, "2026-05-03T10-01-00", "child-id");
+
+        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+    }
+
+    #[test]
+    fn test_find_codex_rollout_near_searches_sessions_root() {
+        use tempfile::TempDir;
+
+        // The parent lives in a different day directory: the sibling-file scan
+        // misses it and the sessions-root walk must find it.
+        let dir = TempDir::new().unwrap();
+        let sessions = dir.path().join(".codex/sessions");
+        let parent = write_codex_rollout(
+            &sessions.join("2026/04/01"),
+            "2026-04-01T09-00-00",
+            "parent-id",
+        );
+        let child = write_codex_rollout(
+            &sessions.join("2026/05/03"),
+            "2026-05-03T10-01-00",
+            "child-id",
+        );
+
+        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+    }
+
+    #[test]
+    fn test_find_codex_rollout_near_checks_archived_sessions_sibling() {
+        use tempfile::TempDir;
+
+        // The parent was archived: neither the day directory nor the
+        // `sessions` tree has it, so the `archived_sessions` sibling root is
+        // the last place to look.
+        let dir = TempDir::new().unwrap();
+        let codex_home = dir.path().join(".codex");
+        let parent = write_codex_rollout(
+            &codex_home.join("archived_sessions/2026/04/01"),
+            "2026-04-01T09-00-00",
+            "parent-id",
+        );
+        let child = write_codex_rollout(
+            &codex_home.join("sessions/2026/05/03"),
+            "2026-05-03T10-01-00",
+            "child-id",
+        );
+
+        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+    }
+
+    #[test]
+    fn test_find_codex_rollout_near_returns_none_when_absent() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let day = dir.path().join(".codex/sessions/2026/05/03");
+        let child = write_codex_rollout(&day, "2026-05-03T10-01-00", "child-id");
+
+        assert_eq!(find_codex_rollout_near(&child, "missing-id"), None);
+    }
+
+    #[test]
+    fn test_find_codex_rollout_near_returns_none_outside_sessions_root() {
+        use tempfile::TempDir;
+
+        // No `sessions`/`archived_sessions` ancestor: only the immediate
+        // parent directory is scanned and codex_session_root bails out.
+        let dir = TempDir::new().unwrap();
+        let child = write_codex_rollout(dir.path(), "2026-05-03T10-01-00", "child-id");
+
+        assert_eq!(find_codex_rollout_near(&child, "parent-id"), None);
+    }
+
     #[test]
     fn test_resolve_parent_for_top_level_agent_uses_filename_session_id() {
         use std::fs;
