@@ -1,0 +1,12 @@
+# cargo-crap settings — the single source of truth for CI (ci.yml + the
+# .github/scripts/crap-*.sh scripts) and local runs alike. CLI flags would
+# override these; CI passes none of them. crap-regression-gate.sh also reads
+# `threshold` from here for its jq filtering.
+#
+# The built-in default exclusions (tests/**, benches/**, examples/**) already
+# cover everything this repo needs — no `exclude` entries required.
+threshold = 30.0
+# Slack for run-to-run coverage jitter (the tests exercise timing-dependent
+# code: debounce, thread spawn/cancel): a score must worsen by more than this
+# vs the baseline to count as regressed.
+epsilon = 1.0
