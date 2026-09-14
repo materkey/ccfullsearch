@@ -35,8 +35,10 @@ fi
 
 git config user.name "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"
+test -s quality/scb-baseline.json
 tree=$({
   printf '100644 blob %s\tcrap-badge.json\n' "$(git hash-object -w crap-badge.json)"
+  printf '100644 blob %s\tscb-baseline.json\n' "$(git hash-object -w quality/scb-baseline.json)"
   if [ -f crap-current.json ]; then
     printf '100644 blob %s\tcrap-current.json\n' "$(git hash-object -w crap-current.json)"
   fi

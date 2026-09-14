@@ -55,7 +55,7 @@ jobs:
               - '.github/workflows/pr-comment.yml'
 
   quality:
-    name: Rust quality (informational)
+    name: Rust quality gate
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -67,16 +67,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.1.0
-      - name: Compare Rust quality
-        env:
-          SCB_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
-          SCB_EVENT: ${{ github.event_name }}
-        run: |
-          args=(--base-ref "$SCB_BASE_REF")
-          if [ "$SCB_EVENT" = pull_request ]; then
-            args+=(--merge-base)
-          fi
-          uv run --no-project --python 3.12 python .github/scripts/scb-report.py "${args[@]}"
+      - name: Gate Rust quality
+        # Known-green seed used only until the first accepted SCB baseline is
+        # published. Later runs use badges:scb-baseline.json, not the last push.
+        run: >-
+          uv run --no-project --python 3.12 python .github/scripts/scb-report.py
+          --base-ref 3fafbfe514e567b1d5b24c4f38a673c578b3edec
       - name: Upload Rust quality report
         if: always()
         uses: actions/upload-artifact@v6
@@ -212,5 +208,10 @@ jobs:
         with:
           name: crap-baseline
           path: .
+      - name: Download accepted Rust quality baseline
+        uses: actions/download-artifact@v7
+        with:
+          name: rust-quality
+          path: quality/
       - name: Push badge and baseline to the badges branch
         run: bash .github/scripts/crap-push-badge.sh
