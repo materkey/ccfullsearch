@@ -22,7 +22,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
 
-      - name: Test CRAP gate
+      - name: Test quality scripts
         run: python3 -m unittest discover -s .github/scripts/tests -v
 
       - name: Check
@@ -52,6 +52,38 @@ jobs:
               - '.cargo-crap.toml'
               - '.github/workflows/ci.yml'
               - '.github/scripts/**'
+              - '.github/workflows/pr-comment.yml'
+
+  quality:
+    name: Rust quality (informational)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.1.0
+      - name: Compare Rust quality
+        env:
+          SCB_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SCB_EVENT: ${{ github.event_name }}
+        run: |
+          args=(--base-ref "$SCB_BASE_REF")
+          if [ "$SCB_EVENT" = pull_request ]; then
+            args+=(--merge-base)
+          fi
+          uv run --no-project --python 3.12 python .github/scripts/scb-report.py "${args[@]}"
+      - name: Upload Rust quality report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-quality
+          path: quality/
+          if-no-files-found: ignore
 
   # CRAP metric (complexity × lack of coverage). Regression-based gate, not
   # absolute: PRs and main pushes reject regressions and new hot spots or
@@ -159,11 +191,12 @@ jobs:
   # Separate job so contents:write is scoped to it alone, and only on main.
   badge:
     name: Publish CRAP badge
-    needs: [crap, check]
+    needs: [crap, check, quality]
     # Only accepted code becomes the comparison point for subsequent runs.
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main'
       && needs.crap.result == 'success' && needs.check.result == 'success'
+      && needs.quality.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

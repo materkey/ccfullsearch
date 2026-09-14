@@ -37,6 +37,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Download Rust quality report
+        uses: actions/download-artifact@v7
+        with:
+          name: rust-quality
+          path: quality-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Post or update PR comment
         uses: actions/github-script@v8
         with:

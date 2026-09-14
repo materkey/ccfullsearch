@@ -5,9 +5,13 @@ module.exports = async ({ github, context, core }) => {
   const fs = require('fs');
   // Fixed path only — never anything else the untrusted artifact carried.
   const commentFile = 'pr-artifact/crap-comment.md';
-  if (!fs.existsSync(commentFile)) return;
+  const qualityFile = 'quality-artifact/summary.md';
+  if (!fs.existsSync(commentFile) && !fs.existsSync(qualityFile)) return;
   const marker = '<!-- cargo-crap-report -->';
-  let body = fs.readFileSync(commentFile, 'utf8');
+  let body = fs.existsSync(commentFile) ? fs.readFileSync(commentFile, 'utf8') : '';
+  if (fs.existsSync(qualityFile)) {
+    body += `\n\n${fs.readFileSync(qualityFile, 'utf8')}`;
+  }
   // The body is fork-controllable: force the sticky marker onto it, or a
   // marker-less body updating the existing comment would destroy the marker
   // and orphan the comment for every later run.
