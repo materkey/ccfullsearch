@@ -922,6 +922,19 @@ pub struct App {
     pub last_tree_visible_height: usize,
 }
 
+/// Rank known sessions first, preserving the relative order of unranked items.
+fn rank_items<T>(
+    items: &mut [T],
+    rank: &HashMap<&str, usize>,
+    session_id: impl Fn(&T) -> &str,
+) -> usize {
+    items.sort_by_key(|item| rank.get(session_id(item)).copied().unwrap_or(usize::MAX));
+    items
+        .iter()
+        .filter(|item| rank.contains_key(session_id(item)))
+        .count()
+}
+
 impl App {
     pub fn new(search_paths: Vec<String>) -> Self {
         let current_dir = std::env::current_dir().ok();
@@ -1754,18 +1767,10 @@ impl App {
         if self.ai.original_recent_order.is_none() {
             self.ai.original_recent_order = Some(self.recent.filtered.clone());
         }
-        self.recent.filtered.sort_by_key(|s| {
-            rank.get(s.session_id.as_str())
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
+        let matched_count = rank_items(&mut self.recent.filtered, rank, |s| &s.session_id);
         self.recent.cursor = 0;
         self.recent.scroll_offset = 0;
-        self.recent
-            .filtered
-            .iter()
-            .filter(|s| rank.contains_key(s.session_id.as_str()))
-            .count()
+        matched_count
     }
 
     /// Re-order the search-result groups by AI rank (saving the original
@@ -1774,17 +1779,9 @@ impl App {
         if self.ai.original_groups_order.is_none() {
             self.ai.original_groups_order = Some(self.search.groups.clone());
         }
-        self.search.groups.sort_by_key(|g| {
-            rank.get(g.session_id.as_str())
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
+        let matched_count = rank_items(&mut self.search.groups, rank, |g| &g.session_id);
         self.search.group_cursor = 0;
-        self.search
-            .groups
-            .iter()
-            .filter(|g| rank.contains_key(g.session_id.as_str()))
-            .count()
+        matched_count
     }
 
     /// Start an async search by spawning a dedicated per-request thread.
@@ -5047,6 +5044,7 @@ mod tests {
             make_recent_session("/sessions/a.jsonl"),
             make_recent_session("/sessions/b.jsonl"),
             make_recent_session("/sessions/c.jsonl"),
+            make_recent_session("/sessions/d.jsonl"),
         ];
         app.recent.cursor = 2;
         app.recent.scroll_offset = 1;
@@ -5055,6 +5053,7 @@ mod tests {
             ranked_ids: vec![
                 "/sessions/c.jsonl".to_string(),
                 "/sessions/a.jsonl".to_string(),
+                "/sessions/missing.jsonl".to_string(),
             ],
             error: None,
         });
@@ -5070,7 +5069,8 @@ mod tests {
             vec![
                 "/sessions/c.jsonl",
                 "/sessions/a.jsonl",
-                "/sessions/b.jsonl"
+                "/sessions/b.jsonl",
+                "/sessions/d.jsonl"
             ],
             "ranked sessions first (in rank order), unranked keep relative order"
         );
