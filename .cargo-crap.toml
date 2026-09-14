@@ -10,3 +10,6 @@ threshold = 15.0
 # code: debounce, thread spawn/cancel): a score must worsen by more than this
 # vs the baseline to count as regressed.
 epsilon = 1.0
+
+[duplicates]
+enabled = true

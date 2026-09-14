@@ -90,7 +90,7 @@ jobs:
         # Pinned: the gate and the comment script parse this exact version's
         # JSON schema — an unpinned breaking release would either hard-fail
         # every PR (unparseable baseline) or silently zero the jq counts.
-        run: cargo binstall -y cargo-crap@0.3.0
+        run: cargo binstall -y cargo-crap@0.5.0
 
       - uses: Swatinem/rust-cache@v2
 
