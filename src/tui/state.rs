@@ -1070,18 +1070,19 @@ impl App {
         self.last_keystroke = Some(Instant::now());
     }
 
-    pub fn on_backspace(&mut self) {
-        if self.input.backspace() {
+    fn edit_input(&mut self, edit: fn(&mut InputState) -> bool) {
+        if edit(&mut self.input) {
             self.typing = true;
             self.last_keystroke = Some(Instant::now());
         }
     }
 
+    pub fn on_backspace(&mut self) {
+        self.edit_input(InputState::backspace);
+    }
+
     pub fn on_delete(&mut self) {
-        if self.input.delete_forward() {
-            self.typing = true;
-            self.last_keystroke = Some(Instant::now());
-        }
+        self.edit_input(InputState::delete_forward);
     }
 
     /// Determine the outcome of the TUI session based on app state after the loop exits.
@@ -1173,17 +1174,11 @@ impl App {
     }
 
     pub fn delete_word_left(&mut self) {
-        if self.input.delete_word_left() {
-            self.typing = true;
-            self.last_keystroke = Some(Instant::now());
-        }
+        self.edit_input(InputState::delete_word_left);
     }
 
     pub fn delete_word_right(&mut self) {
-        if self.input.delete_word_right() {
-            self.typing = true;
-            self.last_keystroke = Some(Instant::now());
-        }
+        self.edit_input(InputState::delete_word_right);
     }
 
     /// Build a `KeyContext` snapshot for `classify_key`.
@@ -2923,6 +2918,56 @@ mod tests {
         app.on_key('b');
         assert_eq!(app.input.text(), "abc");
         assert_eq!(app.input.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn editable_input_when_deleted_then_restarts_debounce() {
+        let edits: [fn(&mut App); 4] = [
+            App::on_backspace,
+            App::on_delete,
+            App::delete_word_left,
+            App::delete_word_right,
+        ];
+        for edit in edits {
+            let mut app = App::new(vec!["/test".to_string()]);
+            app.input.set_text_and_cursor("abc def", 2);
+            let previous = Instant::now() - Duration::from_secs(1);
+            app.last_keystroke = Some(previous);
+            app.typing = false;
+
+            edit(&mut app);
+
+            assert_ne!(app.input.text(), "abc def");
+            assert!(app.typing);
+            assert!(app.last_keystroke.unwrap() > previous);
+        }
+    }
+
+    #[test]
+    fn input_at_boundary_when_delete_is_noop_then_preserves_debounce() {
+        type Edit = fn(&mut App);
+        let edits: [(Edit, usize); 4] = [
+            (App::on_backspace, 0),
+            (App::on_delete, 3),
+            (App::delete_word_left, 0),
+            (App::delete_word_right, 3),
+        ];
+        for (edit, cursor) in edits {
+            for typing in [false, true] {
+                let mut app = App::new(vec!["/test".to_string()]);
+                app.input.set_text_and_cursor("abc", cursor);
+                let previous = Instant::now() - Duration::from_secs(1);
+                app.last_keystroke = Some(previous);
+                app.typing = typing;
+
+                edit(&mut app);
+
+                assert_eq!(app.input.text(), "abc");
+                assert_eq!(app.input.cursor_pos(), cursor);
+                assert_eq!(app.typing, typing);
+                assert_eq!(app.last_keystroke, Some(previous));
+            }
+        }
     }
 
     #[test]
