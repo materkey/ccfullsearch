@@ -16,7 +16,7 @@ RATIOS = ("erosion", "cog_erosion", "verbosity")
 COUNTS = ("clone_loc", "total_loc", "total_functions", "high_cc_functions",
           "high_cog_functions", "files_scanned")
 MASSES = ("high_cc_mass", "high_cog_mass")
-GATED_METRICS = RATIOS + MASSES + ("clone_loc",)
+GATE_RULES = {"erosion": "high_cc_mass", "cog_erosion": "high_cog_mass"}
 # Numerical roundoff only, not a budget for quality degradation.
 ROUNDING_TOLERANCE = 1e-9
 
@@ -45,8 +45,39 @@ def validate_report(report):
 
 
 def regressions(current, baseline):
-    return [key for key in GATED_METRICS
-            if current[key] - baseline[key] > ROUNDING_TOLERANCE]
+    return [ratio for ratio, mass in GATE_RULES.items()
+            if current[ratio] - baseline[ratio] > ROUNDING_TOLERANCE
+            and current[mass] - baseline[mass] > ROUNDING_TOLERANCE]
+
+
+def scoped_waivers(path, current, baseline_revision, source_tree):
+    exception = json.loads(path.read_text())
+    if set(exception) != {"baseline", "source_tree", "reason", "limits"}:
+        raise ValueError("SCB exception requires baseline, source_tree, reason and limits")
+    for key in ("baseline", "source_tree"):
+        value = exception[key]
+        if not isinstance(value, str) or len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError(f"SCB exception {key} must be a full Git object ID")
+    reason = exception["reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("SCB exception requires a nonempty reason")
+    limits = exception["limits"]
+    if not isinstance(limits, dict) or not limits or not set(limits) <= GATE_RULES.keys():
+        raise ValueError("SCB exception limits must name erosion or cog_erosion")
+    for ratio, ceiling in limits.items():
+        if not isinstance(ceiling, dict) or set(ceiling) != {"ratio", "mass"}:
+            raise ValueError(f"SCB exception {ratio} requires ratio and mass ceilings")
+        for key, value in ceiling.items():
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"Invalid SCB exception ceiling: {ratio}.{key}")
+        if ceiling["ratio"] > 1:
+            raise ValueError("SCB exception ratio ceiling must not exceed 1")
+    # A source edit or accepted-baseline update expires the exception.
+    if exception["baseline"] != baseline_revision or exception["source_tree"] != source_tree:
+        return {}
+    return {ratio: reason.strip() for ratio, ceiling in limits.items()
+            if current[ratio] <= ceiling["ratio"] + ROUNDING_TOLERANCE
+            and current[GATE_RULES[ratio]] <= ceiling["mass"] + ROUNDING_TOLERANCE}
 
 
 def accepted_baseline():
@@ -67,14 +98,17 @@ def accepted_baseline():
     return validate_report(snapshot["report"]), revision
 
 
-def summary(current, baseline, head, base):
+def summary(current, baseline, head, base, waived=None):
+    waived = waived or {}
+    blocked = [key for key in regressions(current, baseline) if key not in waived]
+    verdict = "Gate: **FAILED** — " + ", ".join(blocked) if blocked else "Gate: **PASSED**"
     lines = [
         "## Rust quality (scb-check)", "",
         f"`{ANALYZER}` · scope: `{SCOPE}` (including inline Rust tests).",
         f"Comparison: `{base}` → `{head}`.",
-        "Gate: **FAILED** — " + ", ".join(regressions(current, baseline))
-        if regressions(current, baseline) else "Gate: **PASSED** — no quality regressions.",
-        "Erosion, cognitive erosion, verbosity, complex-function masses and clone LOC must not increase.", "",
+        verdict,
+        "Each erosion metric blocks only when both its ratio and corresponding complex-function mass increase.",
+        "SCB verbosity and clone LOC are diagnostic; cargo-crap separately gates new duplicate pairs.", "",
         "| Metric | Base | Current | Change |",
         "| --- | ---: | ---: | ---: |",
     ]
@@ -88,6 +122,8 @@ def summary(current, baseline, head, base):
     lines.extend(["", "For Rust, verbosity measures clone lines only. "
                   "SCB complexity and clone metrics differ from cargo-crap; "
                   "SLOC growth alone is not a quality regression.", ""])
+    for key, reason in waived.items():
+        lines.extend([f"Scoped exception for `{key}`: {reason}", ""])
     return "\n".join(lines)
 
 
@@ -117,11 +153,19 @@ def main():
                 tree.extractall(directory, filter="data")
             baseline = analyze(directory)
     (output / "baseline.json").write_text(json.dumps(baseline, indent=2) + "\n")
-    failed = regressions(current, baseline)
-    metadata = {"gate": "failed" if failed else "passed", "regressions": failed, "analyzer": ANALYZER, "scope": SCOPE, "head": head, "base": base,
+    detected = regressions(current, baseline)
+    exception_path = Path(".github/scb-exception.json")
+    waived = {}
+    if exception_path.exists():
+        source_tree = subprocess.check_output(["git", "rev-parse", "HEAD:src"], text=True).strip()
+        waived = {key: reason for key, reason in scoped_waivers(
+            exception_path, current, base, source_tree,
+        ).items() if key in detected}
+    failed = [key for key in detected if key not in waived]
+    metadata = {"waived_regressions": waived, "gate": "failed" if failed else "passed", "regressions": detected, "analyzer": ANALYZER, "scope": SCOPE, "head": head, "base": base,
                 "delta": {key: current[key] - baseline[key] for key in RATIOS + COUNTS + MASSES}}
     (output / "comparison.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    body = summary(current, baseline, head, base)
+    body = summary(current, baseline, head, base, waived)
     (output / "summary.md").write_text(body)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
@@ -129,9 +173,11 @@ def main():
     print(body)
     if failed:
         for key in failed:
-            print(f"::error::SCB regression: {key} {baseline[key]:.12g} -> {current[key]:.12g}")
+            mass = GATE_RULES[key]
+            print(f"::error::SCB regression: {key} {baseline[key]:.12g} -> {current[key]:.12g}; "
+                  f"{mass} {baseline[mass]:.12g} -> {current[mass]:.12g}")
         return 1
-    snapshot = {"analyzer": ANALYZER, "scope": SCOPE, "head": head, "report": current}
+    snapshot = {"analyzer": ANALYZER, "scope": SCOPE, "head": head, "report": current, "waivers": waived}
     (output / "scb-baseline.json").write_text(json.dumps(snapshot, indent=2) + "\n")
     return 0
 

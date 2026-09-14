@@ -52,6 +52,7 @@ jobs:
               - '.cargo-crap.toml'
               - '.github/workflows/ci.yml'
               - '.github/scripts/**'
+              - '.github/scb-exception.json'
               - '.github/workflows/pr-comment.yml'
 
   quality:
