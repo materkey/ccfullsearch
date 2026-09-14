@@ -22,6 +22,9 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
 
+      - name: Test CRAP gate
+        run: python3 -m unittest discover -s .github/scripts/tests -v
+
       - name: Check
         run: make check
 
@@ -51,8 +54,8 @@ jobs:
               - '.github/scripts/**'
 
   # CRAP metric (complexity × lack of coverage). Regression-based gate, not
-  # absolute: the code already has functions over threshold, so a PR fails only
-  # when a score worsens vs the baseline saved by main (see scripts).
+  # absolute: PRs and main pushes reject regressions and new hot spots or
+  # duplicate pairs against the last successfully published baseline.
   # threshold/epsilon live in .cargo-crap.toml — shared with local runs.
   crap:
     name: CRAP score
@@ -71,6 +74,9 @@ jobs:
           # links, and a merge-based tree would report main's own post-branch
           # changes as PR regressions. Empty on push → default checkout.
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch baseline
+        run: bash .github/scripts/crap-fetch-baseline.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -97,6 +103,17 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --lcov --output-path lcov.info
 
+      - name: Regression check
+        run: bash .github/scripts/crap-regression-gate.sh
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: crap-delta
+          path: delta.json
+          if-no-files-found: ignore
+
       # Generate the README badge; the separate `badge` job pushes it.
       - name: Generate badge JSON (main only)
         if: github.ref == 'refs/heads/main'
@@ -120,18 +137,6 @@ jobs:
           name: crap-baseline
           path: crap-current.json
 
-      # The badges branch tip always holds the newest main baseline (see
-      # crap-push-badge.sh) — one git fetch, no API scan, no artifact expiry.
-      - name: Fetch baseline (PRs only)
-        if: github.event_name == 'pull_request'
-        run: bash .github/scripts/crap-fetch-baseline.sh
-
-      # Fails on a regression OR a new function over threshold — cargo-crap's
-      # --fail-regression catches only the former (see script).
-      - name: Regression check (PRs only)
-        if: github.event_name == 'pull_request'
-        run: bash .github/scripts/crap-regression-gate.sh
-
       # head.sha, not github.sha (the synthetic merge commit), so the comment's
       # source links resolve. always() so failures get reported too.
       - name: Generate PR comment
@@ -154,34 +159,25 @@ jobs:
   # Separate job so contents:write is scoped to it alone, and only on main.
   badge:
     name: Publish CRAP badge
-    needs: [crap]
-    # Publish on crap success AND failure — when the crap job failed before
-    # generating a badge, crap-push-badge.sh publishes an explicit
-    # "unavailable" badge instead of leaving the previous score up. "skipped"
-    # (docs-only push, via the changes gate) deliberately leaves the badge
-    # and baseline untouched.
+    needs: [crap, check]
+    # Only accepted code becomes the comparison point for subsequent runs.
     if: >-
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-      && contains(fromJSON('["success", "failure"]'), needs.crap.result)
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.crap.result == 'success' && needs.check.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
-      # Either artifact may be missing when the crap job failed mid-way; the
-      # push script substitutes an "unavailable" badge and carries the
-      # previous baseline forward.
       - name: Download badge artifact
         uses: actions/download-artifact@v7
         with:
           name: crap-badge
           path: .
-        continue-on-error: true
       - name: Download baseline artifact
         uses: actions/download-artifact@v7
         with:
           name: crap-baseline
           path: .
-        continue-on-error: true
       - name: Push badge and baseline to the badges branch
         run: bash .github/scripts/crap-push-badge.sh
