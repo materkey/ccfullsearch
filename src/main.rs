@@ -9,7 +9,7 @@ use crossterm::{
     },
 };
 use ratatui::prelude::*;
-use std::io::{self, stdout};
+use std::io::{self, stdout, Write};
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -420,21 +420,18 @@ fn run_direct_resume(
     let session_id = session_id_for_resume(&file_path);
     let source = ccs::session::SessionSource::from_path(&file_path);
 
-    let result = if overlay {
-        ccs::resume::resume_child(&session_id, &file_path, source, Some(uuid))
-    } else {
-        ccs::resume::resume(&session_id, &file_path, source, Some(uuid))
-    };
-    if let Err(e) = result {
+    if let Err(e) = launch_resume(&session_id, &file_path, source, Some(uuid), overlay) {
         eprintln!("Error resuming session: {}", e);
+        if overlay && is_codex_session(&file_path) {
+            wait_for_enter("Press Enter to close: ");
+        }
         std::process::exit(1);
     }
     Ok(())
 }
 
-/// Normal TUI mode. In overlay mode, wrap TUI in a loop: resume as child
-/// process, then return to TUI. Without overlay, resume via exec() (replaces
-/// this process, no return).
+/// Return to the TUI after overlay sessions or failed launches. Codex runs as
+/// a child even without overlay so bootstrap failures remain recoverable.
 fn run_tui_loop(
     search_paths: Vec<String>,
     mut tree_target: Option<String>,
@@ -449,7 +446,8 @@ fn run_tui_loop(
 }
 
 /// Run one TUI pass and handle its outcome. Returns `true` when the loop
-/// should return to the TUI (overlay resume), `false` to stop.
+/// should return to the TUI (overlay resume or failed Codex launch), `false`
+/// to stop.
 fn run_tui_once(
     search_paths: &[String],
     tree_target: &mut Option<String>,
@@ -469,7 +467,8 @@ fn run_tui_once(
 }
 
 /// Decide what to do after the TUI exits. Returns `true` to loop back into
-/// the TUI (overlay resume), `false` to stop (quit, or exec()-style resume).
+/// the TUI (overlay resume or failed Codex launch), `false` to stop (quit, or
+/// a resume that is over).
 fn handle_outcome(
     outcome: ccs::tui::TuiOutcome,
     overlay: bool,
@@ -498,8 +497,7 @@ fn handle_outcome(
     }
 }
 
-/// Perform the resume side effect for a `Resume` outcome and report whether
-/// the TUI loop should continue (overlay mode only).
+/// Perform the resume and preserve the query when returning to the picker.
 fn resume_outcome(
     session_id: &str,
     file_path: &str,
@@ -509,14 +507,59 @@ fn resume_outcome(
     overlay: bool,
     restore_query: &mut Option<String>,
 ) -> bool {
-    if !overlay {
-        resume_exec(session_id, file_path, source, uuid);
-        return false;
+    let result = launch_resume(session_id, file_path, source, uuid, overlay);
+    let return_to_picker = picker_follows_resume(result, file_path, overlay);
+    if return_to_picker {
+        *restore_query = saved_query(query);
     }
-    // Save query so it's restored when we loop back to TUI
-    *restore_query = saved_query(query);
-    resume_in_overlay(session_id, file_path, source, uuid);
+    return_to_picker
+}
+
+/// Resume in the mode ccs was started in: a child under `--overlay`, otherwise
+/// exec. Codex runs as a child either way, see `resume_codex_child`.
+fn launch_resume(
+    session_id: &str,
+    file_path: &str,
+    source: ccs::session::SessionSource,
+    uuid: Option<&str>,
+    overlay: bool,
+) -> Result<(), String> {
+    if overlay {
+        ccs::resume::resume_child(session_id, file_path, source, uuid)
+    } else {
+        ccs::resume::resume(session_id, file_path, source, uuid)
+    }
+}
+
+/// Whether the picker comes back after a resume attempt. A failure that
+/// leaves nothing to return to exits with status 1.
+fn picker_follows_resume(result: Result<(), String>, file_path: &str, overlay: bool) -> bool {
+    let Err(error) = result else {
+        return overlay;
+    };
+    eprintln!("Error resuming session: {error}");
+    let stay = if is_codex_session(file_path) {
+        wait_for_enter("Press Enter to return to ccs: ")
+    } else {
+        overlay
+    };
+    if !stay {
+        std::process::exit(1);
+    }
     true
+}
+
+/// Hold a failed Codex launch on screen until the user has read it; the
+/// picker's alternate screen or a closing overlay popup would hide it at once.
+/// Returns `false` when stdin is closed and nobody can acknowledge.
+fn wait_for_enter(prompt: &str) -> bool {
+    eprint!("{prompt}");
+    let _ = io::stderr().flush();
+    io::stdin().read_line(&mut String::new()).unwrap_or(0) > 0
+}
+
+fn is_codex_session(file_path: &str) -> bool {
+    ccs::SessionProvider::from_path(file_path) == ccs::SessionProvider::Codex
 }
 
 /// Query to restore on the next TUI pass: empty queries are not preserved.
@@ -528,37 +571,25 @@ fn saved_query(query: String) -> Option<String> {
     }
 }
 
-/// Resume a session as a child process (overlay mode) — errors are reported
-/// but the TUI loop continues.
-fn resume_in_overlay(
-    session_id: &str,
-    file_path: &str,
-    source: ccs::session::SessionSource,
-    uuid: Option<&str>,
-) {
-    if let Err(e) = ccs::resume::resume_child(session_id, file_path, source, uuid) {
-        eprintln!("Error resuming session: {}", e);
-    }
-}
-
-/// Resume a session via exec(). On Unix exec() replaces the process so this
-/// never returns on success. On non-Unix, exec_command spawns and waits,
-/// then returns.
-fn resume_exec(
-    session_id: &str,
-    file_path: &str,
-    source: ccs::session::SessionSource,
-    uuid: Option<&str>,
-) {
-    if let Err(e) = ccs::resume::resume(session_id, file_path, source, uuid) {
-        eprintln!("Error resuming session: {}", e);
-        std::process::exit(1);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_resume_when_deciding_next_step_then_picker_returns_only_in_overlay() {
+        assert!(picker_follows_resume(Ok(()), "session.jsonl", true));
+        assert!(!picker_follows_resume(Ok(()), "session.jsonl", false));
+    }
+
+    #[test]
+    fn failed_claude_resume_in_overlay_when_deciding_next_step_then_picker_returns() {
+        let result = Err("claude not found".to_string());
+        assert!(picker_follows_resume(
+            result,
+            "/home/u/.claude/projects/-p/session.jsonl",
+            true
+        ));
+    }
 
     #[test]
     fn test_cli_parses_overlay_flag() {

@@ -23,7 +23,8 @@ pub fn test_prepare_cli_resume_session_id(
 /// Whether to replace the current process (exec) or spawn a child and wait.
 #[derive(Clone, Copy)]
 enum ResumeMode {
-    /// Normal mode: replace the current process via exec.
+    /// Normal mode: replace the current process via exec (Codex excepted, see
+    /// `EXEC_LAUNCHERS`).
     Exec,
     /// Overlay mode: spawn a child and return when it exits.
     Child,
@@ -48,7 +49,8 @@ struct LauncherTable {
 }
 
 static EXEC_LAUNCHERS: LauncherTable = LauncherTable {
-    codex: launcher::resume_codex,
+    // Codex is the exception: it always runs as a child, see `resume_codex_child`.
+    codex: launcher::resume_codex_child,
     opencode: launcher::resume_opencode,
     claude_cli: launcher::resume_cli,
     claude_desktop: launcher::resume_desktop,

@@ -7,8 +7,11 @@ use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
+/// How long after launch a Codex error exit is still treated as a failed resume.
+const CODEX_BOOTSTRAP_WINDOW: Duration = Duration::from_secs(10);
 
 /// Session metadata extracted from a single JSONL parse pass.
 struct SessionAnalysis {
@@ -376,25 +379,8 @@ fn codex_resume_invocation(
     Ok((working_dir, resume_arg, codex_path))
 }
 
-/// Resume a Codex CLI session using exec.
-pub fn resume_codex(session_id: &str, file_path: &str) -> Result<(), String> {
-    let (working_dir, resume_arg, codex_path) = codex_resume_invocation(session_id, file_path)?;
-
-    ccs_debug!(
-        "[ccs:resume_codex] codex={} cwd={} resume -C {} {}",
-        codex_path.display(),
-        working_dir,
-        working_dir,
-        resume_arg
-    );
-
-    let mut cmd = Command::new(&codex_path);
-    cmd.current_dir(&working_dir)
-        .args(["resume", "-C", &working_dir, &resume_arg]);
-    exec_command(&mut cmd)
-}
-
-/// Resume a Codex CLI session as a child process.
+/// Resume a Codex CLI session as a child process. Used outside overlay mode
+/// too: ccs has to outlive Codex to return to the picker when the launch fails.
 pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), String> {
     let (working_dir, resume_arg, codex_path) = codex_resume_invocation(session_id, file_path)?;
 
@@ -406,13 +392,31 @@ pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), Strin
         resume_arg
     );
 
-    Command::new(&codex_path)
+    let mut command = Command::new(&codex_path);
+    command
         .current_dir(&working_dir)
-        .args(["resume", "-C", &working_dir, &resume_arg])
+        .args(["resume", "-C", &working_dir, &resume_arg]);
+    run_codex_command(&mut command)
+}
+
+fn run_codex_command(command: &mut Command) -> Result<(), String> {
+    let started = Instant::now();
+    let status = command
         .status()
         .map_err(|e| format!("Failed to spawn codex: {}", e))?;
+    codex_exit_result(status.code(), started.elapsed())
+}
 
-    Ok(())
+/// Only an error exit this soon after launch counts as a failed resume. A later
+/// one ends a session that did start, and 130 or a signal (no exit code) means
+/// someone stopped Codex on purpose.
+fn codex_exit_result(code: Option<i32>, ran_for: Duration) -> Result<(), String> {
+    match code {
+        Some(code) if code != 0 && code != 130 && ran_for < CODEX_BOOTSTRAP_WINDOW => {
+            Err(format!("Codex exited with status {code}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Pick the working directory for an Opencode resume. Prefers the session's
@@ -541,6 +545,36 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_failure_when_child_exits_at_once_then_returns_error() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 1"]);
+        assert_eq!(
+            run_codex_command(&mut command).unwrap_err(),
+            "Codex exited with status 1"
+        );
+    }
+
+    #[test]
+    fn codex_error_exit_when_within_bootstrap_window_then_is_failed_resume() {
+        let just_inside = CODEX_BOOTSTRAP_WINDOW - Duration::from_millis(1);
+        assert!(codex_exit_result(Some(1), Duration::ZERO).is_err());
+        assert!(codex_exit_result(Some(1), just_inside).is_err());
+    }
+
+    #[test]
+    fn codex_error_exit_when_session_already_ran_then_returns_normally() {
+        assert!(codex_exit_result(Some(1), CODEX_BOOTSTRAP_WINDOW).is_ok());
+    }
+
+    #[test]
+    fn codex_success_interrupt_or_signal_when_child_exits_then_returns_normally() {
+        for code in [Some(0), Some(130), None] {
+            assert!(codex_exit_result(code, Duration::ZERO).is_ok());
+        }
+    }
 
     #[test]
     fn test_ensure_project_dir_creates_directory() {

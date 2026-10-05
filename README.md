@@ -87,6 +87,8 @@ ccs
 
 Start typing to search. Press `Enter` to resume the selected session.
 
+If Codex fails to start the session, `ccs` shows the error; press `Enter` to return to the picker with your search query restored.
+
 Search from the CLI:
 
 ```bash
