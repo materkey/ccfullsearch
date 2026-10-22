@@ -427,6 +427,9 @@ pub struct RecentState {
     pub(crate) project_loading: bool,
     /// Channel for project-specific recent session background load
     pub(crate) project_load_rx: Option<Receiver<Vec<RecentSession>>>,
+    /// Recent sessions per remote host, already scoped to the project by
+    /// the host when Ctrl+A is on.
+    pub(crate) remote: HashMap<String, Vec<RecentSession>>,
 }
 
 impl RecentState {
@@ -442,6 +445,7 @@ impl RecentState {
             load_rx: Some(load_rx),
             project_loading: false,
             project_load_rx: None,
+            remote: HashMap::new(),
         }
     }
 
@@ -568,6 +572,30 @@ impl RecentState {
         }
     }
 
+    /// Add the remote hosts' rows to `filtered`. Their project scope was
+    /// applied by the host; their files are not here to check.
+    pub(crate) fn merge_remote(
+        &mut self,
+        host_filter: &crate::tui::hosts_state::HostFilter,
+        automation_filter: &AutomationFilter,
+    ) {
+        self.filtered.retain(|s| host_filter.allows(&s.host));
+        let remote = self
+            .remote
+            .values()
+            .flatten()
+            .filter(|s| host_filter.allows(&s.host))
+            .filter(|s| match automation_filter {
+                AutomationFilter::All => true,
+                AutomationFilter::Manual => s.automation.is_none(),
+                AutomationFilter::Auto => s.automation.is_some(),
+            })
+            .cloned();
+        self.filtered.extend(remote);
+        crate::recent::sort_recent_sessions_desc(&mut self.filtered);
+        self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
+    }
+
     /// Adjust scroll offset to keep cursor visible.
     pub(crate) fn adjust_scroll(&mut self, visible_height: usize) {
         if self.cursor >= self.scroll_offset + visible_height {
@@ -585,6 +613,10 @@ impl RecentState {
     /// "X recent (Y hidden by filter)" message in
     /// `recent_sessions_status_text` coherent.
     pub fn total_count(&self, project_filter: bool) -> usize {
+        self.local_total_count(project_filter) + self.remote.values().map(Vec::len).sum::<usize>()
+    }
+
+    fn local_total_count(&self, project_filter: bool) -> usize {
         if project_filter {
             let mut total = self
                 .project
@@ -1836,6 +1868,9 @@ impl App {
         }
         // Requests made while the host was connecting went nowhere; send
         // what the picker still wants from it now.
+        if ready {
+            self.send_recent_to(name);
+        }
         if ready && !self.input.is_empty() && self.last_query == self.input.text() {
             let seq = self.search.search_seq;
             let request = self.remote_search_request();
@@ -1859,7 +1894,21 @@ impl App {
                 }
                 self.apply_remote_search(name, seq, found);
             }
-            (PendingKind::Search { .. }, Ok(_)) => {}
+            (PendingKind::Recent, Ok(Reply::Recent(rows))) => {
+                let host = Host::Remote(name.to_string());
+                let rows = rows
+                    .into_iter()
+                    .map(|r| r.into_recent(host.clone()))
+                    .collect();
+                self.recent.remote.insert(name.to_string(), rows);
+                self.apply_recent_sessions_filter();
+            }
+            (PendingKind::Recent, Err(e)) => {
+                if let Some(status) = status {
+                    status.last_error = Some(e);
+                }
+            }
+            (_, Ok(_)) => {}
             (PendingKind::Search { .. }, Err(e)) => {
                 if let Some(status) = status {
                     status.waiting = false;
@@ -1900,19 +1949,67 @@ impl App {
         Request::Search(SearchParams {
             query: self.last_query.clone(),
             regex: self.last_regex_mode,
-            project: None,
+            project: self.remote_project_param(),
             full_content: false,
             limit: None,
         })
     }
 
     pub(crate) fn apply_recent_sessions_filter(&mut self) {
+        let anchor = self
+            .recent
+            .filtered
+            .get(self.recent.cursor)
+            .map(|s| (s.host.clone(), s.session_id.clone()));
         self.recent.apply_filter(
             self.project_filter,
             &self.current_project_paths,
             self.current_cwd.as_deref(),
             &self.automation_filter,
         );
+        self.recent
+            .merge_remote(&self.hosts.filter, &self.automation_filter);
+        if let Some((host, session_id)) = anchor {
+            if let Some(i) = self
+                .recent
+                .filtered
+                .iter()
+                .position(|s| s.host == host && s.session_id == session_id)
+            {
+                self.recent.cursor = i;
+            }
+        }
+    }
+
+    /// The project the remote hosts scope to: the current directory relative
+    /// to `$HOME` (absolute when outside it), only while Ctrl+A is on.
+    pub(crate) fn remote_project_param(&self) -> Option<String> {
+        if !self.project_filter {
+            return None;
+        }
+        let cwd = self.current_cwd.as_deref()?;
+        let home = dirs::home_dir()?;
+        Some(crate::project_match::home_relative(
+            cwd,
+            &home.to_string_lossy(),
+        ))
+    }
+
+    /// Ask one host for its recent sessions in the current project scope.
+    pub(crate) fn send_recent_to(&mut self, name: &str) {
+        let request = Request::Recent(crate::remote::wire::RecentParams {
+            limit: RECENT_SESSIONS_LIMIT,
+            project: self.remote_project_param(),
+        });
+        self.hosts.send_to(name, request, PendingKind::Recent);
+    }
+
+    /// Ask every host for its recent sessions again (scope changed).
+    pub(crate) fn resend_recent(&mut self) {
+        self.hosts.cancel_recents();
+        for name in self.hosts.names() {
+            self.send_recent_to(&name);
+        }
     }
 
     /// Rebuild `groups` from `all_groups` based on project and automation filters.
@@ -2106,6 +2203,28 @@ impl App {
 
     pub(crate) fn suspend_for_resume_for_test(&mut self) {
         self.suspend_for_resume();
+    }
+}
+
+/// A local recent session at `hour`:00 on 2026-10-22.
+#[cfg(test)]
+pub(crate) fn test_recent(session_id: &str, hour: u32) -> RecentSession {
+    use chrono::TimeZone;
+    RecentSession {
+        session_id: session_id.to_string(),
+        file_path: format!("/local/{session_id}.jsonl"),
+        project: "proj".to_string(),
+        source: SessionSource::CLI,
+        timestamp: chrono::Utc
+            .with_ymd_and_hms(2026, 10, 22, hour, 0, 0)
+            .unwrap(),
+        summary: "summary".to_string(),
+        automation: None,
+        branch: None,
+        message_count: None,
+        preview_role: crate::session::record::MessageRole::User,
+        cwd: None,
+        host: Host::Local,
     }
 }
 

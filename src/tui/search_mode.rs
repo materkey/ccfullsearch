@@ -211,6 +211,9 @@ impl App {
             self.recent
                 .start_project_load(self.current_project_paths.clone());
         }
+        // The hosts scope by project themselves: ask them again.
+        self.recent.remote.clear();
+        self.resend_recent();
         self.apply_recent_sessions_filter();
         self.apply_groups_filter();
         if !self.input.is_empty() {

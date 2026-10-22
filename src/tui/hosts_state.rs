@@ -62,6 +62,7 @@ impl HostStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PendingKind {
     Search { seq: u64 },
+    Recent,
 }
 
 /// One host's answer to the search with this `seq`.
@@ -130,19 +131,31 @@ impl HostsState {
 
     /// Cancel every search in flight; their late replies are dropped.
     pub(crate) fn cancel_searches(&mut self) {
-        let searches: Vec<(String, u64)> = self
+        self.cancel_where(|kind| matches!(kind, PendingKind::Search { .. }));
+    }
+
+    /// Cancel every `recent` in flight: a reply for an older project scope
+    /// must not land after the one the user asked for last.
+    pub(crate) fn cancel_recents(&mut self) {
+        self.cancel_where(|kind| matches!(kind, PendingKind::Recent));
+    }
+
+    fn cancel_where(&mut self, which: impl Fn(&PendingKind) -> bool) {
+        let keys: Vec<(String, u64)> = self
             .pending
             .iter()
-            .filter(|(_, kind)| matches!(kind, PendingKind::Search { .. }))
+            .filter(|(_, kind)| which(kind))
             .map(|(key, _)| key.clone())
             .collect();
-        for (name, id) in searches {
-            self.pending.remove(&(name.clone(), id));
+        for (name, id) in keys {
+            let kind = self.pending.remove(&(name.clone(), id));
             if let Some(link) = self.links.iter_mut().find(|l| l.name() == name) {
                 link.cancel(id);
             }
-            if let Some(status) = self.status.get_mut(&name) {
-                status.waiting = false;
+            if matches!(kind, Some(PendingKind::Search { .. })) {
+                if let Some(status) = self.status.get_mut(&name) {
+                    status.waiting = false;
+                }
             }
         }
     }
@@ -525,6 +538,160 @@ mod tests {
             .find(|g| g.session_id == "r1")
             .unwrap();
         assert_eq!(remote.message_count, Some(7));
+    }
+
+    fn wire_recent(session_id: &str, hour: u32) -> crate::remote::wire::WireRecent {
+        use chrono::TimeZone;
+        crate::remote::wire::WireRecent {
+            session_id: session_id.into(),
+            file_path: format!("/home/m/.claude/projects/-p/{session_id}.jsonl"),
+            project: "remote-proj".into(),
+            timestamp: chrono::Utc
+                .with_ymd_and_hms(2026, 10, 22, hour, 0, 0)
+                .unwrap(),
+            summary: "remote summary".into(),
+            automation: None,
+            branch: None,
+            message_count: Some(2),
+            preview_role: "user".into(),
+            cwd: None,
+        }
+    }
+
+    fn reply_recent(link: &FakeLink, app: &mut App, rows: Vec<crate::remote::wire::WireRecent>) {
+        let (id, req) = link.last_sent().expect("a recent request was sent");
+        assert!(matches!(req, Request::Recent(_)), "{req:?}");
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Recent(rows)),
+        });
+        app.poll_hosts();
+    }
+
+    fn connected(link: &FakeLink, app: &mut App) {
+        link.push(ClientEvent::State(HostState::Ready));
+        app.poll_hosts();
+    }
+
+    #[test]
+    fn recent_when_host_ready_then_remote_rows_listed() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("r1", 11)]);
+        assert!(app
+            .recent
+            .filtered
+            .iter()
+            .any(|s| s.host == Host::Remote("Z".into()) && s.session_id == "r1"));
+    }
+
+    #[test]
+    fn recent_when_remote_buffer_and_project_filter_then_remote_rows_kept() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        app.project_filter = true;
+        app.current_cwd = Some("/Users/me/projects/x".into());
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("r1", 11)]);
+        assert!(app.recent.filtered.iter().any(|s| s.session_id == "r1"));
+    }
+
+    #[test]
+    fn recent_total_count_when_remote_rows_then_included() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        connected(&link, &mut app);
+        reply_recent(
+            &link,
+            &mut app,
+            vec![wire_recent("r1", 11), wire_recent("r2", 10)],
+        );
+        assert_eq!(app.recent.total_count(false), app.recent.all.len() + 2);
+    }
+
+    #[test]
+    fn recent_when_same_session_id_on_two_hosts_then_two_rows() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        let mut local = crate::tui::state::test_recent("s1", 9);
+        local.host = Host::Local;
+        app.recent.all = vec![local];
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("s1", 11)]);
+        let rows: Vec<_> = app
+            .recent
+            .filtered
+            .iter()
+            .filter(|s| s.session_id == "s1")
+            .collect();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn project_toggle_when_hosts_ready_then_recent_resent_with_home_relative_project() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
+        app.current_project_paths = vec!["/claude/projects/-x".into()];
+        app.current_cwd = Some(format!("{home}/projects/x"));
+        app.toggle_project_filter();
+        match link.last_sent() {
+            Some((_, Request::Recent(p))) => assert_eq!(p.project.as_deref(), Some("projects/x")),
+            other => panic!("expected recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recent_reply_when_from_superseded_ctrl_a_scope_then_dropped() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
+        app.current_project_paths = vec!["/claude/projects/-x".into()];
+        app.current_cwd = Some(format!("{home}/projects/x"));
+        app.toggle_project_filter();
+        let (first, _) = link.last_sent().unwrap();
+        app.toggle_project_filter();
+        let (second, _) = link.last_sent().unwrap();
+        assert_ne!(first, second);
+        link.push(ClientEvent::Reply {
+            id: second,
+            result: Ok(Reply::Recent(vec![wire_recent("current", 11)])),
+        });
+        link.push(ClientEvent::Reply {
+            id: first,
+            result: Ok(Reply::Recent(vec![wire_recent("stale", 12)])),
+        });
+        app.poll_hosts();
+        let remote: Vec<_> = app.recent.remote["Z"]
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert_eq!(remote, ["current"]);
+        assert!(link.cancelled.lock().unwrap().contains(&first));
+    }
+
+    #[test]
+    fn recent_pick_when_remote_row_then_host_and_server_project() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        app.picker_mode = true;
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("r1", 23)]);
+        app.recent.cursor = app
+            .recent
+            .filtered
+            .iter()
+            .position(|s| s.session_id == "r1")
+            .unwrap();
+        app.on_enter();
+        match app.take_outcome() {
+            crate::tui::TuiOutcome::Pick(p) => {
+                assert_eq!(p.host, Host::Remote("Z".into()));
+                assert_eq!(p.project, "remote-proj");
+            }
+            other => panic!("expected pick, got {other:?}"),
+        }
     }
 
     #[test]
