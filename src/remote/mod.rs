@@ -1,5 +1,6 @@
 //! Remote hosts: where a session lives, and how ccs reaches other machines.
 
+pub mod client;
 pub mod config;
 pub mod serve;
 pub mod server;
