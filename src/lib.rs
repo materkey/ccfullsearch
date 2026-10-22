@@ -13,6 +13,7 @@ pub mod agent_search;
 pub mod cli;
 pub mod config;
 pub mod dag;
+pub mod project_match;
 pub mod recent;
 pub mod resume;
 pub mod search;

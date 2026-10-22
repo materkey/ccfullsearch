@@ -1,5 +1,6 @@
 use crate::agent_search::{AgentEvent, AgentSearchHandle, FoundSession};
 use crate::config::AgentSearchConfig;
+use crate::project_match::{normalize_path_for_prefix_check, path_is_within_project};
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
 use crate::resume::encode_path_for_claude;
 use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
@@ -219,21 +220,6 @@ impl Default for InputState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn normalize_path_for_prefix_check(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    normalized.trim_end_matches(['/', '\\']).to_string()
-}
-
-fn path_is_within_project(file_path: &str, project_path: &str) -> bool {
-    let file_path = normalize_path_for_prefix_check(file_path);
-    let project_path = normalize_path_for_prefix_check(project_path);
-
-    file_path == project_path
-        || file_path
-            .strip_prefix(&project_path)
-            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn search_path_is_within_claude_project(search_path: &str, encoded_cwd: &str) -> bool {
@@ -2390,18 +2376,6 @@ mod tests {
             }),
         });
         assert!(!app.search.search_truncated);
-    }
-
-    #[test]
-    fn test_path_is_within_project_rejects_sibling_prefixes() {
-        assert!(path_is_within_project(
-            r"C:\Users\test\project\session.jsonl",
-            r"C:/Users/test/project"
-        ));
-        assert!(!path_is_within_project(
-            r"C:\Users\test\project-other\session.jsonl",
-            r"C:/Users/test/project"
-        ));
     }
 
     #[test]
