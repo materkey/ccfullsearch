@@ -745,8 +745,6 @@ pub enum TuiOutcome {
         file_path: String,
         source: SessionSource,
         uuid: Option<String>,
-        /// Current search query to restore on return (overlay mode)
-        query: String,
     },
     /// User picked a session in picker mode
     Pick(PickedSession),
@@ -1110,7 +1108,6 @@ impl App {
                     file_path: target.file_path,
                     source: target.source,
                     uuid: target.uuid,
-                    query: self.input.text().to_string(),
                 }
             }
             None => TuiOutcome::Quit,
@@ -3330,7 +3327,6 @@ mod tests {
             source: SessionSource::CLI,
             uuid: Some("uuid-42".to_string()),
         }));
-        app.input.set_text("my search query");
 
         let outcome = app.take_outcome();
         assert_eq!(
@@ -3340,7 +3336,6 @@ mod tests {
                 file_path: "/path/to/session.jsonl".to_string(),
                 source: SessionSource::CLI,
                 uuid: Some("uuid-42".to_string()),
-                query: "my search query".to_string(),
             }
         );
     }
@@ -3408,7 +3403,7 @@ mod tests {
         let outcome = app.take_outcome();
         app.return_from_resume(Some("s2"));
 
-        assert!(matches!(outcome, TuiOutcome::Resume { ref query, .. } if query == "foo"));
+        assert!(matches!(outcome, TuiOutcome::Resume { ref session_id, .. } if session_id == "s2"));
         assert_eq!(app.input.text(), "foo");
         assert_eq!(app.search.groups.len(), 3);
         assert_eq!(app.search.group_cursor, 2);

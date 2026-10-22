@@ -144,12 +144,7 @@ fn session_id_for_resume(file_path: &str) -> String {
 ///
 /// Terminal raw mode and alternate screen are always cleaned up, even if the
 /// event loop returns an error (e.g. from `event::poll` or `terminal.draw`).
-fn run_tui(
-    search_paths: Vec<String>,
-    tree_target: Option<String>,
-    picker_mode: bool,
-    initial_query: Option<String>,
-) -> io::Result<ccs::tui::TuiOutcome> {
+fn run_tui(app: &mut ccs::tui::App) -> io::Result<ccs::tui::TuiOutcome> {
     enable_raw_mode()?;
     if let Err(e) = execute!(
         stdout(),
@@ -161,7 +156,7 @@ fn run_tui(
         return Err(e);
     }
 
-    let result = run_tui_inner(search_paths, tree_target, picker_mode, initial_query);
+    let result = run_tui_inner(app);
 
     // Always restore terminal, even on error — best-effort cleanup
     let _ = disable_raw_mode();
@@ -171,18 +166,11 @@ fn run_tui(
 }
 
 /// Inner TUI loop, separated so that `run_tui` can guarantee terminal cleanup.
-fn run_tui_inner(
-    search_paths: Vec<String>,
-    tree_target: Option<String>,
-    picker_mode: bool,
-    initial_query: Option<String>,
-) -> io::Result<ccs::tui::TuiOutcome> {
+fn run_tui_inner(app: &mut ccs::tui::App) -> io::Result<ccs::tui::TuiOutcome> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
-    let mut app = init_app(search_paths, tree_target, picker_mode, initial_query);
-
-    let result = run_event_loop(&mut terminal, &mut app);
+    let result = run_event_loop(&mut terminal, app);
     result.map(|()| app.take_outcome())
 }
 
@@ -356,7 +344,8 @@ fn run_pick(query: Option<String>, output: Option<String>) -> io::Result<()> {
     // exit path (TUI init error, write failure, cancel) leaves a clean
     // state for callers that reuse the same --output path.
     remove_stale_output(output.as_deref());
-    let outcome = run_tui(ccs::get_search_paths(), None, true, query)?;
+    let mut app = init_app(ccs::get_search_paths(), None, true, query);
+    let outcome = run_tui(&mut app)?;
     std::process::exit(pick_exit_code(outcome, output.as_deref()));
 }
 
@@ -431,65 +420,51 @@ fn run_direct_resume(
 }
 
 /// Return to the TUI after overlay sessions or failed launches. Codex runs as
-/// a child even without overlay so bootstrap failures remain recoverable.
+/// a child even without overlay so bootstrap failures remain recoverable. The
+/// same app comes back each time, so the picker reopens in the state it was
+/// left in.
 fn run_tui_loop(
     search_paths: Vec<String>,
-    mut tree_target: Option<String>,
+    tree_target: Option<String>,
     overlay: bool,
 ) -> io::Result<()> {
-    let mut restore_query: Option<String> = None;
-    let mut keep_running = true;
-    while keep_running {
-        keep_running = run_tui_once(&search_paths, &mut tree_target, overlay, &mut restore_query)?;
+    let mut app = init_app(search_paths, tree_target, false, None);
+    while handle_outcome(run_tui(&mut app)?, overlay, &mut app) {
+        discard_pending_events();
     }
     Ok(())
 }
 
-/// Run one TUI pass and handle its outcome. Returns `true` when the loop
-/// should return to the TUI (overlay resume or failed Codex launch), `false`
-/// to stop.
-fn run_tui_once(
-    search_paths: &[String],
-    tree_target: &mut Option<String>,
-    overlay: bool,
-    restore_query: &mut Option<String>,
-) -> io::Result<bool> {
-    let initial_query = restore_query
-        .take()
-        .or_else(|| tree_target.as_ref().map(|_| String::new()));
-    let outcome = run_tui(
-        search_paths.to_vec(),
-        tree_target.take(),
-        false,
-        initial_query,
-    )?;
-    Ok(handle_outcome(outcome, overlay, restore_query))
+/// Drop key events crossterm read ahead before the session took the terminal.
+/// A double-tapped Enter arrives in one read, and the second one would
+/// reopen the same session as soon as the picker comes back. A failed poll
+/// or read only ends the drain early.
+fn discard_pending_events() {
+    while matches!(event::poll(Duration::ZERO), Ok(true)) && event::read().is_ok() {}
+}
+
+/// What follows a resume attempt.
+enum AfterResume {
+    /// The resume is over, or failed with nothing to return to.
+    Exit,
+    /// Back to the picker; `launched` is false when the launch failed.
+    Picker { launched: bool },
 }
 
 /// Decide what to do after the TUI exits. Returns `true` to loop back into
-/// the TUI (overlay resume or failed Codex launch), `false` to stop (quit, or
-/// a resume that is over).
-fn handle_outcome(
-    outcome: ccs::tui::TuiOutcome,
-    overlay: bool,
-    restore_query: &mut Option<String>,
-) -> bool {
+/// the same app (overlay resume or failed Codex launch), `false` to stop
+/// (quit, or a resume that is over).
+fn handle_outcome(outcome: ccs::tui::TuiOutcome, overlay: bool, app: &mut ccs::tui::App) -> bool {
     match outcome {
         ccs::tui::TuiOutcome::Resume {
             session_id,
             file_path,
             source,
             uuid,
-            query,
-        } => resume_outcome(
-            &session_id,
-            &file_path,
-            source,
-            uuid.as_deref(),
-            query,
-            overlay,
-            restore_query,
-        ),
+        } => {
+            let after = resume_outcome(&session_id, &file_path, source, uuid.as_deref(), overlay);
+            apply_after_resume(app, after, &session_id)
+        }
         _ => {
             // Quit
             false
@@ -497,22 +472,33 @@ fn handle_outcome(
     }
 }
 
-/// Perform the resume and preserve the query when returning to the picker.
+/// Reopen the picker after a resume when one follows. Returns `true` to loop
+/// back into the app.
+fn apply_after_resume(app: &mut ccs::tui::App, after: AfterResume, session_id: &str) -> bool {
+    match after {
+        AfterResume::Exit => false,
+        AfterResume::Picker { launched } => {
+            app.return_from_resume(launched.then_some(session_id));
+            true
+        }
+    }
+}
+
+/// Perform the resume and decide whether the picker follows it.
 fn resume_outcome(
     session_id: &str,
     file_path: &str,
     source: ccs::session::SessionSource,
     uuid: Option<&str>,
-    query: String,
     overlay: bool,
-    restore_query: &mut Option<String>,
-) -> bool {
+) -> AfterResume {
     let result = launch_resume(session_id, file_path, source, uuid, overlay);
-    let return_to_picker = picker_follows_resume(result, file_path, overlay);
-    if return_to_picker {
-        *restore_query = saved_query(query);
+    let launched = result.is_ok();
+    if picker_follows_resume(result, file_path, overlay) {
+        AfterResume::Picker { launched }
+    } else {
+        AfterResume::Exit
     }
-    return_to_picker
 }
 
 /// Resume in the mode ccs was started in: a child under `--overlay`, otherwise
@@ -563,15 +549,6 @@ fn wait_for_enter(prompt: &str) -> bool {
 
 fn is_codex_session(file_path: &str) -> bool {
     ccs::SessionProvider::from_path(file_path) == ccs::SessionProvider::Codex
-}
-
-/// Query to restore on the next TUI pass: empty queries are not preserved.
-fn saved_query(query: String) -> Option<String> {
-    if query.is_empty() {
-        None
-    } else {
-        Some(query)
-    }
 }
 
 #[cfg(test)]
@@ -657,7 +634,6 @@ mod tests {
             file_path: "/tmp/test.jsonl".to_string(),
             source: ccs::session::SessionSource::CLI,
             uuid: None,
-            query: String::new(),
         };
         assert!(should_loop_back(&outcome, true));
     }
@@ -669,7 +645,6 @@ mod tests {
             file_path: "/tmp/test.jsonl".to_string(),
             source: ccs::session::SessionSource::CLI,
             uuid: None,
-            query: String::new(),
         };
         assert!(!should_loop_back(&outcome, false));
     }
@@ -683,13 +658,38 @@ mod tests {
 
     #[test]
     fn test_handle_outcome_quit_stops_loop() {
-        let mut restore_query = None;
-        assert!(!handle_outcome(
-            ccs::tui::TuiOutcome::Quit,
-            true,
-            &mut restore_query
+        let mut app = ccs::tui::App::new(vec![]);
+        assert!(!handle_outcome(ccs::tui::TuiOutcome::Quit, true, &mut app));
+    }
+
+    #[test]
+    fn picker_after_successful_launch_when_applying_then_app_returns_and_marks_session() {
+        let mut app = ccs::tui::App::new(vec![]);
+        app.should_quit = true;
+        assert!(apply_after_resume(
+            &mut app,
+            AfterResume::Picker { launched: true },
+            "s1"
         ));
-        assert!(restore_query.is_none());
+        assert!(!app.should_quit);
+        assert!(app.opened_sessions.contains("s1"));
+    }
+
+    #[test]
+    fn picker_after_failed_launch_when_applying_then_session_is_not_marked() {
+        let mut app = ccs::tui::App::new(vec![]);
+        assert!(apply_after_resume(
+            &mut app,
+            AfterResume::Picker { launched: false },
+            "s1"
+        ));
+        assert!(app.opened_sessions.is_empty());
+    }
+
+    #[test]
+    fn exit_when_applying_then_loop_stops() {
+        let mut app = ccs::tui::App::new(vec![]);
+        assert!(!apply_after_resume(&mut app, AfterResume::Exit, "s1"));
     }
 
     #[test]
@@ -710,16 +710,6 @@ mod tests {
         assert!(is_path_like("rel/path"));
         assert!(is_path_like("session.jsonl"));
         assert!(!is_path_like("abc-123"));
-    }
-
-    #[test]
-    fn test_saved_query_empty_is_none() {
-        assert_eq!(saved_query(String::new()), None);
-    }
-
-    #[test]
-    fn test_saved_query_non_empty_is_preserved() {
-        assert_eq!(saved_query("hello".to_string()), Some("hello".to_string()));
     }
 
     #[test]
