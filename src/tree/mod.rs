@@ -45,6 +45,9 @@ pub struct SessionTree {
     children: HashMap<String, Vec<String>>,
     /// Set of uuids on the latest chain
     latest_chain: HashSet<String>,
+    /// Last-appended tip at load time, the message `claude --resume` continues
+    /// from (see `fork::should_fork_for_resume`)
+    pub tip_uuid: Option<String>,
     /// Flattened display rows (only user/assistant messages)
     pub rows: Vec<TreeRow>,
     /// Session metadata
@@ -79,7 +82,7 @@ impl SessionTree {
         }
 
         // Build latest chain using unified DAG engine (reuses parsed records, no second file read)
-        let latest_chain = build_latest_chain(builder.dag_records);
+        let (latest_chain, tip_uuid) = build_latest_chain(builder.dag_records);
 
         let source = SessionSource::from_path(file_path);
 
@@ -87,6 +90,7 @@ impl SessionTree {
             nodes: builder.nodes,
             children: builder.children,
             latest_chain,
+            tip_uuid,
             rows: Vec::new(),
             session_id: builder.session_id,
             file_path: file_path.to_string(),
@@ -163,6 +167,7 @@ impl SessionTree {
             nodes,
             children,
             latest_chain,
+            tip_uuid: None,
             rows: Vec::new(),
             session_id: session.id,
             file_path: file_path.to_string(),
@@ -529,17 +534,19 @@ fn extract_role_and_preview(
     }
 }
 
-/// Compute the latest-chain uuid set from the collected records via the
-/// unified DAG engine.
+/// Compute the latest-chain uuid set and the last-appended tip from the
+/// collected records via the unified DAG engine.
 fn build_latest_chain(
     dag_records: Vec<(SessionRecord, usize, Option<DateTime<Utc>>)>,
-) -> HashSet<String> {
+) -> (HashSet<String>, Option<String>) {
     let dag = SessionDag::from_records(dag_records.into_iter(), DisplayFilter::Standard);
-    if let Some(tip) = dag.tip(TipStrategy::MaxTimestamp) {
+    let chain = if let Some(tip) = dag.tip(TipStrategy::MaxTimestamp) {
         dag.chain_from(tip)
     } else {
         HashSet::new()
-    }
+    };
+    let tip_uuid = dag.tip(TipStrategy::LastAppended).map(str::to_string);
+    (chain, tip_uuid)
 }
 
 /// Render `ContentBlock`s as the full preview body shown in the tree's right
@@ -595,6 +602,7 @@ impl SessionTree {
             nodes: HashMap::new(),
             children: HashMap::new(),
             latest_chain: HashSet::new(),
+            tip_uuid: None,
             rows,
             session_id,
             file_path,

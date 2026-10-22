@@ -144,11 +144,15 @@ impl App {
                         message_uuid: Some(row.uuid.clone()),
                     }));
                 } else {
+                    // The tip continues as is. Its uuid would fork once the
+                    // session grew after the tree was loaded (a quick `/exit`
+                    // appends records), see `fork::should_fork_for_resume`.
+                    let on_tip = tree.tip_uuid.as_deref() == Some(row.uuid.as_str());
                     self.outcome = Some(AppOutcome::Resume(ResumeTarget {
                         session_id: tree.session_id.clone(),
                         file_path: tree.file_path.clone(),
                         source: tree.source,
-                        uuid: Some(row.uuid.clone()),
+                        uuid: (!on_tip).then(|| row.uuid.clone()),
                     }));
                 }
                 self.should_quit = true;
@@ -180,6 +184,63 @@ mod tests {
     use crate::tui::state::AppOutcome;
     use crate::tui::App;
     use std::time::{Duration, Instant};
+
+    const TIP_TEST_LINES: &str = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"hi"},"uuid":"u1","sessionId":"s1","timestamp":"2025-06-01T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":"hello"},"uuid":"a1","parentUuid":"u1","sessionId":"s1","timestamp":"2025-06-01T10:01:00Z"}"#,
+        "\n",
+    );
+
+    /// App in tree mode on a freshly loaded session file, cursor on `uuid`.
+    fn app_in_tree_on(path: &std::path::Path, uuid: &str) -> App {
+        let tree = crate::tree::SessionTree::from_file(path.to_str().unwrap()).unwrap();
+        let mut app = App::new(vec!["/nonexistent".to_string()]);
+        app.tree_mode = true;
+        app.tree.tree_cursor = tree.rows.iter().position(|r| r.uuid == uuid).unwrap();
+        app.tree.session_tree = Some(tree);
+        app
+    }
+
+    #[test]
+    fn tree_loaded_before_session_grew_when_entering_old_tip_then_resume_has_no_uuid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        std::fs::write(&path, TIP_TEST_LINES).unwrap();
+        let mut app = app_in_tree_on(&path, "a1");
+        // A quick `/exit` appends to the session after the tree was loaded.
+        let exit = r#"{"type":"user","message":{"role":"user","content":"<command-name>/exit</command-name>"},"uuid":"u2","parentUuid":"a1","sessionId":"s1","timestamp":"2025-06-01T10:02:00Z"}"#;
+        std::fs::write(&path, format!("{TIP_TEST_LINES}{exit}\n")).unwrap();
+        assert!(crate::resume::fork::should_fork_for_resume(
+            path.to_str().unwrap(),
+            "a1"
+        ));
+
+        app.on_enter_tree();
+
+        assert!(matches!(
+            app.outcome,
+            Some(AppOutcome::Resume(crate::tui::state::ResumeTarget {
+                uuid: None,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn tree_row_off_tip_when_entering_then_resume_keeps_uuid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        std::fs::write(&path, TIP_TEST_LINES).unwrap();
+        let mut app = app_in_tree_on(&path, "u1");
+
+        app.on_enter_tree();
+
+        assert!(matches!(
+            app.outcome,
+            Some(AppOutcome::Resume(crate::tui::state::ResumeTarget { uuid: Some(ref u), .. })) if u == "u1"
+        ));
+    }
 
     #[test]
     fn test_enter_tree_mode_direct_with_file_path_loads_tree() {
