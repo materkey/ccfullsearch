@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.17.1 - 2026-10-22
+
+### Fixed
+- Ctrl+G lists a session once, with every reason the agent gave, instead of once per matching moment.
+- The Ctrl+G progress line ("searching: ...") fits the screen width: the newest queries stay, older ones fold into `+N`, and the host status stays visible.
+
 ## v0.17.0 - 2026-10-22
 
 ### New Features
