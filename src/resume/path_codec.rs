@@ -142,61 +142,6 @@ pub fn decode_project_path(file_path: &str) -> Option<String> {
     marker_candidate.or(Some(naive_candidate))
 }
 
-/// Extract the actual project path from the .claude/projects path (test helper).
-#[cfg(test)]
-pub fn extract_project_path(file_path: &str) -> Option<String> {
-    let path = Path::new(file_path);
-    let claude_project_dir = path.parent()?;
-    let dir_name = claude_project_dir.file_name()?.to_str()?;
-
-    if let Some(projects_idx) = dir_name.rfind("-projects-") {
-        let path_prefix = if dir_name.starts_with('-') {
-            &dir_name[1..projects_idx]
-        } else {
-            &dir_name[..projects_idx]
-        };
-        let path_prefix = path_prefix
-            .replace("--", "\x00")
-            .replace('-', "/")
-            .replace('\x00', "/.");
-        let project_name = &dir_name[projects_idx + 10..];
-        let candidate = format!("/{}/projects/{}", path_prefix, project_name);
-        if Path::new(&candidate).exists() {
-            return Some(candidate);
-        }
-    }
-
-    let stripped = dir_name.strip_prefix('-').unwrap_or(dir_name);
-    let decoded = stripped
-        .replace("--", "\x00")
-        .replace('-', "/")
-        .replace('\x00', "/.");
-    let candidate = format!("/{}", decoded);
-    if Path::new(&candidate).exists() {
-        return Some(candidate);
-    }
-
-    let parts: Vec<&str> = dir_name.split('-').collect();
-    for split_point in (1..parts.len()).rev() {
-        let path_part: String = parts[..split_point].join("/");
-        let name_part: String = parts[split_point..].join("-");
-
-        let candidate = if path_part.starts_with('/') {
-            format!("{}/{}", path_part, name_part)
-        } else {
-            format!("/{}/{}", path_part, name_part)
-        };
-
-        let candidate = candidate.replace("//", "/.");
-
-        if Path::new(&candidate).exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,31 +279,39 @@ mod tests {
         assert_eq!(result, Some(project.to_string_lossy().to_string()));
     }
 
+    // The temp dir is real, so these exercise the decoder against whatever
+    // TMPDIR looks like — macOS's /var/folders/.../xy_z.../T has `_`, which
+    // encodes to `-` and only the filesystem walk can tell from `/`.
     #[test]
-    fn test_extract_project_path_with_projects_marker() {
+    fn test_decode_project_path_tempdir_with_projects_marker() {
         let dir = TempDir::new().unwrap();
         let project = dir.path().join("projects").join("myapp");
         fs::create_dir_all(&project).unwrap();
 
         let encoded = encode_path_for_claude(project.to_str().unwrap());
         let file_path = format!("/fake/.claude/projects/{}/session.jsonl", encoded);
-        let result = extract_project_path(&file_path);
+        let result = decode_project_path(&file_path);
         assert_eq!(result, Some(project.to_string_lossy().to_string()));
     }
 
     #[test]
-    fn test_extract_project_path_simple_dir() {
+    fn test_decode_project_path_tempdir_simple_dir() {
         let dir = TempDir::new().unwrap();
         let encoded = encode_path_for_claude(dir.path().to_str().unwrap());
         let file_path = format!("/fake/.claude/projects/{}/session.jsonl", encoded);
-        let result = extract_project_path(&file_path);
+        let result = decode_project_path(&file_path);
         assert_eq!(result, Some(dir.path().to_string_lossy().to_string()));
     }
 
     #[test]
-    fn test_extract_project_path_nonexistent_returns_none() {
-        let file_path = "/fake/.claude/projects/-nonexistent-path-12345/session.jsonl";
-        let result = extract_project_path(file_path);
-        assert!(result.is_none() || Path::new(&result.unwrap()).exists());
+    fn test_decode_project_path_underscore_and_dash_dirs() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("my_tools").join("claude-501").join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        let encoded = encode_path_for_claude(project.to_str().unwrap());
+        let file_path = format!("/fake/.claude/projects/{}/session.jsonl", encoded);
+        let result = decode_project_path(&file_path);
+        assert_eq!(result, Some(project.to_string_lossy().to_string()));
     }
 }
