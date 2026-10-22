@@ -1,4 +1,5 @@
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
+use crate::remote::Host;
 use crate::session::opencode::{self, OpencodeSession};
 use crate::session::record::{parse_content_blocks, ContentBlock, ContentMode, SessionRecord};
 use crate::session::{self, SessionSource};
@@ -56,6 +57,11 @@ pub struct SessionTree {
     pub source: SessionSource,
     /// Cache for full message content to avoid re-reading file on every navigation keystroke
     content_cache: RefCell<HashMap<String, String>>,
+    /// Machine the session file lives on. A remote tree has rows only; its
+    /// full message text arrives through `show` into `content_cache`.
+    pub host: Host,
+    /// Branch count sent by the remote host, which has the nodes.
+    remote_branch_count: Option<usize>,
 }
 
 impl SessionTree {
@@ -96,6 +102,8 @@ impl SessionTree {
             file_path: file_path.to_string(),
             source,
             content_cache: RefCell::new(HashMap::new()),
+            host: Host::Local,
+            remote_branch_count: None,
         };
 
         tree.flatten_to_rows();
@@ -173,6 +181,8 @@ impl SessionTree {
             file_path: file_path.to_string(),
             source: SessionSource::CLI,
             content_cache: RefCell::new(full_content_cache),
+            host: Host::Local,
+            remote_branch_count: None,
         };
 
         tree.flatten_to_rows();
@@ -181,7 +191,41 @@ impl SessionTree {
 
     /// Number of branch points (nodes with >1 child in display graph)
     pub fn branch_count(&self) -> usize {
+        if let Some(count) = self.remote_branch_count {
+            return count;
+        }
         self.children.values().filter(|kids| kids.len() > 1).count()
+    }
+
+    /// A tree built elsewhere: a remote host sent its rows, tip and branch
+    /// count. There are no nodes here, so full message text comes from the
+    /// content cache only.
+    pub(crate) fn from_rows(
+        host: Host,
+        session_id: String,
+        file_path: String,
+        tip_uuid: Option<String>,
+        branch_count: usize,
+        rows: Vec<TreeRow>,
+    ) -> Self {
+        let latest_chain = rows
+            .iter()
+            .filter(|r| r.is_on_latest_chain)
+            .map(|r| r.uuid.clone())
+            .collect();
+        Self {
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            latest_chain,
+            tip_uuid,
+            rows,
+            source: SessionSource::from_path(&file_path),
+            session_id,
+            file_path,
+            content_cache: RefCell::new(HashMap::new()),
+            host,
+            remote_branch_count: Some(branch_count),
+        }
     }
 
     /// Get the full content of a message by reading its JSONL line from file.
@@ -608,6 +652,8 @@ impl SessionTree {
             file_path,
             source,
             content_cache: RefCell::new(HashMap::new()),
+            host: Host::Local,
+            remote_branch_count: None,
         }
     }
 }

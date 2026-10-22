@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod ssh;
+pub mod wire;
 
 /// The machine a session file lives on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]

@@ -1,0 +1,122 @@
+{
+  "cancel": {
+    "method": "cancel",
+    "params": {
+      "id": 7
+    }
+  },
+  "hello": {
+    "ccs_version": "<version>",
+    "protocol": 1,
+    "type": "hello"
+  },
+  "recent": {
+    "automation": "ralphex",
+    "branch": null,
+    "cwd": "/home/m/p",
+    "file_path": "/f",
+    "message_count": 4,
+    "preview_role": "user",
+    "project": "p",
+    "session_id": "s1",
+    "summary": "sum",
+    "timestamp": "2026-10-22T12:00:00Z"
+  },
+  "recent_params": {
+    "limit": 100,
+    "project": null
+  },
+  "request": {
+    "id": 7,
+    "method": "search",
+    "params": {
+      "full_content": false,
+      "limit": 5,
+      "project": "projects/x",
+      "query": "q",
+      "regex": false
+    }
+  },
+  "response_err": {
+    "error": "boom",
+    "id": 8
+  },
+  "response_ok": {
+    "id": 7,
+    "result": {}
+  },
+  "search": {
+    "groups": [
+      {
+        "automation": null,
+        "file_path": "/home/m/.claude/projects/-p/s1.jsonl",
+        "matches": [
+          {
+            "branch": "main",
+            "content": "needle",
+            "content_truncated": true,
+            "file_path": "/home/m/.claude/projects/-p/s1.jsonl",
+            "line_number": 3,
+            "on_latest_chain": true,
+            "parent_uuid": null,
+            "role": "user",
+            "session_id": "s1",
+            "text_content": "needle",
+            "timestamp": "2026-10-22T12:00:00Z",
+            "uuid": "u1"
+          },
+          {
+            "branch": "main",
+            "content": "needle",
+            "content_truncated": true,
+            "file_path": "/home/m/.claude/projects/-p/s1.jsonl",
+            "line_number": 3,
+            "on_latest_chain": false,
+            "parent_uuid": null,
+            "role": "user",
+            "session_id": "s1",
+            "text_content": "needle",
+            "timestamp": "2026-10-22T12:00:00Z",
+            "uuid": "u2"
+          }
+        ],
+        "matches_total": 2,
+        "message_count": 10,
+        "message_count_compacted": false,
+        "project": "p",
+        "session_id": "s1"
+      }
+    ],
+    "truncated": false
+  },
+  "show": {
+    "content": "full",
+    "text_content": "full"
+  },
+  "show_params": {
+    "file_path": "/f",
+    "line": 3,
+    "uuid": null
+  },
+  "tree": {
+    "branch_count": 1,
+    "file_path": "/f",
+    "rows": [
+      {
+        "content_preview": "hi",
+        "graph_symbols": "* ",
+        "is_branch_point": false,
+        "is_compaction": false,
+        "is_on_latest_chain": true,
+        "role": "user",
+        "timestamp": "2026-10-22T12:00:00Z",
+        "uuid": "u1"
+      }
+    ],
+    "session_id": "s1",
+    "tip_uuid": "u2"
+  },
+  "tree_params": {
+    "file_path": "/f"
+  }
+}
