@@ -272,7 +272,10 @@ pub fn render(frame: &mut Frame, view: &AppView) {
 
     render_search_input(frame, app, input_area);
 
-    frame.render_widget(Paragraph::new(Line::from(status_spans(app))), status_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(status_spans(app, status_area.width as usize))),
+        status_area,
+    );
 
     // List of results (grouped view)
     if app.preview_mode {
@@ -367,9 +370,11 @@ fn busy_style() -> Style {
 
 /// Status bar content — AI mode takes priority.
 /// The status line: the picker's own status, then one entry per remote host.
-fn status_spans(app: &AppView) -> Vec<Span<'static>> {
-    let mut spans = vec![status_span(app)];
-    spans.extend(host_status_spans(&app.hosts));
+fn status_spans(app: &AppView, width: usize) -> Vec<Span<'static>> {
+    let hosts = host_status_spans(&app.hosts);
+    let hosts_width: usize = hosts.iter().map(Span::width).sum();
+    let mut spans = vec![status_span(app, width.saturating_sub(hosts_width))];
+    spans.extend(hosts);
     spans
 }
 
@@ -399,9 +404,11 @@ fn host_status_spans(hosts: &crate::tui::hosts_state::HostsState) -> Vec<Span<'s
         .collect()
 }
 
-fn status_span(app: &AppView) -> Span<'static> {
+/// `width` is the room left beside the host entries; only the AI status
+/// fits itself into it.
+fn status_span(app: &AppView, width: usize) -> Span<'static> {
     if app.ai.active {
-        return ai_status_span(app);
+        return ai_status_span(app, width);
     }
     if app.typing {
         return Span::styled("Typing...", busy_style());

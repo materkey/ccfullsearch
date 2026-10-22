@@ -59,13 +59,13 @@ pub(crate) fn render_ai_hits(frame: &mut Frame, app: &AppView, area: ratatui::la
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-pub(crate) fn ai_status_span(app: &AppView) -> Span<'static> {
+/// The AI status, cut to `width` columns.
+pub(crate) fn ai_status_span(app: &AppView, width: usize) -> Span<'static> {
     if app.ai.searching() {
         let text = if app.ai.progress.is_empty() {
             "AI searching...".to_string()
         } else {
-            let queries: Vec<String> = app.ai.progress.iter().map(|q| format!("\"{q}\"")).collect();
-            format!("searching: {}", queries.join(", "))
+            searching_text(&app.ai.progress, width)
         };
         return Span::styled(
             text,
@@ -89,6 +89,62 @@ pub(crate) fn ai_status_span(app: &AppView) -> Span<'static> {
         "Describe a session, Enter to search",
         Style::default().fg(Color::Magenta),
     )
+}
+
+/// `searching: "q1", "q2"` within `width` terminal columns. The newest
+/// queries stay; the older ones fold into a `+N` count.
+fn searching_text(queries: &[String], width: usize) -> String {
+    const HEAD: &str = "searching: ";
+    let quoted: Vec<String> = queries.iter().map(|q| format!("\"{q}\"")).collect();
+    let mut kept = 0;
+    let mut used = HEAD.len();
+    for q in quoted.iter().rev() {
+        let skipped = quoted.len() - kept - 1;
+        let fold = if skipped > 0 {
+            format!("+{skipped}, ").len()
+        } else {
+            0
+        };
+        let sep = if kept > 0 { ", ".len() } else { 0 };
+        let len = columns(q) + sep;
+        if used + len + fold > width {
+            break;
+        }
+        used += len;
+        kept += 1;
+    }
+    let skipped = quoted.len() - kept.max(1);
+    let mut parts = Vec::with_capacity(kept + 1);
+    if skipped > 0 {
+        parts.push(format!("+{skipped}"));
+    }
+    parts.extend(quoted[skipped..].iter().cloned());
+    cut_to_columns(&format!("{HEAD}{}", parts.join(", ")), width)
+}
+
+/// Terminal columns `s` takes: a wide (CJK, emoji) character takes two.
+fn columns(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// `s` cut to `width` terminal columns, ending in `...` when cut.
+fn cut_to_columns(s: &str, width: usize) -> String {
+    if columns(s) <= width {
+        return s.to_string();
+    }
+    let room = width.saturating_sub(3);
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let w = columns(ch.encode_utf8(&mut [0; 4]));
+        if used + w > room {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.push_str(&"..."[..width.min(3)]);
+    out
 }
 
 pub(crate) fn build_ai_hints(app: &AppView) -> Vec<HintItem<'static>> {
@@ -194,12 +250,47 @@ mod tests {
         let (_tx, rx) = std::sync::mpsc::channel();
         app.ai.search = Some(crate::agent_search::AgentSearchHandle::for_test(rx).0);
         app.ai.progress = vec!["kitty".into(), "котлин".into()];
-        let span = ai_status_span(&app.view());
+        let span = ai_status_span(&app.view(), 200);
         assert!(
             span.content.contains("searching: \"kitty\", \"котлин\""),
             "{}",
             span.content
         );
+    }
+
+    #[test]
+    fn many_queries_narrow_width_searching_text_keeps_newest_and_counts_rest() {
+        let queries: Vec<String> = (1..=8).map(|i| format!("query number {i}")).collect();
+        let text = searching_text(&queries, 60);
+        assert!(text.chars().count() <= 60, "{text}");
+        assert!(text.starts_with("searching: +"), "{text}");
+        assert!(text.ends_with("\"query number 8\""), "{text}");
+        assert!(!text.contains("query number 1\""), "{text}");
+    }
+
+    #[test]
+    fn queries_fit_searching_text_lists_all() {
+        let queries = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(searching_text(&queries, 80), "searching: \"a\", \"b\"");
+    }
+
+    #[test]
+    fn newest_query_wider_than_line_searching_text_truncates_it() {
+        let queries = vec!["old".to_string(), "x".repeat(100)];
+        let text = searching_text(&queries, 40);
+        assert_eq!(text.chars().count(), 40, "{text}");
+        assert!(text.starts_with("searching: +1, \"xxx"), "{text}");
+    }
+
+    #[test]
+    fn wide_char_queries_searching_text_fits_display_columns() {
+        let queries = vec!["日本語のテスト検索".to_string(), "絵文字🔍検索".to_string()];
+        for width in [0, 2, 12, 20, 30, 45] {
+            let text = searching_text(&queries, width);
+            assert!(columns(&text) <= width, "{width}: {text}");
+        }
+        let text = searching_text(&queries, 30);
+        assert!(text.starts_with("searching: +1, \"絵文字"), "{text}");
     }
 
     #[test]
