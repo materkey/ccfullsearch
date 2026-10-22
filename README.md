@@ -208,6 +208,18 @@ Press `Ctrl+G` to enter AI ranking mode. Type a natural-language query, then pre
 
 `ccs` sends the visible session candidates to `claude -p` with compact context: session ID, project, summary, and up to three early user messages from each session. The response is parsed as a ranked list of session IDs.
 
+### Configuration
+
+`ccs` reads `$XDG_CONFIG_HOME/ccs/config.toml`, or `~/.config/ccs/config.toml` when `XDG_CONFIG_HOME` is not set (macOS included). The file is optional:
+
+```toml
+[agent_search]
+model = "claude-haiku-5-5"   # optional, this is the default
+effort = "medium"            # optional: low | medium | high | xhigh | max; not passed by default
+```
+
+The file is read on every `Ctrl+G` search, so edits apply without restarting `ccs`. A typo inside `[agent_search]` or an unknown `effort` value is shown in the status bar instead of starting the search. The model name is not checked: an error from `claude` is shown as is.
+
 ## CLI
 
 `ccs search` writes JSONL, one `{"type":"match",...}` object per matching message.

@@ -11,6 +11,7 @@ macro_rules! ccs_debug {
 
 pub mod ai;
 pub mod cli;
+pub mod config;
 pub mod dag;
 pub mod recent;
 pub mod resume;
