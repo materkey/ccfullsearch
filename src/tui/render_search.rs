@@ -812,7 +812,8 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         }
 
         // Group header
-        let header = render_group_header(group, is_selected, is_expanded, area_width);
+        let opened = app.opened_sessions.contains(&group.session_id);
+        let header = render_group_header(group, is_selected, is_expanded, opened, area_width);
         items.push(header);
 
         // If expanded, show individual messages; otherwise show the preview line
@@ -863,7 +864,12 @@ struct SessionHeaderParts<'a> {
     session_id: &'a str,
     count: &'a str,
     has_automation: bool,
+    /// Session was resumed from this picker, see `App::opened_sessions`
+    opened: bool,
 }
+
+/// Header tag on a session resumed from the current picker.
+const OPENED_TAG: &str = " [opened]";
 
 fn provider_badge_label(provider: SessionProvider) -> &'static str {
     match provider {
@@ -894,8 +900,9 @@ fn right_badge_text(provider: SessionProvider, source: &str) -> String {
 fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     let sid = display_session_id(p.session_id, p.provider);
     let auto_tag = if p.has_automation { " [A]" } else { "" };
+    let opened_tag = if p.opened { OPENED_TAG } else { "" };
     format!(
-        "{} {} · {}  ⎇ {} · {} ({}){} {}",
+        "{} {} · {}  ⎇ {} · {} ({}){}{} {}",
         p.caret,
         p.date,
         p.project,
@@ -903,6 +910,7 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
         sid,
         p.count,
         auto_tag,
+        opened_tag,
         right_badge_text(p.provider, p.source)
     )
 }
@@ -1035,6 +1043,18 @@ fn render_session_header_line(
         ));
     }
 
+    if p.opened {
+        let opened = if selected {
+            base
+        } else {
+            Style::default().fg(DIM_FG)
+        };
+        spans.push(Span::styled(
+            OPENED_TAG.to_string(),
+            style_with_bg(opened, row_bg),
+        ));
+    }
+
     let badge = right_badge_text(p.provider, p.source);
     let left_width = spans_width(&spans);
     let badge_width = badge.chars().count();
@@ -1075,6 +1095,7 @@ pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSe
         session_id: &session.session_id,
         count: &count_str,
         has_automation: session.automation.is_some(),
+        opened: false,
     })
 }
 
@@ -1140,6 +1161,7 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
                 session_id: &session.session_id,
                 count: &count_str,
                 has_automation: session.automation.is_some(),
+                opened: app.opened_sessions.contains(&session.session_id),
             },
             header_style,
             is_selected,
@@ -1223,6 +1245,7 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
         session_id: &group.session_id,
         count: &count_str,
         has_automation: group.automation.is_some(),
+        opened: false,
     })
 }
 
@@ -1230,6 +1253,7 @@ fn render_group_header<'a>(
     group: &SessionGroup,
     selected: bool,
     expanded: bool,
+    opened: bool,
     available_width: usize,
 ) -> ListItem<'a> {
     // No BOLD on selected+collapsed — see `render_recent_sessions` for the
@@ -1286,6 +1310,7 @@ fn render_group_header<'a>(
             session_id: &group.session_id,
             count: &count_str,
             has_automation: group.automation.is_some(),
+            opened,
         },
         style,
         selected,
@@ -1816,6 +1841,61 @@ mod tests {
                 "recent ranked_count = {ranked:?}: separator presence mismatch",
             );
         }
+    }
+
+    /// Number of times `needle` appears across the rendered rows.
+    fn count_occurrences(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        needle: &str,
+    ) -> usize {
+        (0..height)
+            .map(|y| {
+                let line: String = (0..width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect();
+                line.matches(needle).count()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn opened_search_group_when_rendering_then_tag_is_shown_only_on_it() {
+        let mut app = make_test_app_with_n_groups(3);
+        let opened = app.search.groups[1].session_id.clone();
+        app.opened_sessions.insert(opened);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("render must not panic");
+
+        assert_eq!(
+            count_occurrences(terminal.backend().buffer(), 120, 24, "[opened]"),
+            1
+        );
+    }
+
+    #[test]
+    fn opened_recent_session_when_rendering_then_tag_is_shown() {
+        let mut app = make_test_app_with_n_recent_sessions(3);
+        let opened = app.recent.filtered[0].session_id.clone();
+        app.opened_sessions.insert(opened);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("render must not panic");
+
+        assert!(buffer_contains(
+            terminal.backend().buffer(),
+            120,
+            24,
+            "[opened]"
+        ));
     }
 
     #[test]
