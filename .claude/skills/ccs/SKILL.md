@@ -47,6 +47,7 @@ file_path: <absolute path to .jsonl>
 source: CLI|Desktop
 project: <project name>
 message_uuid: <uuid>       # present for search results and tree view selections
+host: <local|host name>    # the machine the session lives on
 ```
 
 Empty output (exit 1) means user cancelled.
@@ -61,6 +62,11 @@ If output is non-empty, parse the key-value pairs. Use AskUserQuestion to offer 
 ```
 Use the Read tool on `file_path` from the picker output. Parse the JSONL and present a summary of the conversation (participants, topics, key decisions). The user can then ask follow-up questions about the session content without leaving the current conversation.
 
+If `host` is not `local`, the file is on another machine and the Read tool cannot open it. Read it through that host instead:
+```bash
+ccs show <file_path> --host <host> --uuid <message_uuid> --context 20
+```
+
 **Option 2: "Enter session (overlay)"** — resume the session in a terminal overlay:
 ```bash
 # Determine project_dir from file_path:
@@ -73,6 +79,11 @@ ${SKILL_DIR}/scripts/launch-resume.sh <session_id> --cwd <project_dir>
 ```
 This opens `claude --resume` in a tmux popup / kitty overlay / wezterm split-pane. Blocks until claude exits, then returns control here.
 
+If `host` is not `local`, the session opens on that machine over ssh (no `--cwd` needed, the remote ccs finds the project):
+```bash
+${SKILL_DIR}/scripts/launch-resume.sh <session_id> --host <host> --file <file_path> [--uuid <message_uuid>]
+```
+
 For **Desktop** sessions (`source: Desktop`): overlay resume is not available, only "Read here" and `open -a Claude` are options.
 
 ### CLI Mode (for scripted/non-interactive use)
@@ -82,15 +93,18 @@ The retrieval flow is **search → show → answer**.
 #### Step 1 — search
 
 ```bash
-ccs search "<query>" --limit 20 [--regex]
+ccs search "<query>" --limit 20 [--regex] [--host local]
 ```
 
 Output is JSONL: one `{"type":"match",...}` line per result, then always a final `{"type":"summary",...}` line.
+
+Search covers this machine and every remote host in `[[hosts]]` of `~/.config/ccs/config.toml` (or `CCS_HOSTS`), waiting up to 5 s for hosts. `--host` narrows it, repeatable: `local`, `remote`, a host name, or `all` (default). Use `--host local` when only this machine matters — it skips the wait.
 
 Match fields:
 
 | Field | Description |
 |-------|-------------|
+| `host` | `local` or the remote host the session lives on |
 | `session_id` | Session ID |
 | `project` | Project name extracted from path |
 | `provider` | `Claude`, `Codex`, or `Opencode` |
@@ -105,18 +119,20 @@ Match fields:
 Summary line:
 
 ```json
-{"type":"summary","shown":20,"total_matches":2721,"sessions":24,"truncated":true}
+{"type":"summary","shown":20,"total_matches":2721,"sessions":24,"truncated":true,"hosts":[{"name":"local","status":"ok","shown":15},{"name":"Z270XX","status":"ok","shown":5}]}
 ```
 
-`shown: 0` means no matches. `truncated: true` means the result set is incomplete.
+`shown: 0` means no matches. `truncated: true` means the result set is incomplete. `hosts` says how each machine answered: `ok`, `down`, `incompatible` (old ccs there) or `timeout`, with `error` explaining a failure — say so when a host did not answer.
 
 #### Step 2 — show (drill down)
 
 The snippet identifies the session; to answer the user's question, read the surrounding messages:
 
 ```bash
-ccs show <file_path> --line <line_number> [--context K] [--max-chars M]
+ccs show <file_path> --line <line_number> [--context K] [--max-chars M] [--host <host>]
 ```
+
+Pass the match's `host` as `--host` when it is not `local`: the file is on that machine.
 
 For Opencode matches `line_number` is `null` — anchor by uuid instead:
 
