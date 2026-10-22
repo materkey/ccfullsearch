@@ -1,6 +1,6 @@
 {
   "name": "ccs",
-  "version": "0.7.0",
+  "version": "0.17.0",
   "description": "Search and browse Claude Code CLI and Claude Desktop session history",
   "author": {
     "name": "materkey"

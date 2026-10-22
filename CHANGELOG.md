@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.17.0 - 2026-10-22
+
+### New Features
+- Remote hosts: search, browse and resume sessions on other machines over ssh. List them as `[[hosts]]` in `~/.config/ccs/config.toml` or in `CCS_HOSTS`; their results merge into the picker, Ctrl+L cycles the host filter, and `ccs search`, `list` and `show` take `--host`. Each host needs this ccs version.
+- Ctrl+G is now an agent search across the whole session history: a `claude -p` agent runs `ccs search` / `ccs show` and returns up to five sessions with a reason for each. Model and effort are set in `[agent_search]` of `config.toml`.
+- Leaving a resumed session within a minute reopens the picker exactly as it was; sessions opened from it are marked `[opened]`.
+- Install as a Claude Code plugin: `claude plugin marketplace add materkey/ccfullsearch`.
+
+### Fixed
+- A session that fails to start (Claude, Codex or Opencode) shows its error and returns to the picker instead of ending ccs.
+- Enter on the latest message of a tree resumes the session instead of forking it.
+- The `ccs` skill resumes Codex and Opencode sessions and sessions of other projects (through `ccs resume`).
+
 ## v0.16.0 - 2026-06-12
 
 ### New Features
