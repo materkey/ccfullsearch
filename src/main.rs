@@ -183,7 +183,7 @@ fn run_tui_inner(
     let mut app = init_app(search_paths, tree_target, picker_mode, initial_query);
 
     let result = run_event_loop(&mut terminal, &mut app);
-    result.map(|()| app.into_outcome())
+    result.map(|()| app.take_outcome())
 }
 
 /// Build the initial App state: picker mode, pre-filled query, tree mode.

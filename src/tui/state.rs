@@ -861,7 +861,7 @@ pub struct ResumeTarget {
 }
 
 /// Internal outcome set by `on_enter` / `on_enter_tree`.
-/// Consumed by `into_outcome()` to produce the public `TuiOutcome`.
+/// Consumed by `take_outcome()` to produce the public `TuiOutcome`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppOutcome {
     Resume(ResumeTarget),
@@ -878,7 +878,7 @@ pub struct App {
     pub last_keystroke: Option<Instant>,
     pub preview_mode: bool,
     pub should_quit: bool,
-    /// Outcome set by `on_enter` / `on_enter_tree` — consumed by `into_outcome()`.
+    /// Outcome set by `on_enter` / `on_enter_tree` — consumed by `take_outcome()`.
     /// Replaces the former 4 separate resume `Option` fields + `picked_session`.
     pub outcome: Option<AppOutcome>,
     /// Flag to force a full terminal redraw (clears diff optimization artifacts)
@@ -920,6 +920,8 @@ pub struct App {
     pub picker_mode: bool,
     /// Last known tree area visible height (set from frame after draw, used for scroll calculations)
     pub last_tree_visible_height: usize,
+    /// Sessions resumed from this picker that ran, marked in the result lists
+    pub opened_sessions: HashSet<String>,
 }
 
 /// Rank known sessions first, preserving the relative order of unranked items.
@@ -1025,6 +1027,7 @@ impl App {
             },
             picker_mode: false,
             last_tree_visible_height: 20,
+            opened_sessions: HashSet::new(),
         }
     }
 
@@ -1087,33 +1090,56 @@ impl App {
 
     /// Determine the outcome of the TUI session based on app state after the loop exits.
     ///
-    /// Takes `self` by value so callers see this as the consuming operation
-    /// it logically is — but the body uses `mem::take` on the relevant
-    /// fields rather than destructuring `self`. This is required because
-    /// `App` implements `Drop` (to cancel any in-flight search on exit),
-    /// and Rust forbids moving fields out of a `Drop`-bearing value.
-    pub fn into_outcome(mut self) -> TuiOutcome {
+    /// Borrows rather than consumes: the app outlives a resumed session so the
+    /// picker can come back in the same state, see `return_from_resume`.
+    pub fn take_outcome(&mut self) -> TuiOutcome {
         let outcome = self.outcome.take();
         match outcome {
             Some(AppOutcome::Pick(picked)) => TuiOutcome::Pick(picked),
             Some(AppOutcome::Resume(target)) => {
                 ccs_debug!(
-                    "[ccs:into_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
+                    "[ccs:take_outcome] session_id={}, file_path={}, source={:?}, uuid={:?}",
                     target.session_id,
                     target.file_path,
                     target.source,
                     target.uuid
                 );
-                let input = std::mem::take(&mut self.input);
+                self.suspend_for_resume();
                 TuiOutcome::Resume {
                     session_id: target.session_id,
                     file_path: target.file_path,
                     source: target.source,
                     uuid: target.uuid,
-                    query: input.into_text(),
+                    query: self.input.text().to_string(),
                 }
             }
             None => TuiOutcome::Quit,
+        }
+    }
+
+    /// Settle pending search work before a resumed session takes the
+    /// terminal, as `Drop` did when the app ended there. A debounced query or
+    /// an `rg` result landing after the return would otherwise reset the
+    /// results and the cursor the user comes back to. Message counting is
+    /// left running: it fills counts in place and never moves the cursor.
+    fn suspend_for_resume(&mut self) {
+        if let Some(h) = self.search.current.take() {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        self.last_keystroke = None;
+        self.typing = false;
+        self.last_query = self.input.text().to_string();
+    }
+
+    /// Reopen the picker after a resumed session handed the terminal back.
+    /// `opened` names the session that actually ran; a failed launch passes
+    /// `None` so the session is not marked.
+    pub fn return_from_resume(&mut self, opened: Option<&str>) {
+        self.should_quit = false;
+        self.outcome = None;
+        self.needs_full_redraw = true;
+        if let Some(session_id) = opened {
+            self.opened_sessions.insert(session_id.to_string());
         }
     }
 
@@ -1361,6 +1387,12 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        // The event loop ticks once more after Enter or Esc set `should_quit`.
+        // Background results landing then would replace the screen the user
+        // just chose from, which a quick return from a resumed session shows.
+        if self.should_quit {
+            return;
+        }
         self.poll_recent_loads();
         self.poll_tree_load();
         self.poll_message_counts();
@@ -3284,13 +3316,13 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_into_outcome_quit_when_no_selection() {
-        let app = App::new(vec!["/test".to_string()]);
-        assert_eq!(app.into_outcome(), TuiOutcome::Quit);
+    fn test_take_outcome_quit_when_no_selection() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        assert_eq!(app.take_outcome(), TuiOutcome::Quit);
     }
 
     #[test]
-    fn test_into_outcome_resume_when_outcome_set() {
+    fn test_take_outcome_resume_when_outcome_set() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
             session_id: "sess-1".to_string(),
@@ -3300,7 +3332,7 @@ mod tests {
         }));
         app.input.set_text("my search query");
 
-        let outcome = app.into_outcome();
+        let outcome = app.take_outcome();
         assert_eq!(
             outcome,
             TuiOutcome::Resume {
@@ -3314,7 +3346,7 @@ mod tests {
     }
 
     #[test]
-    fn test_into_outcome_pick_when_outcome_set() {
+    fn test_take_outcome_pick_when_outcome_set() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
         app.outcome = Some(AppOutcome::Pick(PickedSession {
@@ -3325,7 +3357,7 @@ mod tests {
             message_uuid: None,
         }));
 
-        let outcome = app.into_outcome();
+        let outcome = app.take_outcome();
         assert_eq!(
             outcome,
             TuiOutcome::Pick(PickedSession {
@@ -3339,15 +3371,169 @@ mod tests {
     }
 
     #[test]
-    fn test_into_outcome_quit_when_picker_mode_no_selection() {
+    fn test_take_outcome_quit_when_picker_mode_no_selection() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
         // No outcome set (user pressed Esc)
-        assert_eq!(app.into_outcome(), TuiOutcome::Quit);
+        assert_eq!(app.take_outcome(), TuiOutcome::Quit);
+    }
+
+    fn app_with_groups_resuming(session_id: &str) -> App {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.all_groups = ["s0", "s1", "s2"]
+            .iter()
+            .map(|sid| make_group(sid, &format!("/p/{sid}.jsonl")))
+            .collect();
+        app.search.groups = app.search.all_groups.clone();
+        app.input.set_text("foo");
+        app.last_query = "foo".to_string();
+        app.search.group_cursor = 2;
+        app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            session_id: session_id.to_string(),
+            file_path: format!("/p/{session_id}.jsonl"),
+            source: SessionSource::CLI,
+            uuid: None,
+        }));
+        app.should_quit = true;
+        app
     }
 
     #[test]
-    fn test_into_outcome_pick_variant() {
+    fn search_results_with_filters_when_returning_from_resume_then_state_is_kept() {
+        let mut app = app_with_groups_resuming("s2");
+        app.regex_mode = true;
+        app.ai.active = true;
+        app.ai.ranked_count = Some(1);
+
+        let outcome = app.take_outcome();
+        app.return_from_resume(Some("s2"));
+
+        assert!(matches!(outcome, TuiOutcome::Resume { ref query, .. } if query == "foo"));
+        assert_eq!(app.input.text(), "foo");
+        assert_eq!(app.search.groups.len(), 3);
+        assert_eq!(app.search.group_cursor, 2);
+        assert!(app.regex_mode);
+        assert!(app.ai.active);
+        assert_eq!(app.ai.ranked_count, Some(1));
+        assert!(!app.should_quit);
+        assert!(app.outcome.is_none());
+        assert!(app.needs_full_redraw);
+        assert!(app.opened_sessions.contains("s2"));
+    }
+
+    #[test]
+    fn pending_search_at_enter_when_returning_and_ticking_then_results_and_cursor_are_kept() {
+        let mut app = app_with_groups_resuming("s2");
+        app.search.expanded = true;
+        // Typed "foo2" and pressed Enter before the debounce fired, while the
+        // search for "foo" was still running.
+        app.input.set_text("foo2");
+        app.last_keystroke = Some(Instant::now() - Duration::from_millis(2 * DEBOUNCE_MS));
+        app.typing = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: cancel.clone(),
+        });
+        app.search
+            .result_tx
+            .send(BackgroundSearchResult {
+                seq: 1,
+                query: "foo".to_string(),
+                result: Ok(crate::search::SearchResult {
+                    matches: vec![],
+                    truncated: false,
+                }),
+            })
+            .unwrap();
+
+        app.take_outcome();
+        app.return_from_resume(Some("s2"));
+        app.tick();
+
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(app.search.current.is_none());
+        assert_eq!(app.search.groups.len(), 3);
+        assert_eq!(app.search.group_cursor, 2);
+        assert!(app.search.expanded);
+    }
+
+    #[test]
+    fn search_result_arriving_after_enter_when_ticking_then_selected_results_are_kept() {
+        // Enter set `should_quit`; the event loop still ticks once before
+        // `take_outcome`, while a search result is already waiting.
+        let mut app = app_with_groups_resuming("s2");
+        app.search.search_seq = 1;
+        app.search.current = Some(SearchHandle {
+            seq: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        app.search
+            .result_tx
+            .send(BackgroundSearchResult {
+                seq: 1,
+                query: "foo".to_string(),
+                result: Ok(crate::search::SearchResult {
+                    matches: vec![],
+                    truncated: false,
+                }),
+            })
+            .unwrap();
+
+        app.tick();
+
+        assert_eq!(app.search.groups.len(), 3);
+        assert_eq!(app.search.group_cursor, 2);
+    }
+
+    #[test]
+    fn tree_mode_selection_when_returning_from_resume_then_tree_and_cursor_are_kept() {
+        let mut app = app_with_groups_resuming("s1");
+        app.tree_mode = true;
+        app.tree.tree_cursor = 4;
+
+        app.take_outcome();
+        app.return_from_resume(Some("s1"));
+
+        assert!(app.tree_mode);
+        assert_eq!(app.tree.tree_cursor, 4);
+    }
+
+    #[test]
+    fn recent_sessions_cursor_when_returning_from_resume_then_cursor_is_kept() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.recent.filtered = ["/p/r0.jsonl", "/p/r1.jsonl", "/p/r2.jsonl"]
+            .iter()
+            .map(|path| make_recent_session(path))
+            .collect();
+        app.recent.cursor = 1;
+        app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            session_id: "r1".to_string(),
+            file_path: "/p/r1.jsonl".to_string(),
+            source: SessionSource::CLI,
+            uuid: None,
+        }));
+
+        app.take_outcome();
+        app.return_from_resume(Some("r1"));
+
+        assert_eq!(app.recent.cursor, 1);
+    }
+
+    #[test]
+    fn failed_launch_when_returning_from_resume_then_no_session_is_marked() {
+        let mut app = app_with_groups_resuming("s2");
+
+        app.take_outcome();
+        app.return_from_resume(None);
+
+        assert!(app.opened_sessions.is_empty());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_take_outcome_pick_variant() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.outcome = Some(AppOutcome::Pick(PickedSession {
             session_id: "pick-1".to_string(),
@@ -3357,7 +3543,7 @@ mod tests {
             message_uuid: None,
         }));
 
-        match app.into_outcome() {
+        match app.take_outcome() {
             TuiOutcome::Pick(p) => assert_eq!(p.session_id, "pick-1"),
             other => panic!("Expected Pick, got {:?}", other),
         }
