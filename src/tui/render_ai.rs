@@ -14,7 +14,8 @@ use ratatui::{
 
 const WHY_PREFIX: &str = "     ↳ ";
 
-/// The agent's hits: the usual session header, then the agent's reason.
+/// The agent's hits: the usual session header, then the agent's reasons,
+/// one line each.
 pub(crate) fn render_ai_hits(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     let Some(hits) = app.ai.hits.as_ref() else {
         return;
@@ -38,17 +39,19 @@ pub(crate) fn render_ai_hits(frame: &mut Frame, app: &AppView, area: ratatui::la
         ));
 
         let max_why = available_width.saturating_sub(WHY_PREFIX.chars().count());
-        let mut why_item = ListItem::new(Line::from(vec![
-            Span::styled(WHY_PREFIX, Style::default().fg(DIM_FG)),
-            Span::styled(
-                truncate_to_width(&hit.why, max_why),
-                Style::default().fg(PREVIEW_CONTENT_FG),
-            ),
-        ]));
-        if is_selected {
-            why_item = why_item.style(Style::default().bg(SELECTION_BG));
+        for why in &hit.whys {
+            let mut why_item = ListItem::new(Line::from(vec![
+                Span::styled(WHY_PREFIX, Style::default().fg(DIM_FG)),
+                Span::styled(
+                    truncate_to_width(why, max_why),
+                    Style::default().fg(PREVIEW_CONTENT_FG),
+                ),
+            ]));
+            if is_selected {
+                why_item = why_item.style(Style::default().bg(SELECTION_BG));
+            }
+            items.push(why_item);
         }
-        items.push(why_item);
     }
 
     let mut list_state = ListState::default();
@@ -191,7 +194,7 @@ mod tests {
                 preview_role: crate::session::record::MessageRole::User,
                 cwd: None,
             },
-            why: why.to_string(),
+            whys: vec![why.to_string()],
         }
     }
 
@@ -291,6 +294,18 @@ mod tests {
         }
         let text = searching_text(&queries, 30);
         assert!(text.starts_with("searching: +1, \"絵文字"), "{text}");
+    }
+
+    #[test]
+    fn merged_hit_render_shows_every_why_under_one_header() {
+        let mut merged = hit("aaaa1111", "pdf");
+        merged.whys.push("pages".into());
+        let app = ai_app_with_hits(vec![merged, hit("bbbb2222", "gradle")]);
+        let rows = rendered_rows(&app);
+        assert!(rows[0].contains("proj-aaaa1111"), "{rows:?}");
+        assert!(rows[1].contains("↳ pdf"), "{rows:?}");
+        assert!(rows[2].contains("↳ pages"), "{rows:?}");
+        assert!(rows[3].contains("proj-bbbb2222"), "{rows:?}");
     }
 
     #[test]

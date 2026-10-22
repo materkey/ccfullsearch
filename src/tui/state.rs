@@ -2527,7 +2527,7 @@ mod tests {
     fn found(file_path: &str) -> FoundSession {
         FoundSession {
             session: make_recent_session(file_path),
-            why: format!("why {file_path}"),
+            whys: vec![format!("why {file_path}")],
         }
     }
 
@@ -2543,7 +2543,7 @@ mod tests {
         app.ai.active = true;
         app.ai.hits = Some(vec![FoundSession {
             session,
-            why: "w".into(),
+            whys: vec!["w".into()],
         }]);
         app.enter_tree_mode_for_hit();
         assert!(matches!(link.last_sent(), Some((_, Request::Tree(_)))));

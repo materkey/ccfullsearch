@@ -43,7 +43,8 @@ pub struct AgentHit {
 #[derive(Debug, Clone)]
 pub struct FoundSession {
     pub session: RecentSession,
-    pub why: String,
+    /// The agent's reasons, one per hit it reported in this session.
+    pub whys: Vec<String>,
 }
 
 pub enum AgentEvent {
@@ -525,21 +526,31 @@ fn wait_for_exit(child: &Mutex<Child>) -> Option<ExitStatus> {
 }
 
 /// Keep hits that point at a readable session file. Opencode rows
-/// (`<db>#<id>`) cannot be opened from here and are dropped.
+/// (`<db>#<id>`) cannot be opened from here and are dropped. Hits in the
+/// same session (the agent reports each matching moment) become one row
+/// with all their reasons, at the place of the first.
 fn resolve_hits(hits: Vec<AgentHit>) -> Vec<FoundSession> {
-    hits.into_iter()
-        .filter(|hit| !hit.file_path.contains('#'))
-        .filter_map(|hit| {
-            let session = match hit.host.as_deref() {
-                None | Some("local") => extract_summary(Path::new(&hit.file_path))?,
-                Some(host) => remote_hit_session(host, &hit),
-            };
-            Some(FoundSession {
+    let mut found: Vec<FoundSession> = Vec::new();
+    for hit in hits.into_iter().filter(|hit| !hit.file_path.contains('#')) {
+        let session = match hit.host.as_deref() {
+            None | Some("local") => match extract_summary(Path::new(&hit.file_path)) {
+                Some(session) => session,
+                None => continue,
+            },
+            Some(host) => remote_hit_session(host, &hit),
+        };
+        let same = found
+            .iter_mut()
+            .find(|f| f.session.host == session.host && f.session.session_id == session.session_id);
+        match same {
+            Some(f) => f.whys.push(hit.why),
+            None => found.push(FoundSession {
                 session,
-                why: hit.why,
-            })
-        })
-        .collect()
+                whys: vec![hit.why],
+            }),
+        }
+    }
+    found
 }
 
 /// A hit on another machine: its file is there, so the row is built from
@@ -787,7 +798,7 @@ mod tests {
         let found = resolve_hits(hits);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].session.session_id, "sess-linear-001");
-        assert_eq!(found[0].why, "sorting lists");
+        assert_eq!(found[0].whys, ["sorting lists"]);
     }
 
     #[test]
@@ -804,6 +815,40 @@ mod tests {
         assert_eq!(session.host, crate::remote::Host::Remote("Z270XX".into()));
         assert_eq!(session.project, "infra");
         assert_eq!(session.session_id, "r1");
+    }
+
+    #[test]
+    fn two_hits_in_one_session_resolve_hits_merges_them_into_one_row() {
+        let hit = |id: &str, file: String, why: &str| AgentHit {
+            host: None,
+            project: None,
+            timestamp: None,
+            session_id: id.into(),
+            file_path: file,
+            why: why.into(),
+        };
+        let hits = vec![
+            hit(
+                "sess-linear-001",
+                fixture("linear_session.jsonl"),
+                "sorting",
+            ),
+            hit(
+                "sess-branched-001",
+                fixture("branched_session.jsonl"),
+                "branch",
+            ),
+            hit(
+                "sess-linear-001",
+                fixture("linear_session.jsonl"),
+                "reverse",
+            ),
+        ];
+        let found = resolve_hits(hits);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].session.session_id, "sess-linear-001");
+        assert_eq!(found[0].whys, ["sorting", "reverse"]);
+        assert_eq!(found[1].whys, ["branch"]);
     }
 
     #[test]
