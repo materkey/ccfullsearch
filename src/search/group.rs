@@ -25,6 +25,17 @@ pub struct SessionGroup {
 }
 
 impl SessionGroup {
+    /// Matches found in the session: the host's count for a remote group,
+    /// which may have sent fewer than it found.
+    pub fn total_matches(&self) -> usize {
+        self.matches_total.unwrap_or(self.matches.len())
+    }
+
+    /// The host found more matches than it sent.
+    pub fn capped(&self) -> bool {
+        self.total_matches() > self.matches.len()
+    }
+
     /// The session file this group was found in, on its host.
     pub fn session_ref(&self) -> SessionRef {
         SessionRef::new(self.host.clone(), self.file_path.clone())
@@ -164,6 +175,28 @@ fn count_opencode_session_messages(file_path: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn total_matches_when_host_capped_then_host_count() {
+        let mut group = group_by_session(vec![])
+            .pop()
+            .unwrap_or_else(|| SessionGroup {
+                session_id: "s".into(),
+                file_path: "/f".into(),
+                matches: vec![],
+                automation: None,
+                message_count: None,
+                message_count_compacted: false,
+                host: Host::Remote("Z".into()),
+                project_label: None,
+                matches_total: Some(25),
+            });
+        assert_eq!(group.total_matches(), 25);
+        assert!(group.capped());
+        group.matches_total = None;
+        assert_eq!(group.total_matches(), 0);
+        assert!(!group.capped());
+    }
     use crate::search::Message;
     use crate::session::SessionSource;
     use chrono::TimeZone;

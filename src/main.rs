@@ -188,7 +188,7 @@ fn init_app(
     picker_mode: bool,
     initial_query: Option<String>,
 ) -> ccs::tui::App {
-    let mut app = ccs::tui::App::new(search_paths);
+    let mut app = ccs::tui::App::new(search_paths).with_remote_hosts(remote_hosts());
     app.picker_mode = picker_mode;
 
     prefill_query(&mut app, initial_query);
@@ -199,6 +199,15 @@ fn init_app(
     }
 
     app
+}
+
+/// Remote hosts from `[[hosts]]` in `config.toml` / `CCS_HOSTS`. A broken config is reported
+/// and leaves the picker local-only rather than refusing to start.
+fn remote_hosts() -> Vec<ccs::remote::config::HostConfig> {
+    ccs::remote::config::load_hosts().unwrap_or_else(|e| {
+        eprintln!("ccs: {e}; remote hosts disabled");
+        Vec::new()
+    })
 }
 
 /// Type an initial query into the app as if the user had entered it.

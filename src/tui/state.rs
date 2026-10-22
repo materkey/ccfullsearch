@@ -2,12 +2,18 @@ use crate::agent_search::{AgentEvent, AgentSearchHandle, FoundSession};
 use crate::config::AgentSearchConfig;
 use crate::project_match::{normalize_path_for_prefix_check, path_is_within_project};
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
+use crate::remote::client::{
+    ClientEvent, ClientTimeouts, HostClient, HostLink, HostState, Reply, Request,
+};
+use crate::remote::config::HostConfig;
+use crate::remote::wire::SearchParams;
 use crate::remote::{Host, SessionRef};
 use crate::resume::encode_path_for_claude;
 use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
 use crate::session::{SessionProvider, SessionSource};
 use crate::tree::SessionTree;
 use crate::tui::dispatch::{KeyAction, KeyContext};
+use crate::tui::hosts_state::{HostsState, PendingKind, RemoteSearch};
 use crate::tui::search_mode::session_outcome;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -387,7 +393,7 @@ fn group_matches_project(
         .is_some_and(|session_cwd| path_is_within_project(&session_cwd, cwd))
 }
 
-/// Cache-aware wrapper for [`read_opencode_session_cwd`]. Opencode lookups
+/// Cache-aware wrapper for [`crate::session::read_opencode_session_cwd`]. Opencode lookups
 /// open the SQLite DB, so the project-filter rebuild can run hundreds of
 /// these per toggle. Cache both `Some` and `None` outcomes so repeated
 /// misses are also O(1).
@@ -791,7 +797,7 @@ pub struct SearchState {
     /// "Searching…" status.
     pub(crate) current: Option<SearchHandle>,
     pub error: Option<String>,
-    /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
+    /// Cache: session (host + path) → set of uuids on the latest chain (for fork indicator)
     pub latest_chains: HashMap<SessionRef, HashSet<String>>,
     /// Channel to receive search results from per-request search threads
     pub(crate) search_rx: Receiver<BackgroundSearchResult>,
@@ -800,9 +806,17 @@ pub struct SearchState {
     pub(crate) result_tx: Sender<BackgroundSearchResult>,
     /// Monotonic request sequence to ignore stale async results
     pub(crate) search_seq: u64,
-    /// Whether the last search hit the per-file match limit (results may be incomplete)
+    /// Whether the shown results are incomplete: a per-file match limit was
+    /// hit here, or a host cut its answer (session cap, per-session cap)
     pub search_truncated: bool,
-    /// Channel to receive (file_path, count, compacted) from background message-counting thread
+    /// Local groups for `shown_seq`; merged with remote groups into `all_groups`.
+    pub(crate) local_groups: Vec<SessionGroup>,
+    /// Matches in `local_groups` as ripgrep reported them.
+    pub(crate) local_count: usize,
+    /// Search whose results are on screen. The first answer for a new
+    /// search (local or remote) resets the cursor; later ones merge in.
+    pub(crate) shown_seq: u64,
+    /// Channel to receive (session, count, compacted) from background message-counting thread
     pub(crate) message_count_rx: Option<Receiver<(SessionRef, usize, bool)>>,
     /// Cancellation flag for the background counting thread
     pub(crate) message_count_cancel: Option<Arc<AtomicBool>>,
@@ -908,7 +922,7 @@ pub struct App {
     pub project_filter: bool,
     /// Filter for automated vs manual sessions (Ctrl+H toggle)
     pub automation_filter: AutomationFilter,
-    /// Cache: file_path -> resolved automation marker (including negative lookups)
+    /// Cache: session (host + path) -> resolved automation marker (including negative lookups)
     automation_cache: HashMap<SessionRef, Option<String>>,
     /// Cache: Opencode synthetic file_path (`<db>#<sid>`) -> session
     /// directory. Opens of the Opencode SQLite DB are amortised across
@@ -934,6 +948,8 @@ pub struct App {
     pub last_tree_visible_height: usize,
     /// Sessions resumed from this picker that ran, marked in the result lists
     pub opened_sessions: HashSet<(Host, String)>,
+    /// Remote hosts: links, requests in flight, per-host results and status
+    pub hosts: HostsState,
 }
 
 impl App {
@@ -981,6 +997,9 @@ impl App {
                 search_rx: result_rx,
                 result_tx,
                 search_seq: 0,
+                local_groups: Vec::new(),
+                local_count: 0,
+                shown_seq: 0,
                 search_truncated: false,
                 message_count_rx: None,
                 message_count_cancel: None,
@@ -1027,7 +1046,27 @@ impl App {
             picker_mode: false,
             last_tree_visible_height: 20,
             opened_sessions: HashSet::new(),
+            hosts: HostsState::default(),
         }
+    }
+
+    /// Connect to the remote hosts from `config.toml` / `CCS_HOSTS`.
+    pub fn with_remote_hosts(self, hosts: Vec<HostConfig>) -> Self {
+        let links = hosts
+            .into_iter()
+            .map(|h| Box::new(HostClient::spawn(h, ClientTimeouts::default())) as Box<dyn HostLink>)
+            .collect();
+        self.with_links(links)
+    }
+
+    fn with_links(mut self, links: Vec<Box<dyn HostLink>>) -> Self {
+        self.hosts = HostsState::new(links);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_host_links(self, links: Vec<Box<dyn HostLink>>) -> Self {
+        self.with_links(links)
     }
 
     pub(crate) fn can_filter_by_codex_cwd(&self) -> bool {
@@ -1129,6 +1168,9 @@ impl App {
         // from an earlier search stay for the user to come back to.
         self.ai.search = None;
         self.ai.progress.clear();
+        // Cancelled requests are forgotten by their links, so a reply that
+        // lands after the return is dropped instead of reshuffling results.
+        self.hosts.cancel_searches();
         self.last_keystroke = None;
         self.typing = false;
         self.last_query = self.input.text().to_string();
@@ -1167,9 +1209,12 @@ impl App {
         self.search.expanded = false;
         self.preview_mode = false;
         self.search.latest_chains.clear();
+        self.search.local_groups.clear();
         if let Some(handle) = self.search.current.take() {
             handle.cancel.store(true, Ordering::Relaxed);
         }
+        self.hosts.cancel_searches();
+        self.hosts.searches.clear();
         self.search.error = None;
         if let Some(flag) = self.search.message_count_cancel.take() {
             flag.store(true, Ordering::Relaxed);
@@ -1453,6 +1498,7 @@ impl App {
         self.poll_tree_load();
         self.poll_message_counts();
         self.poll_ai_result();
+        self.poll_hosts();
 
         // Check for search results from background threads
         while let Ok(result) = self.search.search_rx.try_recv() {
@@ -1609,65 +1655,255 @@ impl App {
 
         match result {
             Ok(search_result) => {
-                self.search.results_query = query;
                 let count = search_result.matches.len();
-                self.search.search_truncated = search_result.truncated;
-                let mut groups = group_by_session(search_result.matches);
-                apply_recent_automation_to_groups(
-                    &mut groups,
-                    &self.recent.all,
-                    &mut self.automation_cache,
-                );
-                self.search.all_groups = groups;
-                self.apply_groups_filter();
-                self.search.results_count = count;
-                self.search.group_cursor = 0;
-                self.search.sub_cursor = 0;
-                self.search.expanded = false;
-                self.search.error = None;
-                self.search.latest_chains.clear();
-
-                // Spawn background thread to count total messages per session file
-                if let Some(flag) = self.search.message_count_cancel.take() {
-                    flag.store(true, Ordering::Relaxed);
-                }
-                // Remote groups arrive with their count; only local files are read.
-                let file_paths: Vec<String> = self
-                    .search
-                    .all_groups
-                    .iter()
-                    .filter(|g| g.host.is_local())
-                    .map(|g| g.file_path.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                if !file_paths.is_empty() {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    let cancel_clone = cancel.clone();
-                    std::thread::spawn(move || {
-                        for fp in file_paths {
-                            if cancel_clone.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let (msg_count, compacted) = crate::search::count_session_messages(&fp);
-                            if tx
-                                .send((SessionRef::local(fp), msg_count, compacted))
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    });
-                    self.search.message_count_rx = Some(rx);
-                    self.search.message_count_cancel = Some(cancel);
-                }
+                let groups = group_by_session(search_result.matches);
+                self.apply_local_groups(seq, query, groups, search_result.truncated, count);
             }
             Err(e) => {
                 self.search.error = Some(e);
                 self.search.search_truncated = false;
             }
         }
+    }
+
+    /// Install the local answer for search `seq` and merge it with what the
+    /// remote hosts sent for the same search.
+    fn apply_local_groups(
+        &mut self,
+        seq: u64,
+        query: String,
+        mut groups: Vec<SessionGroup>,
+        truncated: bool,
+        count: usize,
+    ) {
+        let anchor = self.anchor_for(seq);
+        self.begin_results_for(seq);
+        self.search.results_query = query;
+        // Several answers make up one search: any of them being cut makes the
+        // whole result incomplete, whatever order they arrive in.
+        self.search.search_truncated |= truncated;
+        apply_recent_automation_to_groups(
+            &mut groups,
+            &self.recent.all,
+            &mut self.automation_cache,
+        );
+        self.search.local_groups = groups;
+        self.search.local_count = count;
+        self.search.error = None;
+        self.rebuild_all_groups(anchor);
+        self.spawn_message_counts();
+    }
+
+    /// The selected group, kept across a merge into the same search's results.
+    /// A cursor still on the top row, collapsed, has not been moved by the
+    /// user: it stays on top while newer groups arrive above its group.
+    fn anchor_for(&self, seq: u64) -> Option<(Host, String)> {
+        if self.search.shown_seq != seq {
+            return None;
+        }
+        if self.search.group_cursor == 0 && !self.search.expanded {
+            return None;
+        }
+        self.search
+            .groups
+            .get(self.search.group_cursor)
+            .map(|g| (g.host.clone(), g.session_id.clone()))
+    }
+
+    /// The first answer for a new search starts the list over; later answers
+    /// for the same search merge in without moving the cursor.
+    fn begin_results_for(&mut self, seq: u64) {
+        if self.search.shown_seq == seq {
+            return;
+        }
+        self.search.shown_seq = seq;
+        self.search.search_truncated = false;
+        self.search.local_groups.clear();
+        self.search.local_count = 0;
+        self.search.group_cursor = 0;
+        self.search.sub_cursor = 0;
+        self.search.expanded = false;
+        self.search.latest_chains.clear();
+    }
+
+    /// `all_groups` = local groups + every host's groups for the shown search,
+    /// newest first; then the filters, unless an AI rank pins the view.
+    fn rebuild_all_groups(&mut self, anchor: Option<(Host, String)>) {
+        let mut all = self.search.local_groups.clone();
+        all.extend(self.hosts.groups_for(self.search.shown_seq).cloned());
+        all.sort_by_key(|g| std::cmp::Reverse(g.latest_timestamp()));
+        let remote_count: usize = all
+            .iter()
+            .filter(|g| !g.host.is_local())
+            .map(SessionGroup::total_matches)
+            .sum();
+        self.search.search_truncated |= all.iter().any(SessionGroup::capped);
+        self.search.results_count = self.search.local_count + remote_count;
+        self.search.all_groups = all;
+        self.apply_groups_filter();
+        self.restore_anchor(anchor);
+    }
+
+    fn restore_anchor(&mut self, anchor: Option<(Host, String)>) {
+        let Some((host, session_id)) = anchor else {
+            return;
+        };
+        if let Some(i) = self
+            .search
+            .groups
+            .iter()
+            .position(|g| g.host == host && g.session_id == session_id)
+        {
+            self.search.group_cursor = i;
+        }
+    }
+
+    /// Count messages per local session file in the background; remote
+    /// groups came with their counts.
+    fn spawn_message_counts(&mut self) {
+        if let Some(flag) = self.search.message_count_cancel.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let file_paths: Vec<String> = self
+            .search
+            .local_groups
+            .iter()
+            .map(|g| g.file_path.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if file_paths.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        std::thread::spawn(move || {
+            for fp in file_paths {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (msg_count, compacted) = crate::search::count_session_messages(&fp);
+                if tx
+                    .send((SessionRef::local(fp), msg_count, compacted))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.search.message_count_rx = Some(rx);
+        self.search.message_count_cancel = Some(cancel);
+    }
+
+    /// Advance the host links and act on what they report.
+    pub(crate) fn poll_hosts(&mut self) {
+        if !self.hosts.has_hosts() {
+            return;
+        }
+        for (name, event) in self.hosts.poll(Instant::now()) {
+            self.handle_remote_event(&name, event);
+        }
+    }
+
+    pub(crate) fn handle_remote_event(&mut self, name: &str, event: ClientEvent) {
+        match event {
+            ClientEvent::State(state) => self.on_host_state(name, state),
+            ClientEvent::Hello { ccs_version } => {
+                if let Some(status) = self.hosts.status.get_mut(name) {
+                    status.other_version =
+                        (ccs_version != env!("CARGO_PKG_VERSION")).then_some(ccs_version);
+                }
+            }
+            ClientEvent::Reply { id, result } => {
+                if let Some(kind) = self.hosts.pending.remove(&(name.to_string(), id)) {
+                    self.on_host_reply(name, kind, result);
+                }
+            }
+        }
+    }
+
+    fn on_host_state(&mut self, name: &str, state: HostState) {
+        let ready = state == HostState::Ready;
+        if let Some(status) = self.hosts.status.get_mut(name) {
+            status.state = state;
+            if ready {
+                // A new connection: errors of the old one no longer apply.
+                status.last_error = None;
+            } else {
+                status.waiting = false;
+            }
+        }
+        // Requests made while the host was connecting went nowhere; send
+        // what the picker still wants from it now.
+        if ready && !self.input.is_empty() && self.last_query == self.input.text() {
+            let seq = self.search.search_seq;
+            let request = self.remote_search_request();
+            let sent = self
+                .hosts
+                .send_to(name, request, PendingKind::Search { seq });
+            if let Some(status) = self.hosts.status.get_mut(name) {
+                status.waiting = sent;
+            }
+        }
+    }
+
+    fn on_host_reply(&mut self, name: &str, kind: PendingKind, result: Result<Reply, String>) {
+        let status = self.hosts.status.get_mut(name);
+        match (kind, result) {
+            (PendingKind::Search { seq }, Ok(Reply::Search(found))) => {
+                if let Some(status) = status {
+                    status.waiting = false;
+                    status.results = Some(found.groups.len());
+                    status.last_error = None;
+                }
+                self.apply_remote_search(name, seq, found);
+            }
+            (PendingKind::Search { .. }, Ok(_)) => {}
+            (PendingKind::Search { .. }, Err(e)) => {
+                if let Some(status) = status {
+                    status.waiting = false;
+                    status.last_error = Some(e);
+                }
+            }
+        }
+    }
+
+    fn apply_remote_search(
+        &mut self,
+        name: &str,
+        seq: u64,
+        found: crate::remote::wire::WireSearch,
+    ) {
+        if seq != self.search.search_seq {
+            return;
+        }
+        let anchor = self.anchor_for(seq);
+        self.begin_results_for(seq);
+        self.search.results_query = self.last_query.clone();
+        self.search.search_truncated |= found.truncated;
+        let host = Host::Remote(name.to_string());
+        let mut groups = Vec::with_capacity(found.groups.len());
+        for wire_group in found.groups {
+            let (group, chain) = wire_group.into_group(host.clone());
+            self.search.latest_chains.insert(group.session_ref(), chain);
+            groups.push(group);
+        }
+        self.hosts
+            .searches
+            .insert(name.to_string(), RemoteSearch { seq, groups });
+        self.rebuild_all_groups(anchor);
+    }
+
+    /// The search the remote hosts run for the current query.
+    fn remote_search_request(&self) -> Request {
+        Request::Search(SearchParams {
+            query: self.last_query.clone(),
+            regex: self.last_regex_mode,
+            project: None,
+            full_content: false,
+            limit: None,
+        })
     }
 
     pub(crate) fn apply_recent_sessions_filter(&mut self) {
@@ -1686,6 +1922,7 @@ impl App {
         // to its own local so the borrow checker tracks them independently.
         let project_filter = self.project_filter;
         let automation_filter = self.automation_filter;
+        let host_filter = &self.hosts.filter;
         let project_paths = &self.current_project_paths;
         let current_cwd = self.current_cwd.as_deref();
         let opencode_cwd_cache = &mut self.opencode_cwd_cache;
@@ -1693,8 +1930,12 @@ impl App {
 
         let new_groups: Vec<SessionGroup> = all_groups
             .iter()
+            .filter(|g| host_filter.allows(&g.host))
+            // A remote host already scoped its groups to the project, and
+            // their files are not here to read.
             .filter(|g| {
                 !project_filter
+                    || !g.host.is_local()
                     || group_matches_project(g, project_paths, current_cwd, opencode_cwd_cache)
             })
             .filter(|g| match automation_filter {
@@ -1819,6 +2060,10 @@ impl App {
         });
 
         self.search.current = Some(SearchHandle { seq, cancel });
+        if self.hosts.has_hosts() {
+            let request = self.remote_search_request();
+            self.hosts.send_search(seq, &request);
+        }
     }
 
     /// Whether a search request is currently in flight.
@@ -1844,6 +2089,54 @@ impl App {
         } else if let Some(h) = self.search.current.take() {
             h.cancel.store(true, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Deliver a local search answer for the current search, as the ripgrep
+    /// thread would.
+    pub(crate) fn deliver_local_groups_for_test(&mut self, groups: Vec<SessionGroup>) {
+        let seq = self.search.search_seq;
+        let count = groups.iter().map(|g| g.matches.len()).sum();
+        let query = self.input.text().to_string();
+        self.search.current = None;
+        self.apply_local_groups(seq, query, groups, false, count);
+    }
+
+    pub(crate) fn suspend_for_resume_for_test(&mut self) {
+        self.suspend_for_resume();
+    }
+}
+
+/// A local group with one match at `hour`:00 on 2026-10-22.
+#[cfg(test)]
+pub(crate) fn test_group(session_id: &str, file_path: &str, hour: u32) -> SessionGroup {
+    use chrono::TimeZone;
+    SessionGroup {
+        session_id: session_id.to_string(),
+        file_path: file_path.to_string(),
+        matches: vec![crate::search::RipgrepMatch {
+            file_path: file_path.to_string(),
+            message: Some(crate::search::Message {
+                session_id: session_id.to_string(),
+                role: "user".to_string(),
+                content: "needle".to_string(),
+                timestamp: chrono::Utc
+                    .with_ymd_and_hms(2026, 10, 22, hour, 0, 0)
+                    .unwrap(),
+                line_number: 1,
+                ..Default::default()
+            }),
+            source: SessionSource::CLI,
+            content_truncated: false,
+        }],
+        automation: None,
+        message_count: None,
+        message_count_compacted: false,
+        host: Host::Local,
+        project_label: None,
+        matches_total: None,
     }
 }
 

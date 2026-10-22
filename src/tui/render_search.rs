@@ -272,7 +272,7 @@ pub fn render(frame: &mut Frame, view: &AppView) {
 
     render_search_input(frame, app, input_area);
 
-    frame.render_widget(Paragraph::new(Line::from(status_span(app))), status_area);
+    frame.render_widget(Paragraph::new(Line::from(status_spans(app))), status_area);
 
     // List of results (grouped view)
     if app.preview_mode {
@@ -363,6 +363,39 @@ fn busy_style() -> Style {
 }
 
 /// Status bar content — AI mode takes priority.
+/// The status line: the picker's own status, then one entry per remote host.
+fn status_spans(app: &AppView) -> Vec<Span<'static>> {
+    let mut spans = vec![status_span(app)];
+    spans.extend(host_status_spans(&app.hosts));
+    spans
+}
+
+/// `· Z270XX: 37` per host; a host that is down also says why, so it can
+/// be fixed without rebuilding the ssh command by hand.
+fn host_status_spans(hosts: &crate::tui::hosts_state::HostsState) -> Vec<Span<'static>> {
+    let reasons = hosts.down_reasons();
+    hosts
+        .status_texts()
+        .into_iter()
+        .map(|text| {
+            let name = text.split(':').next().unwrap_or_default().to_string();
+            let reason = reasons
+                .iter()
+                .find_map(|r| r.strip_prefix(&format!("{name}: ")))
+                .map(|r| r.lines().last().unwrap_or(r).to_string());
+            let style = if reason.is_some() {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(DIM_FG)
+            };
+            let detail = reason
+                .map(|r| format!(" ({})", r.chars().take(60).collect::<String>()))
+                .unwrap_or_default();
+            Span::styled(format!(" · {text}{detail}"), style)
+        })
+        .collect()
+}
+
 fn status_span(app: &AppView) -> Span<'static> {
     if app.ai.active {
         return ai_status_span(app);
@@ -795,6 +828,8 @@ struct SessionHeaderParts<'a> {
     provider: SessionProvider,
     source: &'a str,
     date: &'a str,
+    /// Remote host name; `None` for local sessions, which carry no label.
+    host: Option<&'a str>,
     project: &'a str,
     branch: &'a str,
     session_id: &'a str,
@@ -802,6 +837,21 @@ struct SessionHeaderParts<'a> {
     has_automation: bool,
     /// Session was resumed from this picker, see `App::opened_sessions`
     opened: bool,
+}
+
+/// Host label for a session row: shown only for remote sessions.
+fn remote_label(host: &crate::remote::Host) -> Option<&str> {
+    (!host.is_local()).then(|| host.label())
+}
+
+/// A remote group's project comes from its host; a local one is derived
+/// from the file path (which may read the file, so never for remote ones).
+fn group_project(group: &SessionGroup) -> String {
+    match &group.project_label {
+        Some(label) => label.clone(),
+        None if group.host.is_local() => extract_project_from_path(&group.file_path),
+        None => String::new(),
+    }
 }
 
 /// Header tag on a session resumed from the current picker.
@@ -837,10 +887,12 @@ fn format_session_header_line(p: SessionHeaderParts<'_>) -> String {
     let sid = display_session_id(p.session_id, p.provider);
     let auto_tag = if p.has_automation { " [A]" } else { "" };
     let opened_tag = if p.opened { OPENED_TAG } else { "" };
+    let host = p.host.map(|h| format!("{h} · ")).unwrap_or_default();
     format!(
-        "{} {} · {}  ⎇ {} · {} ({}){}{} {}",
+        "{} {} · {}{}  ⎇ {} · {} ({}){}{} {}",
         p.caret,
         p.date,
+        host,
         p.project,
         p.branch,
         sid,
@@ -956,6 +1008,18 @@ fn render_session_header_line(
         Span::styled(" ".to_string(), base),
         Span::styled(p.date.to_string(), base),
         Span::styled(" · ".to_string(), base),
+    ];
+    if let Some(host) = p.host {
+        let host_style = Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD);
+        spans.push(Span::styled(
+            host.to_string(),
+            style_with_bg(host_style, row_bg),
+        ));
+        spans.push(Span::styled(" · ".to_string(), base));
+    }
+    spans.extend([
         Span::styled(p.project.to_string(), project),
         Span::styled("  ".to_string(), base),
         Span::styled("⎇ ".to_string(), style_with_bg(branch_marker, row_bg)),
@@ -965,7 +1029,7 @@ fn render_session_header_line(
             base,
         ),
         Span::styled(format!("({})", p.count), style_with_bg(count, row_bg)),
-    ];
+    ]);
 
     if p.has_automation {
         let automation = if selected {
@@ -1026,6 +1090,7 @@ pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSe
             .with_timezone(&Local)
             .format("%Y-%m-%d %H:%M")
             .to_string(),
+        host: remote_label(&session.host),
         project: &session.project,
         branch: session.branch.as_deref().unwrap_or("-"),
         session_id: &session.session_id,
@@ -1069,6 +1134,7 @@ pub(crate) fn recent_session_header_item(
             provider: SessionProvider::from_path(&session.file_path),
             source: session.source.display_name(),
             date: &date,
+            host: remote_label(&session.host),
             project: &session.project,
             branch: session.branch.as_deref().unwrap_or("-"),
             session_id: &session.session_id,
@@ -1189,7 +1255,8 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
         provider: SessionProvider::from_path(&group.file_path),
         source,
         date: &date_str,
-        project: &extract_project_from_path(&group.file_path),
+        host: remote_label(&group.host),
+        project: &group_project(group),
         branch: &branch,
         session_id: &group.session_id,
         count: &count_str,
@@ -1246,7 +1313,7 @@ fn render_group_header<'a>(
         None => format!("{} matches", group.matches.len()),
     };
 
-    let project = extract_project_from_path(&group.file_path);
+    let project = group_project(group);
     let header = render_session_header_line(
         prefix,
         SessionHeaderParts {
@@ -1254,6 +1321,7 @@ fn render_group_header<'a>(
             provider: SessionProvider::from_path(&group.file_path),
             source,
             date: &date_str,
+            host: remote_label(&group.host),
             project: &project,
             branch: &branch,
             session_id: &group.session_id,
@@ -1577,7 +1645,7 @@ fn render_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect)
         return;
     };
 
-    let project = extract_project_from_path(&m.file_path);
+    let project = app.selected_group().map(group_project).unwrap_or_default();
     let date_str = msg
         .timestamp
         .with_timezone(&Local)
@@ -1754,6 +1822,39 @@ mod tests {
                 line.matches(needle).count()
             })
             .sum()
+    }
+
+    #[test]
+    fn search_results_when_remote_group_then_host_label_and_status() {
+        use crate::remote::client::{ClientEvent, HostState, Reply};
+        use crate::tui::hosts_state::fake::FakeLink;
+        let link = FakeLink::new("Z270XX", HostState::Ready);
+        let mut app = App::new(vec!["/nonexistent-ccs-test".to_string()])
+            .with_host_links(vec![Box::new(link.clone())]);
+        app.input.set_text("needle");
+        app.start_search();
+        let (id, _) = link.last_sent().unwrap();
+        let mut found = crate::tui::hosts_state::fake::wire_search("r1", 11);
+        found.groups[0].project = "remote-proj".into();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Search(found)),
+        });
+        app.poll_hosts();
+        app.search.current = None;
+        app.typing = false;
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app.view()))
+            .expect("render must not panic");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            count_occurrences(buffer, 140, 24, "Z270XX · remote-proj"),
+            1
+        );
+        assert_eq!(count_occurrences(buffer, 140, 24, "Z270XX: 1"), 1);
     }
 
     #[test]
