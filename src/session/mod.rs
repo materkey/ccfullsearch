@@ -348,6 +348,24 @@ pub fn read_codex_session_cwd(path: &str) -> Option<String> {
     None
 }
 
+/// Look up an Opencode session's `directory` field via the synthetic path
+/// (`<db>#<session_id>`) so the project-filter cwd check works on search
+/// results whose RecentSession.cwd isn't populated.
+pub fn read_opencode_session_cwd(file_path: &str) -> Option<String> {
+    let (db, sid) = opencode::parse_session_path(file_path)?;
+    opencode::OpencodeSession::from_db(&db, &sid)?.directory
+}
+
+/// The working directory a session was recorded in: Opencode's `directory`,
+/// otherwise the first record with a `cwd` (Codex `session_meta`, Claude
+/// message records).
+pub fn read_session_cwd(file_path: &str) -> Option<String> {
+    if opencode::is_opencode_session_path(file_path) {
+        return read_opencode_session_cwd(file_path);
+    }
+    read_codex_session_cwd(file_path)
+}
+
 /// Returns true if the JSON record has `isSidechain: true`.
 /// Sidechain messages are subagent messages that should not participate in the main chain.
 pub fn is_sidechain(json: &serde_json::Value) -> bool {

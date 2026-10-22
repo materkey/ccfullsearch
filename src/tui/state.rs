@@ -387,14 +387,6 @@ fn group_matches_project(
         .is_some_and(|session_cwd| path_is_within_project(&session_cwd, cwd))
 }
 
-/// Look up an Opencode session's `directory` field via the synthetic path
-/// (`<db>#<session_id>`) so the project-filter cwd check works on search
-/// results whose RecentSession.cwd isn't populated.
-fn read_opencode_session_cwd(file_path: &str) -> Option<String> {
-    let (db, sid) = crate::session::opencode::parse_session_path(file_path)?;
-    crate::session::opencode::OpencodeSession::from_db(&db, &sid)?.directory
-}
-
 /// Cache-aware wrapper for [`read_opencode_session_cwd`]. Opencode lookups
 /// open the SQLite DB, so the project-filter rebuild can run hundreds of
 /// these per toggle. Cache both `Some` and `None` outcomes so repeated
@@ -406,7 +398,7 @@ fn read_opencode_session_cwd_cached(
     if let Some(cached) = cache.get(file_path) {
         return cached.clone();
     }
-    let result = read_opencode_session_cwd(file_path);
+    let result = crate::session::read_opencode_session_cwd(file_path);
     cache.insert(file_path.to_string(), result.clone());
     result
 }

@@ -104,7 +104,11 @@ pub fn cli_search(
 
 /// In regex mode the query pattern rarely appears literally in the content,
 /// so the snippet is anchored on the first actual regex match instead.
-fn build_snippet_regex(query: &str, use_regex: bool, full_content: bool) -> Option<regex::Regex> {
+pub(crate) fn build_snippet_regex(
+    query: &str,
+    use_regex: bool,
+    full_content: bool,
+) -> Option<regex::Regex> {
     if use_regex && !full_content {
         regex::RegexBuilder::new(query)
             .case_insensitive(true)
@@ -117,18 +121,35 @@ fn build_snippet_regex(query: &str, use_regex: bool, full_content: bool) -> Opti
 
 /// Render the content field of a search result: the full message, or a
 /// snippet anchored on the regex match (regex mode) / the literal query.
-fn render_match_content(
+pub(crate) fn render_match_content(
     content: &str,
     query: &str,
     full_content: bool,
     snippet_regex: Option<&regex::Regex>,
 ) -> String {
+    render_match_content_with(
+        content,
+        query,
+        full_content,
+        snippet_regex,
+        SNIPPET_CONTEXT_CHARS,
+    )
+}
+
+/// [`render_match_content`] with `context_chars` on each side of the match.
+pub(crate) fn render_match_content_with(
+    content: &str,
+    query: &str,
+    full_content: bool,
+    snippet_regex: Option<&regex::Regex>,
+    context_chars: usize,
+) -> String {
     if full_content {
         content.to_string()
     } else if let Some(found) = snippet_regex.and_then(|re| re.find(content)) {
-        extract_context_around_span(content, found.start(), found.end(), SNIPPET_CONTEXT_CHARS)
+        extract_context_around_span(content, found.start(), found.end(), context_chars)
     } else {
-        extract_context(content, query, SNIPPET_CONTEXT_CHARS)
+        extract_context(content, query, context_chars)
     }
 }
 
@@ -266,48 +287,7 @@ fn show_jsonl(
     context: usize,
     max_chars: usize,
 ) -> Result<(), String> {
-    if line.is_none() && uuid.is_none() {
-        return Err(
-            "pass --line or --uuid to anchor the window (both come from search output)".to_string(),
-        );
-    }
-
-    let file =
-        fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
-    let reader = BufReader::new(file);
-
-    let mut messages: Vec<Message> = Vec::new();
-    // If --line points at a record that isn't a message, remember what it is
-    // so the error names the record type instead of a bare "not found".
-    let mut anchor_line_kind: Option<String> = None;
-    let mut total_lines = 0usize;
-
-    for (idx, raw) in reader.lines().enumerate() {
-        let line_no = idx + 1;
-        total_lines = line_no;
-        let raw = raw.map_err(|e| format!("cannot read {}: {}", file_path, e))?;
-        if let Some(msg) = Message::from_jsonl_with_path(&raw, line_no, Some(file_path)) {
-            messages.push(msg);
-        } else if line == Some(line_no) {
-            anchor_line_kind = Some(classify_non_message_line(&raw));
-        }
-    }
-
-    let target_idx = if let Some(n) = line {
-        messages
-            .iter()
-            .position(|m| m.line_number == n)
-            .ok_or_else(|| match &anchor_line_kind {
-                Some(kind) => format!("line {} is not a message record ({})", n, kind),
-                None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
-            })?
-    } else {
-        let u = uuid.expect("checked above");
-        messages
-            .iter()
-            .position(|m| m.uuid.as_deref() == Some(u))
-            .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?
-    };
+    let (messages, target_idx) = locate_jsonl_message(file_path, line, uuid)?;
 
     let start = target_idx.saturating_sub(context);
     let end = target_idx
@@ -355,19 +335,65 @@ fn show_jsonl(
     Ok(())
 }
 
-/// Show a window of messages around a target in an Opencode SQLite session.
-/// Opencode messages have no line numbers, so the anchor must be `--uuid`
-/// (the `message_uuid` from search output, which is the SQLite message id).
-fn show_opencode(
+/// Parse every message of a JSONL session and find the one `line` or `uuid`
+/// names. Shared by `ccs show` and `ccs serve`'s `show`.
+pub(crate) fn locate_jsonl_message(
+    file_path: &str,
+    line: Option<usize>,
+    uuid: Option<&str>,
+) -> Result<(Vec<Message>, usize), String> {
+    if line.is_none() && uuid.is_none() {
+        return Err(
+            "pass --line or --uuid to anchor the window (both come from search output)".to_string(),
+        );
+    }
+
+    let file =
+        fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
+    let reader = BufReader::new(file);
+
+    let mut messages: Vec<Message> = Vec::new();
+    // If --line points at a record that isn't a message, remember what it is
+    // so the error names the record type instead of a bare "not found".
+    let mut anchor_line_kind: Option<String> = None;
+    let mut total_lines = 0usize;
+
+    for (idx, raw) in reader.lines().enumerate() {
+        let line_no = idx + 1;
+        total_lines = line_no;
+        let raw = raw.map_err(|e| format!("cannot read {}: {}", file_path, e))?;
+        if let Some(msg) = Message::from_jsonl_with_path(&raw, line_no, Some(file_path)) {
+            messages.push(msg);
+        } else if line == Some(line_no) {
+            anchor_line_kind = Some(classify_non_message_line(&raw));
+        }
+    }
+
+    let target_idx = if let Some(n) = line {
+        messages
+            .iter()
+            .position(|m| m.line_number == n)
+            .ok_or_else(|| match &anchor_line_kind {
+                Some(kind) => format!("line {} is not a message record ({})", n, kind),
+                None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
+            })?
+    } else {
+        let u = uuid.expect("checked above");
+        messages
+            .iter()
+            .position(|m| m.uuid.as_deref() == Some(u))
+            .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?
+    };
+    Ok((messages, target_idx))
+}
+
+/// Load an Opencode session's messages and find the one `uuid` names.
+/// Shared by `ccs show` and `ccs serve`'s `show`.
+pub(crate) fn locate_opencode_message(
     db_path: &Path,
     session_id: &str,
-    file_path: &str,
     uuid: Option<&str>,
-    context: usize,
-    max_chars: usize,
-) -> Result<(), String> {
-    use crate::session::record::{ContentMode, MessageRole, SessionRecord};
-
+) -> Result<(Vec<crate::session::opencode::OpencodeMessage>, usize), String> {
     let uuid = uuid.ok_or_else(|| {
         "Opencode sessions have no line numbers; pass --uuid from the search result's message_uuid"
             .to_string()
@@ -386,6 +412,23 @@ fn show_opencode(
         .iter()
         .position(|m| m.id == uuid)
         .ok_or_else(|| format!("no message with uuid {} in session {}", uuid, session_id))?;
+    Ok((messages, target_idx))
+}
+
+/// Show a window of messages around a target in an Opencode SQLite session.
+/// Opencode messages have no line numbers, so the anchor must be `--uuid`
+/// (the `message_uuid` from search output, which is the SQLite message id).
+fn show_opencode(
+    db_path: &Path,
+    session_id: &str,
+    file_path: &str,
+    uuid: Option<&str>,
+    context: usize,
+    max_chars: usize,
+) -> Result<(), String> {
+    use crate::session::record::{ContentMode, MessageRole, SessionRecord};
+
+    let (messages, target_idx) = locate_opencode_message(db_path, session_id, uuid)?;
 
     let start = target_idx.saturating_sub(context);
     let end = target_idx
@@ -429,7 +472,7 @@ fn show_opencode(
         project: extract_project_from_path(file_path),
         shown: end - start,
         target_line: None,
-        target_uuid: Some(uuid.to_string()),
+        target_uuid: Some(messages[target_idx].id.clone()),
     };
     if let Ok(json) = serde_json::to_string(&summary) {
         println!("{}", json);
