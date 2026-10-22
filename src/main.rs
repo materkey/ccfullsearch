@@ -81,6 +81,13 @@ enum Commands {
     #[cfg(not(windows))]
     /// Update ccs to the latest version
     Update,
+    /// Answer remote-host requests on stdin/stdout (run by another ccs over ssh)
+    #[command(hide = true)]
+    Serve {
+        /// Speak the line-delimited JSON protocol on stdin/stdout
+        #[arg(long)]
+        stdio: bool,
+    },
 }
 
 /// Read session_id from the first JSON record in a JSONL file.
@@ -286,9 +293,12 @@ fn handle_event(app: &mut ccs::tui::App, event: Event) {
 }
 
 fn main() -> io::Result<()> {
-    install_panic_hook();
-
     let cli = Cli::parse();
+    // `serve` speaks a protocol on stdout; the hook's terminal escapes
+    // would corrupt it, and it never draws a TUI.
+    if !matches!(cli.command, Some(Commands::Serve { .. })) {
+        install_panic_hook();
+    }
 
     match cli.command {
         Some(cmd) => run_subcommand(cmd),
@@ -333,9 +343,28 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             Ok(())
         }
         Commands::Pick { query, output } => run_pick(query, output),
+        Commands::Serve { stdio } => run_serve(stdio),
         #[cfg(not(windows))]
         Commands::Update => run_update(),
     }
+}
+
+/// Handle `ccs serve --stdio`, the remote end another ccs reaches over ssh.
+fn run_serve(stdio: bool) -> io::Result<()> {
+    if !stdio {
+        eprintln!("ccs serve: only --stdio is supported");
+        std::process::exit(2);
+    }
+    let home = dirs::home_dir()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let code = ccs::remote::serve::run_stdio(
+        io::stdin().lock(),
+        io::stdout(),
+        ccs::get_search_paths(),
+        home,
+    );
+    std::process::exit(code);
 }
 
 /// Handle `ccs pick`: run the TUI in picker mode and exit with the pick result.
