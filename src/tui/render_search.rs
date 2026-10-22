@@ -332,6 +332,9 @@ fn search_input_title(app: &AppView) -> String {
     if app.project_filter {
         search_title.push_str(" [Project]");
     }
+    if let Some(label) = app.hosts.filter.label() {
+        search_title.push_str(&format!(" [{label}]"));
+    }
     match app.automation_filter {
         AutomationFilter::All => {}
         AutomationFilter::Manual => search_title.push_str(" [Manual]"),
@@ -452,6 +455,18 @@ fn build_search_hints(app: &AppView) -> Vec<HintItem<'static>> {
         return build_ai_hints(app);
     }
 
+    let mut hints = build_search_hints_without_hosts(app);
+    if app.hosts.has_hosts() {
+        let host_hint = HintItem {
+            spans: vec![Span::styled("[Ctrl+L] Hosts", Style::default().fg(DIM_FG))],
+            min_width: 100,
+        };
+        hints.insert(hints.len().saturating_sub(1), host_hint);
+    }
+    hints
+}
+
+fn build_search_hints_without_hosts(app: &AppView) -> Vec<HintItem<'static>> {
     let dim = Style::default().fg(DIM_FG);
     let filter_hint = automation_filter_hint(app);
     let in_recent_mode = app.in_recent_sessions_mode() && !app.recent.filtered.is_empty();

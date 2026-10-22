@@ -28,6 +28,27 @@ impl HostFilter {
         }
     }
 
+    /// `All → Local → Remote`, then each host by name when there are
+    /// several, then back to `All`.
+    pub fn next(&self, hosts: &[String]) -> HostFilter {
+        let mut cycle = vec![HostFilter::All, HostFilter::Local, HostFilter::Remote];
+        if hosts.len() > 1 {
+            cycle.extend(hosts.iter().cloned().map(HostFilter::Only));
+        }
+        let at = cycle.iter().position(|f| f == self).unwrap_or(0);
+        cycle[(at + 1) % cycle.len()].clone()
+    }
+
+    /// Title tag for the search box; nothing for `All`.
+    pub fn label(&self) -> Option<String> {
+        match self {
+            HostFilter::All => None,
+            HostFilter::Local => Some("Local".to_string()),
+            HostFilter::Remote => Some("Remote".to_string()),
+            HostFilter::Only(name) => Some(name.clone()),
+        }
+    }
+
     fn allows_remote(&self, name: &str) -> bool {
         self.allows(&Host::Remote(name.to_string()))
     }
@@ -187,6 +208,13 @@ impl HostsState {
                     status.waiting = false;
                 }
             }
+        }
+    }
+
+    /// Reconnect every host that is down or incompatible, now.
+    pub(crate) fn reconnect_down(&mut self) {
+        for link in &mut self.links {
+            link.reconnect_now();
         }
     }
 
@@ -1045,6 +1073,43 @@ mod tests {
             app.search.error.as_deref(),
             Some("Tree load error: no such file")
         );
+    }
+
+    #[test]
+    fn host_filter_next_when_one_host_then_all_local_remote_cycle() {
+        let hosts = vec!["Z".to_string()];
+        assert_eq!(HostFilter::All.next(&hosts), HostFilter::Local);
+        assert_eq!(HostFilter::Local.next(&hosts), HostFilter::Remote);
+        assert_eq!(HostFilter::Remote.next(&hosts), HostFilter::All);
+    }
+
+    #[test]
+    fn host_filter_next_when_two_hosts_then_includes_each_host() {
+        let hosts = vec!["A".to_string(), "B".to_string()];
+        assert_eq!(
+            HostFilter::Remote.next(&hosts),
+            HostFilter::Only("A".into())
+        );
+        assert_eq!(
+            HostFilter::Only("A".into()).next(&hosts),
+            HostFilter::Only("B".into())
+        );
+        assert_eq!(HostFilter::Only("B".into()).next(&hosts), HostFilter::All);
+    }
+
+    #[test]
+    fn host_filter_when_local_then_remote_rows_hidden_and_no_remote_search_sent() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        type_query(&mut app, "needle");
+        reply_search(&link, &mut app, "r1", 11);
+        assert!(app.search.groups.iter().any(|g| g.session_id == "r1"));
+        app.cycle_host_filter();
+        assert_eq!(app.hosts.filter, HostFilter::Local);
+        assert!(app.search.groups.iter().all(|g| g.host.is_local()));
+        let before = link.sent.lock().unwrap().len();
+        type_query(&mut app, "other");
+        assert_eq!(link.sent.lock().unwrap().len(), before);
     }
 
     #[test]

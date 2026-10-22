@@ -33,6 +33,7 @@ pub enum KeyAction {
     ToggleRegex,
     ToggleProjectFilter,
     ToggleAutomationFilter,
+    CycleHostFilter,
     TogglePreview,
     ExitPreview,
 
@@ -74,6 +75,8 @@ pub struct KeyContext {
     /// The Ctrl+G agent's hits are on screen; list keys act on them, not on
     /// the recent/search list behind them.
     pub ai_has_hits: bool,
+    /// Remote hosts are configured, so Ctrl+L has something to switch.
+    pub has_remote_hosts: bool,
 }
 
 /// Returns true if the key event is Ctrl+H (sent as Ctrl+Backspace on some terminals).
@@ -231,6 +234,15 @@ fn classify_search_toggle(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> 
         return Some(KeyAction::ToggleProjectFilter);
     }
 
+    // Ctrl+L -> cycle the host filter (only with remote hosts configured)
+    if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(if ctx.has_remote_hosts {
+            KeyAction::CycleHostFilter
+        } else {
+            KeyAction::Noop
+        });
+    }
+
     // Ctrl+H / Ctrl+Backspace -> toggle automation filter
     if is_ctrl_h(key) {
         return Some(KeyAction::ToggleAutomationFilter);
@@ -320,6 +332,7 @@ mod tests {
 
     fn search_ctx() -> KeyContext {
         KeyContext {
+            has_remote_hosts: false,
             tree_mode: false,
             input_empty: false,
             preview_mode: false,
@@ -331,6 +344,29 @@ mod tests {
             ai_searching: false,
             ai_has_hits: false,
         }
+    }
+
+    #[test]
+    fn ctrl_l_when_no_remote_hosts_then_no_action() {
+        assert_eq!(
+            classify_key(
+                key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL),
+                &search_ctx()
+            ),
+            KeyAction::Noop
+        );
+    }
+
+    #[test]
+    fn ctrl_l_when_remote_hosts_then_cycle_host_filter() {
+        let ctx = KeyContext {
+            has_remote_hosts: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::CycleHostFilter
+        );
     }
 
     fn tree_ctx() -> KeyContext {

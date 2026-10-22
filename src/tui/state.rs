@@ -1318,6 +1318,7 @@ impl App {
             ai_input_empty: self.ai.query.is_empty(),
             ai_searching: self.ai.searching(),
             ai_has_hits: self.ai.hits.is_some(),
+            has_remote_hosts: self.hosts.has_hosts(),
         }
     }
 
@@ -1496,6 +1497,7 @@ impl App {
             KeyAction::ToggleRegex => self.on_toggle_regex(),
             KeyAction::ToggleProjectFilter => self.toggle_project_filter(),
             KeyAction::ToggleAutomationFilter => self.toggle_automation_filter(),
+            KeyAction::CycleHostFilter => self.cycle_host_filter(),
             KeyAction::TogglePreview => self.on_tab(),
             KeyAction::ExitPreview => self.preview_mode = false,
             _ => return false,
@@ -2193,6 +2195,21 @@ impl App {
             project: self.remote_project_param(),
         });
         self.hosts.send_to(name, request, PendingKind::Recent);
+    }
+
+    /// Ctrl+L: next host filter. Also the way to retry a host that is down.
+    pub(crate) fn cycle_host_filter(&mut self) {
+        let names = self.hosts.names();
+        self.hosts.filter = self.hosts.filter.next(&names);
+        self.hosts.reconnect_down();
+        self.hosts.cancel_searches();
+        self.resend_recent();
+        if !self.input.is_empty() && self.last_query == self.input.text() {
+            let request = self.remote_search_request();
+            self.hosts.send_search(self.search.search_seq, &request);
+        }
+        self.apply_groups_filter();
+        self.apply_recent_sessions_filter();
     }
 
     /// Ask every host for its recent sessions again (scope changed).
