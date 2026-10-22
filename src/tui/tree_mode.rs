@@ -137,6 +137,7 @@ impl App {
                 if self.picker_mode {
                     let project = extract_project_from_path(&tree.file_path);
                     self.outcome = Some(AppOutcome::Pick(PickedSession {
+                        host: crate::remote::Host::Local,
                         session_id: tree.session_id.clone(),
                         file_path: tree.file_path.clone(),
                         source: tree.source,
@@ -149,6 +150,7 @@ impl App {
                     // appends records), see `fork::should_fork_for_resume`.
                     let on_tip = tree.tip_uuid.as_deref() == Some(row.uuid.as_str());
                     self.outcome = Some(AppOutcome::Resume(ResumeTarget {
+                        host: crate::remote::Host::Local,
                         session_id: tree.session_id.clone(),
                         file_path: tree.file_path.clone(),
                         source: tree.source,

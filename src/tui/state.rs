@@ -2,6 +2,7 @@ use crate::agent_search::{AgentEvent, AgentSearchHandle, FoundSession};
 use crate::config::AgentSearchConfig;
 use crate::project_match::{normalize_path_for_prefix_check, path_is_within_project};
 use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
+use crate::remote::{Host, SessionRef};
 use crate::resume::encode_path_for_claude;
 use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
 use crate::session::{SessionProvider, SessionSource};
@@ -623,7 +624,7 @@ impl RecentState {
 fn apply_recent_automation_to_groups(
     groups: &mut [SessionGroup],
     recent_sessions: &[RecentSession],
-    automation_cache: &mut HashMap<String, Option<String>>,
+    automation_cache: &mut HashMap<SessionRef, Option<String>>,
 ) {
     let mut automation_by_session_id: HashMap<&str, String> = HashMap::new();
     for session in recent_sessions {
@@ -633,45 +634,50 @@ fn apply_recent_automation_to_groups(
                 .or_insert_with(|| automation.clone());
         }
         automation_cache
-            .entry(session.file_path.clone())
+            .entry(session.session_ref())
             .or_insert_with(|| session.automation.clone());
     }
 
     for group in groups {
+        let key = group.session_ref();
         if group.automation.is_some() {
-            automation_cache.insert(group.file_path.clone(), group.automation.clone());
+            automation_cache.insert(key, group.automation.clone());
             continue;
         }
+        // A remote host sends the marker with the group; its file is not here.
+        let Some(local_path) = key.local_path() else {
+            continue;
+        };
 
         if let Some(automation) = automation_by_session_id
             .get(group.session_id.as_str())
             .cloned()
         {
-            automation_cache.insert(group.file_path.clone(), Some(automation.clone()));
+            automation_cache.insert(key, Some(automation.clone()));
             group.automation = Some(automation);
             continue;
         }
 
-        if let Some(cached) = automation_cache.get(&group.file_path) {
+        if let Some(cached) = automation_cache.get(&key) {
             group.automation = cached.clone();
             continue;
         }
 
-        let detected = detect_session_automation(Path::new(&group.file_path));
-        automation_cache.insert(group.file_path.clone(), detected.clone());
+        let detected = detect_session_automation(Path::new(local_path));
+        automation_cache.insert(key, detected.clone());
         group.automation = detected;
     }
 }
 
-/// Update the message count in place for every group backed by `file_path`.
+/// Update the message count in place for every group backed by `session`.
 fn set_group_message_count(
     groups: &mut [SessionGroup],
-    file_path: &str,
+    session: &SessionRef,
     count: usize,
     compacted: bool,
 ) {
     for group in groups {
-        if group.file_path == file_path {
+        if group.host == session.host && group.file_path == session.file_path {
             group.message_count = Some(count);
             group.message_count_compacted = compacted;
         }
@@ -681,6 +687,7 @@ fn set_group_message_count(
 /// A session selected in picker mode, ready for output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickedSession {
+    pub host: Host,
     pub session_id: String,
     pub file_path: String,
     pub source: SessionSource,
@@ -730,6 +737,7 @@ pub enum TuiOutcome {
     Quit,
     /// User selected a session to resume in normal mode
     Resume {
+        host: Host,
         session_id: String,
         file_path: String,
         source: SessionSource,
@@ -792,7 +800,7 @@ pub struct SearchState {
     pub(crate) current: Option<SearchHandle>,
     pub error: Option<String>,
     /// Cache: file_path → set of uuids on the latest chain (for fork indicator)
-    pub latest_chains: HashMap<String, HashSet<String>>,
+    pub latest_chains: HashMap<SessionRef, HashSet<String>>,
     /// Channel to receive search results from per-request search threads
     pub(crate) search_rx: Receiver<BackgroundSearchResult>,
     /// Sender end of the result channel — cloned into each spawned per-request
@@ -803,7 +811,7 @@ pub struct SearchState {
     /// Whether the last search hit the per-file match limit (results may be incomplete)
     pub search_truncated: bool,
     /// Channel to receive (file_path, count, compacted) from background message-counting thread
-    pub(crate) message_count_rx: Option<Receiver<(String, usize, bool)>>,
+    pub(crate) message_count_rx: Option<Receiver<(SessionRef, usize, bool)>>,
     /// Cancellation flag for the background counting thread
     pub(crate) message_count_cancel: Option<Arc<AtomicBool>>,
 }
@@ -861,6 +869,7 @@ impl AiState {
 /// Replaces the former 4 separate `Option<String>` fields on `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeTarget {
+    pub host: Host,
     pub session_id: String,
     pub file_path: String,
     pub source: SessionSource,
@@ -908,7 +917,7 @@ pub struct App {
     /// Filter for automated vs manual sessions (Ctrl+H toggle)
     pub automation_filter: AutomationFilter,
     /// Cache: file_path -> resolved automation marker (including negative lookups)
-    automation_cache: HashMap<String, Option<String>>,
+    automation_cache: HashMap<SessionRef, Option<String>>,
     /// Cache: Opencode synthetic file_path (`<db>#<sid>`) -> session
     /// directory. Opens of the Opencode SQLite DB are amortised across
     /// repeated project-filter rebuilds; caches both `Some` and `None`.
@@ -932,7 +941,7 @@ pub struct App {
     /// Last known tree area visible height (set from frame after draw, used for scroll calculations)
     pub last_tree_visible_height: usize,
     /// Sessions resumed from this picker that ran, marked in the result lists
-    pub opened_sessions: HashSet<String>,
+    pub opened_sessions: HashSet<(Host, String)>,
 }
 
 impl App {
@@ -1104,6 +1113,7 @@ impl App {
                 );
                 self.suspend_for_resume();
                 TuiOutcome::Resume {
+                    host: target.host,
                     session_id: target.session_id,
                     file_path: target.file_path,
                     source: target.source,
@@ -1135,13 +1145,20 @@ impl App {
     /// Reopen the picker after a resumed session handed the terminal back.
     /// `opened` names the session that actually ran; a failed launch passes
     /// `None` so the session is not marked.
-    pub fn return_from_resume(&mut self, opened: Option<&str>) {
+    pub fn return_from_resume(&mut self, opened: Option<(&Host, &str)>) {
         self.should_quit = false;
         self.outcome = None;
         self.needs_full_redraw = true;
-        if let Some(session_id) = opened {
-            self.opened_sessions.insert(session_id.to_string());
+        if let Some((host, session_id)) = opened {
+            self.opened_sessions
+                .insert((host.clone(), session_id.to_string()));
         }
+    }
+
+    /// Whether the session ran from this picker, see `opened_sessions`.
+    pub fn is_opened(&self, host: &Host, session_id: &str) -> bool {
+        self.opened_sessions
+            .contains(&(host.clone(), session_id.to_string()))
     }
 
     /// Reset all search result state to idle (no results, no error, no status).
@@ -1506,9 +1523,9 @@ impl App {
         let Some(ref rx) = self.search.message_count_rx else {
             return;
         };
-        while let Ok((file_path, count, compacted)) = rx.try_recv() {
-            set_group_message_count(&mut self.search.all_groups, &file_path, count, compacted);
-            set_group_message_count(&mut self.search.groups, &file_path, count, compacted);
+        while let Ok((session, count, compacted)) = rx.try_recv() {
+            set_group_message_count(&mut self.search.all_groups, &session, count, compacted);
+            set_group_message_count(&mut self.search.groups, &session, count, compacted);
         }
     }
 
@@ -1622,10 +1639,12 @@ impl App {
                 if let Some(flag) = self.search.message_count_cancel.take() {
                     flag.store(true, Ordering::Relaxed);
                 }
+                // Remote groups arrive with their count; only local files are read.
                 let file_paths: Vec<String> = self
                     .search
                     .all_groups
                     .iter()
+                    .filter(|g| g.host.is_local())
                     .map(|g| g.file_path.clone())
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
@@ -1640,7 +1659,10 @@ impl App {
                                 break;
                             }
                             let (msg_count, compacted) = crate::search::count_session_messages(&fp);
-                            if tx.send((fp, msg_count, compacted)).is_err() {
+                            if tx
+                                .send((SessionRef::local(fp), msg_count, compacted))
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -1862,6 +1884,7 @@ mod tests {
 
     fn make_recent_session(file_path: &str) -> RecentSession {
         RecentSession {
+            host: Host::Local,
             session_id: file_path.to_string(),
             file_path: file_path.to_string(),
             project: "proj".to_string(),
@@ -1884,11 +1907,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn opened_mark_when_same_session_on_two_hosts_then_only_resumed_host_marked() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        let remote = Host::Remote("Z".to_string());
+        app.return_from_resume(Some((&remote, "s1")));
+        assert!(app.opened_sessions.contains(&(remote, "s1".to_string())));
+        assert!(!app
+            .opened_sessions
+            .contains(&(Host::Local, "s1".to_string())));
+    }
+
+    #[test]
+    fn message_count_when_same_path_on_two_hosts_then_only_matching_host_updated() {
+        let local = make_group("s1", "/p/s1.jsonl");
+        let mut remote = make_group("s1", "/p/s1.jsonl");
+        remote.host = Host::Remote("Z".to_string());
+        let mut groups = vec![local, remote];
+        set_group_message_count(&mut groups, &SessionRef::local("/p/s1.jsonl"), 5, false);
+        assert_eq!(groups[0].message_count, Some(5));
+        assert_eq!(groups[1].message_count, None);
+    }
+
     fn make_group(session_id: &str, file_path: &str) -> SessionGroup {
         SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: session_id.to_string(),
             file_path: file_path.to_string(),
             matches: vec![RipgrepMatch {
+                content_truncated: false,
                 file_path: file_path.to_string(),
                 message: Some(Message {
                     session_id: session_id.to_string(),
@@ -2029,6 +2078,7 @@ mod tests {
 
     fn claude_session_in_project() -> RecentSession {
         RecentSession {
+            host: Host::Local,
             session_id: "claude-1".to_string(),
             file_path: "/proj/-Users-x-y/abc.jsonl".to_string(),
             project: "y".to_string(),
@@ -2045,6 +2095,7 @@ mod tests {
 
     fn codex_session_with_cwd(session_id: &str, cwd: &str) -> RecentSession {
         RecentSession {
+            host: Host::Local,
             session_id: session_id.to_string(),
             file_path: format!(
                 "/home/u/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-{}.jsonl",
@@ -2210,6 +2261,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
         });
         app.recent.all = vec![RecentSession {
+            host: Host::Local,
             session_id: "auto-session".to_string(),
             file_path: "/sessions/auto-session.jsonl".to_string(),
             project: "proj".to_string(),
@@ -2224,6 +2276,7 @@ mod tests {
         }];
 
         let result = RipgrepMatch {
+            content_truncated: false,
             file_path: "/sessions/agent-123.jsonl".to_string(),
             message: Some(Message {
                 session_id: "auto-session".to_string(),
@@ -2268,6 +2321,7 @@ mod tests {
         app.automation_filter = AutomationFilter::Auto;
 
         let result = RipgrepMatch {
+            content_truncated: false,
             file_path: session_file.path().to_string_lossy().to_string(),
             message: Some(Message {
                 session_id: "old-auto".to_string(),
@@ -2313,6 +2367,7 @@ mod tests {
         });
 
         let result = RipgrepMatch {
+            content_truncated: false,
             file_path: session_file.path().to_string_lossy().to_string(),
             message: Some(Message {
                 session_id: "manual-session".to_string(),
@@ -2403,6 +2458,7 @@ mod tests {
 
     fn make_session_with_cwd(file_path: &str, cwd: Option<&str>) -> RecentSession {
         RecentSession {
+            host: Host::Local,
             session_id: file_path.to_string(),
             file_path: file_path.to_string(),
             project: "proj".to_string(),
@@ -2477,6 +2533,7 @@ mod tests {
         // Codex-only) must now also cover Opencode so the project filter
         // doesn't silently drop them.
         let session = RecentSession {
+            host: Host::Local,
             session_id: "ses_OC".to_string(),
             file_path: "/tmp/opencode/opencode.db#ses_OC".to_string(),
             project: "proj".to_string(),
@@ -2714,6 +2771,9 @@ mod tests {
         app.search.results_query = "hello".to_string();
         app.search.results_count = 1;
         app.search.groups = vec![SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
@@ -2732,7 +2792,7 @@ mod tests {
         app.last_keystroke = Some(Instant::now());
         app.search
             .latest_chains
-            .insert("file".to_string(), HashSet::new());
+            .insert(SessionRef::local("file"), HashSet::new());
         app.search.error = Some("stale error".to_string());
         app.preview_mode = true;
 
@@ -3123,6 +3183,9 @@ mod tests {
         app.search.results_query = "hello".to_string();
         app.search.results_count = 1;
         app.search.groups = vec![SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "abc123".to_string(),
             file_path: "/test/file.jsonl".to_string(),
             matches: vec![],
@@ -3139,7 +3202,7 @@ mod tests {
         });
         app.search
             .latest_chains
-            .insert("file".to_string(), HashSet::new());
+            .insert(SessionRef::local("file"), HashSet::new());
         app.search.error = Some("stale error".to_string());
         app.preview_mode = true;
 
@@ -3197,6 +3260,7 @@ mod tests {
     #[test]
     fn test_picked_session_to_key_value_cli() {
         let picked = PickedSession {
+            host: Host::Local,
             session_id: "abc-123".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3213,6 +3277,7 @@ mod tests {
     #[test]
     fn test_picked_session_to_key_value_desktop() {
         let picked = PickedSession {
+            host: Host::Local,
             session_id: "desk-456".to_string(),
             file_path: "/Library/Application Support/Claude/local-agent-mode-sessions/sess.jsonl"
                 .to_string(),
@@ -3229,6 +3294,7 @@ mod tests {
     #[test]
     fn test_picked_session_write_output_to_file() {
         let picked = PickedSession {
+            host: Host::Local,
             session_id: "file-out-test".to_string(),
             file_path: "/sessions/test.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3247,6 +3313,7 @@ mod tests {
     #[test]
     fn test_picked_session_write_output_to_stdout() {
         let picked = PickedSession {
+            host: Host::Local,
             session_id: "stdout-test".to_string(),
             file_path: "/sessions/test.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3272,6 +3339,7 @@ mod tests {
     fn test_take_outcome_resume_when_outcome_set() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            host: Host::Local,
             session_id: "sess-1".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3282,6 +3350,7 @@ mod tests {
         assert_eq!(
             outcome,
             TuiOutcome::Resume {
+                host: Host::Local,
                 session_id: "sess-1".to_string(),
                 file_path: "/path/to/session.jsonl".to_string(),
                 source: SessionSource::CLI,
@@ -3295,6 +3364,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.picker_mode = true;
         app.outcome = Some(AppOutcome::Pick(PickedSession {
+            host: Host::Local,
             session_id: "pick-1".to_string(),
             file_path: "/pick/session.jsonl".to_string(),
             source: SessionSource::ClaudeDesktop,
@@ -3306,6 +3376,7 @@ mod tests {
         assert_eq!(
             outcome,
             TuiOutcome::Pick(PickedSession {
+                host: Host::Local,
                 session_id: "pick-1".to_string(),
                 file_path: "/pick/session.jsonl".to_string(),
                 source: SessionSource::ClaudeDesktop,
@@ -3334,6 +3405,7 @@ mod tests {
         app.last_query = "foo".to_string();
         app.search.group_cursor = 2;
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            host: Host::Local,
             session_id: session_id.to_string(),
             file_path: format!("/p/{session_id}.jsonl"),
             source: SessionSource::CLI,
@@ -3352,7 +3424,7 @@ mod tests {
         app.ai.hit_cursor = 1;
 
         let outcome = app.take_outcome();
-        app.return_from_resume(Some("s2"));
+        app.return_from_resume(Some((&Host::Local, "s2")));
 
         assert!(matches!(outcome, TuiOutcome::Resume { ref session_id, .. } if session_id == "s2"));
         assert_eq!(app.input.text(), "foo");
@@ -3365,7 +3437,9 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.outcome.is_none());
         assert!(app.needs_full_redraw);
-        assert!(app.opened_sessions.contains("s2"));
+        assert!(app
+            .opened_sessions
+            .contains(&(Host::Local, "s2".to_string())));
     }
 
     #[test]
@@ -3396,7 +3470,7 @@ mod tests {
             .unwrap();
 
         app.take_outcome();
-        app.return_from_resume(Some("s2"));
+        app.return_from_resume(Some((&Host::Local, "s2")));
         app.tick();
 
         assert!(cancel.load(Ordering::Relaxed));
@@ -3441,7 +3515,7 @@ mod tests {
         app.tree.tree_cursor = 4;
 
         app.take_outcome();
-        app.return_from_resume(Some("s1"));
+        app.return_from_resume(Some((&Host::Local, "s1")));
 
         assert!(app.tree_mode);
         assert_eq!(app.tree.tree_cursor, 4);
@@ -3456,6 +3530,7 @@ mod tests {
             .collect();
         app.recent.cursor = 1;
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            host: Host::Local,
             session_id: "r1".to_string(),
             file_path: "/p/r1.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3463,7 +3538,7 @@ mod tests {
         }));
 
         app.take_outcome();
-        app.return_from_resume(Some("r1"));
+        app.return_from_resume(Some((&Host::Local, "r1")));
 
         assert_eq!(app.recent.cursor, 1);
     }
@@ -3483,6 +3558,7 @@ mod tests {
     fn test_take_outcome_pick_variant() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.outcome = Some(AppOutcome::Pick(PickedSession {
+            host: Host::Local,
             session_id: "pick-1".to_string(),
             file_path: "/pick/session.jsonl".to_string(),
             source: SessionSource::CLI,
@@ -3859,6 +3935,7 @@ mod tests {
         });
 
         let m = RipgrepMatch {
+            content_truncated: false,
             file_path: "/sessions/match.jsonl".to_string(),
             message: Some(Message {
                 session_id: "match".to_string(),
@@ -4064,6 +4141,7 @@ mod tests {
         // expect to see materialise in `groups`. Real-worker stragglers
         // with seq <= 2 will likewise mismatch and be dropped.
         let stale_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/sessions/stale.jsonl".to_string(),
             message: Some(Message {
                 session_id: "stale".to_string(),
@@ -4076,6 +4154,7 @@ mod tests {
             source: SessionSource::CLI,
         };
         let fresh_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/sessions/fresh.jsonl".to_string(),
             message: Some(Message {
                 session_id: "fresh".to_string(),
@@ -4330,7 +4409,7 @@ mod tests {
         app.search.groups = vec![make_group("s1", "/sessions/s1.jsonl")];
         let (tx, rx) = mpsc::channel();
         app.search.message_count_rx = Some(rx);
-        tx.send(("/sessions/s1.jsonl".to_string(), 42, true))
+        tx.send((SessionRef::local("/sessions/s1.jsonl"), 42, true))
             .unwrap();
 
         app.tick();
@@ -4514,6 +4593,7 @@ mod tests {
         let (_tx, cancel) = install_agent(&mut app);
         app.ai.progress = vec!["x".into()];
         app.outcome = Some(AppOutcome::Resume(ResumeTarget {
+            host: crate::remote::Host::Local,
             session_id: "s".into(),
             file_path: "/p/s.jsonl".into(),
             source: SessionSource::CLI,
@@ -4648,6 +4728,7 @@ mod tests {
         assert_eq!(
             app.outcome,
             Some(AppOutcome::Resume(ResumeTarget {
+                host: crate::remote::Host::Local,
                 session_id: "/p/b.jsonl".into(),
                 file_path: "/p/b.jsonl".into(),
                 source: SessionSource::CLI,

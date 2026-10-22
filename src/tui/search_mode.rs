@@ -8,6 +8,7 @@ use std::time::Instant;
 pub(crate) fn session_outcome(session: &RecentSession, picker_mode: bool) -> AppOutcome {
     if picker_mode {
         AppOutcome::Pick(PickedSession {
+            host: session.host.clone(),
             session_id: session.session_id.clone(),
             file_path: session.file_path.clone(),
             source: session.source,
@@ -16,6 +17,7 @@ pub(crate) fn session_outcome(session: &RecentSession, picker_mode: bool) -> App
         })
     } else {
         AppOutcome::Resume(ResumeTarget {
+            host: session.host.clone(),
             session_id: session.session_id.clone(),
             file_path: session.file_path.clone(),
             source: session.source,
@@ -133,12 +135,15 @@ impl App {
             self.search.expanded = true;
             // Precompute latest chain for the expanded group (for fork indicator)
             if let Some(group) = self.search.groups.get(self.search.group_cursor) {
-                let fp = group.file_path.clone();
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    self.search.latest_chains.entry(fp.clone())
-                {
-                    if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
-                        e.insert(chain);
+                let key = group.session_ref();
+                // Remote chains come with the search reply; only local files are read.
+                if let Some(fp) = key.local_path().map(str::to_string) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        self.search.latest_chains.entry(key)
+                    {
+                        if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
+                            e.insert(chain);
+                        }
                     }
                 }
             }
@@ -237,6 +242,9 @@ impl App {
         }
 
         // Extract values first to avoid borrow issues
+        let group = self.search.groups.get(self.search.group_cursor);
+        let host = group.map(|g| g.host.clone()).unwrap_or_default();
+        let project_label = group.and_then(|g| g.project_label.clone());
         let resume_info = self.selected_match().and_then(|m| {
             m.message.as_ref().map(|msg| {
                 (
@@ -250,8 +258,11 @@ impl App {
 
         if let Some((session_id, file_path, source, uuid)) = resume_info {
             if self.picker_mode {
-                let project = extract_project_from_path(&file_path);
+                // A remote file is not here to read; its host sent the label.
+                let project =
+                    project_label.unwrap_or_else(|| extract_project_from_path(&file_path));
                 self.outcome = Some(AppOutcome::Pick(PickedSession {
+                    host,
                     session_id,
                     file_path,
                     source,
@@ -264,6 +275,7 @@ impl App {
                 // UUID-based resume is only meaningful from tree view where
                 // the user explicitly selects a specific point.
                 self.outcome = Some(AppOutcome::Resume(ResumeTarget {
+                    host,
                     session_id,
                     file_path,
                     source,
@@ -306,6 +318,7 @@ mod tests {
 
     fn make_recent_session(id: &str, project: &str, summary: &str) -> RecentSession {
         RecentSession {
+            host: crate::remote::Host::Local,
             session_id: id.to_string(),
             file_path: format!("/tmp/{}.jsonl", id),
             project: project.to_string(),
@@ -339,6 +352,9 @@ mod tests {
 
         // Setup some groups
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
@@ -358,6 +374,9 @@ mod tests {
     fn test_left_collapses_expanded_group_even_with_input_cursor() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
@@ -387,6 +406,7 @@ mod tests {
 
     fn make_match(file_path: &str) -> RipgrepMatch {
         RipgrepMatch {
+            content_truncated: false,
             file_path: file_path.to_string(),
             message: None,
             source: SessionSource::CLI,
@@ -396,6 +416,9 @@ mod tests {
     fn make_group_with_matches(session_id: &str, match_count: usize) -> SessionGroup {
         let file_path = format!("/{}.jsonl", session_id);
         SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: session_id.to_string(),
             file_path: file_path.clone(),
             matches: (0..match_count).map(|_| make_match(&file_path)).collect(),
@@ -630,6 +653,7 @@ mod tests {
             query: "query".to_string(),
             result: Ok(crate::search::SearchResult {
                 matches: vec![RipgrepMatch {
+                    content_truncated: false,
                     file_path: "/all/session.jsonl".to_string(),
                     message: None,
                     source: SessionSource::CLI,
@@ -671,6 +695,9 @@ mod tests {
     fn test_in_recent_sessions_mode_false_when_groups_present() {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/test.jsonl".to_string(),
             matches: vec![],
@@ -824,10 +851,14 @@ mod tests {
 
         // Set up a search result with a message
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "sess-123".to_string(),
             file_path: "/home/user/.claude/projects/-Users-user-projects-myapp/session.jsonl"
                 .to_string(),
             matches: vec![RipgrepMatch {
+                content_truncated: false,
                 file_path: "/home/user/.claude/projects/-Users-user-projects-myapp/session.jsonl"
                     .to_string(),
                 message: Some(Message {

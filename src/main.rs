@@ -456,13 +456,14 @@ enum AfterResume {
 fn handle_outcome(outcome: ccs::tui::TuiOutcome, overlay: bool, app: &mut ccs::tui::App) -> bool {
     match outcome {
         ccs::tui::TuiOutcome::Resume {
+            host,
             session_id,
             file_path,
             source,
             uuid,
         } => {
             let after = resume_outcome(&session_id, &file_path, source, uuid.as_deref(), overlay);
-            apply_after_resume(app, after, &session_id)
+            apply_after_resume(app, after, &host, &session_id)
         }
         _ => {
             // Quit
@@ -473,11 +474,16 @@ fn handle_outcome(outcome: ccs::tui::TuiOutcome, overlay: bool, app: &mut ccs::t
 
 /// Reopen the picker after a resume when one follows. Returns `true` to loop
 /// back into the app.
-fn apply_after_resume(app: &mut ccs::tui::App, after: AfterResume, session_id: &str) -> bool {
+fn apply_after_resume(
+    app: &mut ccs::tui::App,
+    after: AfterResume,
+    host: &ccs::remote::Host,
+    session_id: &str,
+) -> bool {
     match after {
         AfterResume::Exit => false,
         AfterResume::Picker { launched } => {
-            app.return_from_resume(launched.then_some(session_id));
+            app.return_from_resume(launched.then_some((host, session_id)));
             true
         }
     }
@@ -658,10 +664,13 @@ mod tests {
         assert!(apply_after_resume(
             &mut app,
             AfterResume::Picker { launched: true },
+            &ccs::remote::Host::Local,
             "s1"
         ));
         assert!(!app.should_quit);
-        assert!(app.opened_sessions.contains("s1"));
+        assert!(app
+            .opened_sessions
+            .contains(&(ccs::remote::Host::Local, "s1".to_string())));
     }
 
     #[test]
@@ -670,6 +679,7 @@ mod tests {
         assert!(apply_after_resume(
             &mut app,
             AfterResume::Picker { launched: false },
+            &ccs::remote::Host::Local,
             "s1"
         ));
         assert!(app.opened_sessions.is_empty());
@@ -678,7 +688,12 @@ mod tests {
     #[test]
     fn exit_when_applying_then_loop_stops() {
         let mut app = ccs::tui::App::new(vec![]);
-        assert!(!apply_after_resume(&mut app, AfterResume::Exit, "s1"));
+        assert!(!apply_after_resume(
+            &mut app,
+            AfterResume::Exit,
+            &ccs::remote::Host::Local,
+            "s1"
+        ));
     }
 
     #[test]
@@ -820,6 +835,7 @@ mod tests {
 
     fn sample_picked_session() -> ccs::tui::PickedSession {
         ccs::tui::PickedSession {
+            host: ccs::remote::Host::Local,
             session_id: "sess-1".to_string(),
             file_path: "/tmp/sess-1.jsonl".to_string(),
             source: ccs::session::SessionSource::CLI,

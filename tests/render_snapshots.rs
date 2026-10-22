@@ -72,6 +72,7 @@ fn snapshot_search_with_results() {
     };
 
     let m = RipgrepMatch {
+        content_truncated: false,
         file_path: "/home/user/.claude/projects/-home-user-projects-myapp/session.jsonl"
             .to_string(),
         message: Some(msg),
@@ -79,6 +80,9 @@ fn snapshot_search_with_results() {
     };
 
     app.search.groups = vec![SessionGroup {
+        host: ccs::remote::Host::Local,
+        matches_total: None,
+        project_label: None,
         session_id: "abc12345-def6-7890".to_string(),
         file_path: m.file_path.clone(),
         matches: vec![m.clone()],

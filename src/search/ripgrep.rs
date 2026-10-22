@@ -43,6 +43,9 @@ pub struct RipgrepMatch {
     pub file_path: String,
     pub message: Option<Message>,
     pub source: SessionSource,
+    /// The serving host cut the message to a snippet; the full text comes
+    /// from a `show` request. Always `false` for local matches.
+    pub content_truncated: bool,
 }
 
 /// Result of a search operation.
@@ -738,6 +741,7 @@ fn search_opencode_storage(
         };
 
         results.push(RipgrepMatch {
+            content_truncated: false,
             file_path: row.session_file.to_string_lossy().to_string(),
             message: Some(Message {
                 session_id: row.session_id,
@@ -809,6 +813,7 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let source = SessionSource::from_path(&file_path);
 
     Some(RipgrepMatch {
+        content_truncated: false,
         file_path,
         message,
         source,

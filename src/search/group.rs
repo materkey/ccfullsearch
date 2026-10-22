@@ -1,4 +1,5 @@
 use super::RipgrepMatch;
+use crate::remote::{Host, SessionRef};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -13,9 +14,22 @@ pub struct SessionGroup {
     pub message_count: Option<usize>,
     /// Whether the session was compacted (pre-compaction messages absent from file).
     pub message_count_compacted: bool,
+    /// Machine the session file lives on.
+    pub host: Host,
+    /// Project label sent by a remote host; `None` for local groups, whose
+    /// label is derived from the file path.
+    pub project_label: Option<String>,
+    /// Matches the remote host found before capping `matches`; `None` for
+    /// local groups.
+    pub matches_total: Option<usize>,
 }
 
 impl SessionGroup {
+    /// The session file this group was found in, on its host.
+    pub fn session_ref(&self) -> SessionRef {
+        SessionRef::new(self.host.clone(), self.file_path.clone())
+    }
+
     /// Returns the most recent timestamp in the group
     pub fn latest_timestamp(&self) -> Option<DateTime<Utc>> {
         self.matches
@@ -52,6 +66,9 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
             group_map.insert(
                 session_id.clone(),
                 SessionGroup {
+                    host: Host::Local,
+                    matches_total: None,
+                    project_label: None,
                     session_id,
                     file_path: m.file_path.clone(),
                     matches: vec![m],
@@ -156,6 +173,7 @@ mod tests {
 
     fn make_match(session_id: &str, timestamp_mins: i64) -> RipgrepMatch {
         RipgrepMatch {
+            content_truncated: false,
             file_path: format!("/path/to/{}.jsonl", session_id),
             message: Some(Message {
                 session_id: session_id.to_string(),
@@ -267,6 +285,9 @@ mod tests {
     #[test]
     fn test_latest_timestamp() {
         let group = SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![
@@ -289,6 +310,9 @@ mod tests {
     #[test]
     fn test_first_match() {
         let group = SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![make_match("test", 0), make_match("test", 1)],
@@ -309,6 +333,9 @@ mod tests {
     #[test]
     fn test_first_match_empty() {
         let group = SessionGroup {
+            host: Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test".to_string(),
             file_path: "/path/to/test.jsonl".to_string(),
             matches: vec![],
@@ -329,6 +356,7 @@ mod tests {
         timestamp_mins: i64,
     ) -> RipgrepMatch {
         RipgrepMatch {
+            content_truncated: false,
             file_path: format!("/path/to/{}.jsonl", session_id),
             message: Some(Message {
                 session_id: session_id.to_string(),
@@ -408,6 +436,7 @@ mod tests {
         .unwrap();
 
         let results = vec![RipgrepMatch {
+            content_truncated: false,
             file_path: path.to_string_lossy().to_string(),
             message: Some(Message {
                 session_id: "auto-session".to_string(),
@@ -451,6 +480,7 @@ mod tests {
         .unwrap();
 
         let results = vec![RipgrepMatch {
+            content_truncated: false,
             file_path: aux_path.to_string_lossy().to_string(),
             message: Some(Message {
                 session_id: "auto-session".to_string(),
@@ -472,6 +502,7 @@ mod tests {
     fn test_group_skips_none_messages() {
         let results = vec![
             RipgrepMatch {
+                content_truncated: false,
                 file_path: "/path/to/session.jsonl".to_string(),
                 message: None, // Should be skipped
                 source: SessionSource::CLI,

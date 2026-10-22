@@ -122,6 +122,7 @@ mod tests {
     fn hit(id: &str, why: &str) -> FoundSession {
         FoundSession {
             session: RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: id.to_string(),
                 file_path: format!("/p/{id}.jsonl"),
                 project: format!("proj-{id}"),
@@ -179,7 +180,8 @@ mod tests {
     #[test]
     fn opened_hit_render_shows_opened_mark() {
         let mut app = ai_app_with_hits(vec![hit("aaaa1111", "a"), hit("bbbb2222", "b")]);
-        app.opened_sessions.insert("aaaa1111".to_string());
+        app.opened_sessions
+            .insert((crate::remote::Host::Local, "aaaa1111".to_string()));
         let rows = rendered_rows(&app);
         assert!(rows[0].contains("[opened]"), "{rows:?}");
         assert!(!rows[2].contains("[opened]"), "{rows:?}");

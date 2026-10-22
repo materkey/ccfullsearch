@@ -748,13 +748,13 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         }
 
         // Group header
-        let opened = app.opened_sessions.contains(&group.session_id);
+        let opened = app.is_opened(&group.host, &group.session_id);
         let header = render_group_header(group, is_selected, is_expanded, opened, area_width);
         items.push(header);
 
         // If expanded, show individual messages; otherwise show the preview line
         if is_expanded {
-            let latest_chain = app.search.latest_chains.get(&group.file_path);
+            let latest_chain = app.search.latest_chains.get(&group.session_ref());
             for (j, m) in group.matches.iter().enumerate() {
                 let is_match_selected = j == app.search.sub_cursor;
                 let sub_item = render_sub_match(
@@ -1074,7 +1074,7 @@ pub(crate) fn recent_session_header_item(
             session_id: &session.session_id,
             count: &count_str,
             has_automation: session.automation.is_some(),
-            opened: app.opened_sessions.contains(&session.session_id),
+            opened: app.is_opened(&session.host, &session.session_id),
         },
         header_style,
         is_selected,
@@ -1657,12 +1657,16 @@ mod tests {
         };
 
         let m = RipgrepMatch {
+            content_truncated: false,
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(msg),
             source: SessionSource::CLI,
         };
 
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -1691,9 +1695,13 @@ mod tests {
                     ..Default::default()
                 };
                 SessionGroup {
+                    host: crate::remote::Host::Local,
+                    matches_total: None,
+                    project_label: None,
                     session_id: format!("s{i}"),
                     file_path: file_path.clone(),
                     matches: vec![RipgrepMatch {
+                        content_truncated: false,
                         file_path,
                         message: Some(msg),
                         source: SessionSource::CLI,
@@ -1714,6 +1722,7 @@ mod tests {
         app.recent.load_rx = None;
         app.recent.filtered = (0..n)
             .map(|i| crate::recent::RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: format!("recent-{i}"),
                 file_path: format!("/test/recent-{i}.jsonl"),
                 project: "proj".to_string(),
@@ -1751,7 +1760,8 @@ mod tests {
     fn opened_search_group_when_rendering_then_tag_is_shown_only_on_it() {
         let mut app = make_test_app_with_n_groups(3);
         let opened = app.search.groups[1].session_id.clone();
-        app.opened_sessions.insert(opened);
+        app.opened_sessions
+            .insert((crate::remote::Host::Local, opened));
 
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1769,7 +1779,8 @@ mod tests {
     fn opened_recent_session_when_rendering_then_tag_is_shown() {
         let mut app = make_test_app_with_n_recent_sessions(3);
         let opened = app.recent.filtered[0].session_id.clone();
-        app.opened_sessions.insert(opened);
+        app.opened_sessions
+            .insert((crate::remote::Host::Local, opened));
 
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1952,9 +1963,13 @@ mod tests {
             ..Default::default()
         };
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "deep-match".to_string(),
             file_path: "/path/to/projects/-Users-test-projects-deep/session.jsonl".to_string(),
             matches: vec![RipgrepMatch {
+                content_truncated: false,
                 file_path: "/path/to/projects/-Users-test-projects-deep/session.jsonl".to_string(),
                 message: Some(msg),
                 source: SessionSource::CLI,
@@ -2014,9 +2029,13 @@ mod tests {
         // Scrolling the cursor through the list must not leak the tails of
         // previous previews into the next header row.
         let make_group = |idx: usize, content: String| SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: format!("sess-{:08}", idx),
             file_path: format!("/p/grp-{:02}.jsonl", idx),
             matches: vec![RipgrepMatch {
+                content_truncated: false,
                 file_path: format!("/p/grp-{:02}.jsonl", idx),
                 message: Some(Message {
                     session_id: format!("sess-{:08}", idx),
@@ -2097,6 +2116,7 @@ mod tests {
             let mut matches = Vec::with_capacity(5);
             for mi in 0..5 {
                 matches.push(RipgrepMatch {
+                    content_truncated: false,
                     file_path: format!("/p/g{:04}.jsonl", gi),
                     message: Some(Message {
                         session_id: format!("sess-{:04}", gi),
@@ -2111,6 +2131,9 @@ mod tests {
                 });
             }
             groups.push(SessionGroup {
+                host: crate::remote::Host::Local,
+                matches_total: None,
+                project_label: None,
                 session_id: format!("sess-{:04}", gi),
                 file_path: format!("/p/g{:04}.jsonl", gi),
                 matches,
@@ -2138,8 +2161,12 @@ mod tests {
         const ITERS: u32 = 30;
         let start = std::time::Instant::now();
         for i in 0..ITERS {
-            tx.send((format!("/p/g{:04}.jsonl", i), (i as usize + 1) * 100, false))
-                .unwrap();
+            tx.send((
+                crate::remote::SessionRef::local(format!("/p/g{:04}.jsonl", i)),
+                (i as usize + 1) * 100,
+                false,
+            ))
+            .unwrap();
             app.on_down();
             app.tick();
             terminal
@@ -2301,12 +2328,16 @@ mod tests {
         };
 
         let m = RipgrepMatch {
+            content_truncated: false,
             file_path: "/path/to/session.jsonl".to_string(),
             message: Some(msg),
             source: SessionSource::CLI,
         };
 
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -2341,6 +2372,7 @@ mod tests {
             };
 
             let m = RipgrepMatch {
+                content_truncated: false,
                 file_path: format!(
                     "/path/to/projects/-Users-test-projects-app{}/session.jsonl",
                     i
@@ -2350,6 +2382,9 @@ mod tests {
             };
 
             app.search.groups.push(SessionGroup {
+                host: crate::remote::Host::Local,
+                matches_total: None,
+                project_label: None,
                 session_id: format!("session-{}", i),
                 file_path: m.file_path.clone(),
                 matches: vec![m],
@@ -2408,12 +2443,14 @@ mod tests {
         };
 
         let large_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(large_msg),
             source: SessionSource::CLI,
         };
 
         let small_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/path/to/projects/-Users-test-projects-myapp/session.jsonl".to_string(),
             message: Some(small_msg),
             source: SessionSource::CLI,
@@ -2421,6 +2458,9 @@ mod tests {
 
         // Single group with both messages
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: large_match.file_path.clone(),
             matches: vec![large_match, small_match],
@@ -2515,6 +2555,7 @@ mod tests {
                 ..Default::default()
             };
             matches.push(RipgrepMatch {
+                content_truncated: false,
                 file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
                 message: Some(msg),
                 source: SessionSource::CLI,
@@ -2522,6 +2563,9 @@ mod tests {
         }
 
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: "/path/to/projects/-Users-test-projects-app/session.jsonl".to_string(),
             matches,
@@ -2617,15 +2661,20 @@ mod tests {
         };
 
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             matches: vec![
                 RipgrepMatch {
+                    content_truncated: false,
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(large_msg),
                     source: SessionSource::CLI,
                 },
                 RipgrepMatch {
+                    content_truncated: false,
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
                     source: SessionSource::CLI,
@@ -2721,15 +2770,20 @@ mod tests {
         };
 
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: "/path/to/session.jsonl".to_string(),
             matches: vec![
                 RipgrepMatch {
+                    content_truncated: false,
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(ansi_msg),
                     source: SessionSource::CLI,
                 },
                 RipgrepMatch {
+                    content_truncated: false,
                     file_path: "/path/to/session.jsonl".to_string(),
                     message: Some(small_msg),
                     source: SessionSource::CLI,
@@ -2784,12 +2838,16 @@ mod tests {
         };
 
         let m = RipgrepMatch {
+            content_truncated: false,
             file_path: "/Users/test/.claude/projects/-Users-test-myapp/session.jsonl".to_string(),
             message: Some(msg),
             source: SessionSource::CLI,
         };
 
         let group = SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -2823,13 +2881,16 @@ mod tests {
             ..Default::default()
         };
 
-        let m = RipgrepMatch {
+        let m = RipgrepMatch { content_truncated: false,
             file_path: "/Users/test/Library/Application Support/Claude/local-agent-mode-sessions/uuid/uuid/local_123/audit.jsonl".to_string(),
             message: Some(msg),
             source: SessionSource::ClaudeDesktop,
         };
 
         let group = SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -2864,6 +2925,7 @@ mod tests {
         };
 
         let m = RipgrepMatch {
+            content_truncated: false,
             file_path:
                 "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T10-00-00-session.jsonl"
                     .to_string(),
@@ -2872,6 +2934,9 @@ mod tests {
         };
 
         let group = SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "test-session".to_string(),
             file_path: m.file_path.clone(),
             matches: vec![m],
@@ -2956,6 +3021,7 @@ mod tests {
         app.recent.load_rx = None;
         app.recent.filtered = vec![
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: "sess-1".to_string(),
                 file_path: "/test/session1.jsonl".to_string(),
                 project: "my-project".to_string(),
@@ -2969,6 +3035,7 @@ mod tests {
                 cwd: None,
             },
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: "sess-2".to_string(),
                 file_path: "/test/session2.jsonl".to_string(),
                 project: "other-app".to_string(),
@@ -3022,6 +3089,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M")
             .to_string();
         let session = RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "b701e752abcd1234".to_string(),
             file_path: "/projects/avito/sess.jsonl".to_string(),
             project: "avito-android".to_string(),
@@ -3051,6 +3119,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M")
             .to_string();
         let session = RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "short-id".to_string(),
             file_path: "/sessions/desktop.jsonl".to_string(),
             project: "~".to_string(),
@@ -3079,7 +3148,7 @@ mod tests {
             .with_timezone(&Local)
             .format("%Y-%m-%d %H:%M")
             .to_string();
-        let session = RecentSession {
+        let session = RecentSession { host: crate::remote::Host::Local,
             session_id: "019f0000-0000-7000-8000-000000000001".to_string(),
             file_path: "/Users/test/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl".to_string(),
             project: "myapp".to_string(),
@@ -3104,7 +3173,7 @@ mod tests {
         use chrono::TimeZone;
 
         fn make_session(ts: chrono::DateTime<Utc>, session_id: &str) -> RecentSession {
-            RecentSession {
+            RecentSession { host: crate::remote::Host::Local,
                 session_id: session_id.to_string(),
                 file_path: format!(
                     "/Users/test/.codex/sessions/2026/05/03/rollout-2026-05-03T10-43-24-{session_id}.jsonl"
@@ -3162,6 +3231,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M")
             .to_string();
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "b701e752abcd".to_string(),
             file_path: "/projects/sess.jsonl".to_string(),
             project: "avito-android".to_string(),
@@ -3291,9 +3361,13 @@ mod tests {
         let file_path =
             "/path/to/projects/-Users-test-projects-highlight-app/session.jsonl".to_string();
         app.search.groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "search-style".to_string(),
             file_path: file_path.clone(),
             matches: vec![RipgrepMatch {
+                content_truncated: false,
                 file_path,
                 message: Some(msg),
                 source: SessionSource::CLI,
@@ -3355,6 +3429,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: session_id.to_string(),
             // Path must match `is_opencode_session_path` so SessionProvider::from_path
             // returns Opencode and the badge label resolves to "OC". The synthetic
@@ -3424,6 +3499,7 @@ mod tests {
         app.recent.load_rx = None;
         app.recent.filtered = vec![
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: id_a.to_string(),
                 file_path: format!("/tmp/opencode/opencode.db#{id_a}"),
                 project: "project-a".to_string(),
@@ -3437,6 +3513,7 @@ mod tests {
                 cwd: None,
             },
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: id_b.to_string(),
                 file_path: format!("/tmp/opencode/opencode.db#{id_b}"),
                 project: "project-b".to_string(),
@@ -3484,6 +3561,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "ses_OC1".to_string(),
             file_path: "/tmp/opencode/opencode.db#ses_OC1".to_string(),
             project: "opencode-project".to_string(),
@@ -3524,6 +3602,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "recent-style".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "recent-app".to_string(),
@@ -3619,6 +3698,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "124e8bc6abcd".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "claude-code-fullsearch-rust".to_string(),
@@ -3692,6 +3772,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "124e8bc6abcd".to_string(),
             file_path: "/p/sess.jsonl".to_string(),
             project: "claude-code-fullsearch-rust".to_string(),
@@ -3732,6 +3813,7 @@ mod tests {
         app.recent.loading = false;
         app.recent.load_rx = None;
         app.recent.filtered = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
@@ -3773,6 +3855,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.results_query = "later".to_string();
         let test_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
                 session_id: "sess-1".to_string(),
@@ -3786,6 +3869,9 @@ mod tests {
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
@@ -3815,6 +3901,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.results_query = "test".to_string();
         let test_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
                 session_id: "sess-1".to_string(),
@@ -3828,6 +3915,9 @@ mod tests {
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
@@ -3858,6 +3948,7 @@ mod tests {
         let mut app = App::new(vec!["/test".to_string()]);
         app.search.results_query = "test".to_string();
         let test_match = RipgrepMatch {
+            content_truncated: false,
             file_path: "/test/session.jsonl".to_string(),
             message: Some(Message {
                 session_id: "sess-1".to_string(),
@@ -3871,6 +3962,9 @@ mod tests {
         };
         app.search.results_count = 1;
         app.search.all_groups = vec![SessionGroup {
+            host: crate::remote::Host::Local,
+            matches_total: None,
+            project_label: None,
             session_id: "sess-1".to_string(),
             file_path: "/test/session.jsonl".to_string(),
             matches: vec![test_match],
@@ -3905,6 +3999,7 @@ mod tests {
         app.recent.load_rx = None;
         app.automation_filter = crate::tui::state::AutomationFilter::Manual;
         app.recent.all = vec![RecentSession {
+            host: crate::remote::Host::Local,
             session_id: "sess-1".to_string(),
             file_path: "/test/session1.jsonl".to_string(),
             project: "proj".to_string(),
@@ -3940,6 +4035,7 @@ mod tests {
         app.recent.load_rx = None;
         app.recent.all = vec![
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: "a".to_string(),
                 file_path: "/test/a.jsonl".to_string(),
                 project: "p".to_string(),
@@ -3953,6 +4049,7 @@ mod tests {
                 cwd: None,
             },
             RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: "b".to_string(),
                 file_path: "/test/b.jsonl".to_string(),
                 project: "p".to_string(),

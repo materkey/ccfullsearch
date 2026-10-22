@@ -15,6 +15,7 @@ pub mod config;
 pub mod dag;
 pub mod project_match;
 pub mod recent;
+pub mod remote;
 pub mod resume;
 pub mod search;
 pub mod session;

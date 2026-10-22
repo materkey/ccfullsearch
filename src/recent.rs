@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
+use crate::remote::{Host, SessionRef};
 use crate::search::{count_session_messages, extract_project_from_path};
 use crate::session::opencode::{self, opencode_database_path, OpencodeSessionSummary};
 use crate::session::record::{ContentBlock, ContentMode, MessageRole, SessionRecord};
@@ -37,6 +38,15 @@ pub struct RecentSession {
     /// filled only for Codex rollouts (`session_meta.payload.cwd`); Claude
     /// sessions encode the project in the file path itself.
     pub cwd: Option<String>,
+    /// Machine the session file lives on.
+    pub host: Host,
+}
+
+impl RecentSession {
+    /// The session file, on its host.
+    pub fn session_ref(&self) -> SessionRef {
+        SessionRef::new(self.host.clone(), self.file_path.clone())
+    }
 }
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
@@ -924,6 +934,7 @@ pub fn extract_summary(path: &Path) -> Option<RecentSession> {
         resolve_summary(path, merged, head.session_id.clone(), latest_chain.as_ref())?;
 
     Some(RecentSession {
+        host: Host::Local,
         session_id,
         file_path: path_str.to_string(),
         project,
@@ -1032,6 +1043,7 @@ pub fn opencode_summary_to_recent(
     let message_count = (summary.message_count > 0).then_some(summary.message_count);
 
     Some(RecentSession {
+        host: Host::Local,
         session_id: summary.id.clone(),
         file_path: summary.session_file.to_string_lossy().to_string(),
         project,
@@ -1355,6 +1367,7 @@ mod tests {
     fn test_recent_session_creation() {
         let ts = Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap();
         let session = RecentSession {
+            host: Host::Local,
             session_id: "sess-linear-001".to_string(),
             file_path: "/Users/user/.claude/projects/-Users-user-myproject/abc.jsonl".to_string(),
             project: "myproject".to_string(),
@@ -1380,7 +1393,7 @@ mod tests {
     #[test]
     fn test_recent_session_desktop_source() {
         let ts = Utc.with_ymd_and_hms(2025, 6, 1, 10, 0, 0).unwrap();
-        let session = RecentSession {
+        let session = RecentSession { host: Host::Local,
             session_id: "desktop-uuid".to_string(),
             file_path: "/Users/user/Library/Application Support/Claude/local-agent-mode-sessions/uuid1/uuid2/local_session/audit.jsonl".to_string(),
             project: "uuid1".to_string(),
