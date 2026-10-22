@@ -1,3 +1,7 @@
+use crate::remote::client::{Reply, Request};
+use crate::remote::oneshot::{query_hosts, HostOutcome};
+use crate::remote::wire::{RecentParams, SearchParams};
+use crate::remote::{Host, HostSelection};
 use crate::search::{
     extract_context, extract_context_around_span, extract_project_from_path, group_by_session,
     search_multiple_paths, Message, SessionGroup,
@@ -15,6 +19,8 @@ use std::sync::Arc;
 struct CliSearchResult {
     #[serde(rename = "type")]
     record_type: &'static str,
+    /// `"local"` or the remote host the session lives on.
+    host: String,
     session_id: String,
     project: String,
     provider: String,
@@ -39,10 +45,29 @@ struct CliSearchSummary {
     total_matches: usize,
     sessions: usize,
     truncated: bool,
+    /// One entry per host asked, `local` first.
+    hosts: Vec<CliHostSummary>,
 }
+
+/// How one host answered a CLI command.
+#[derive(Serialize)]
+struct CliHostSummary {
+    name: String,
+    status: &'static str,
+    shown: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// How long CLI commands wait for remote hosts, next to the local work.
+pub const CLI_SEARCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+pub const CLI_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Default `--host` for `search`, `list` and `pick`.
+pub const CLI_DEFAULT_HOSTS: &str = "all";
 
 #[derive(Serialize)]
 struct ListResult {
+    host: String,
     session_id: String,
     project: String,
     provider: String,
@@ -62,44 +87,130 @@ pub fn cli_search(
     use_regex: bool,
     limit: usize,
     full_content: bool,
+    selection: &HostSelection,
 ) {
+    let remote = spawn_remote_query(
+        selection,
+        Request::Search(SearchParams {
+            query: query.to_string(),
+            regex: use_regex,
+            project: None,
+            full_content,
+            limit: Some(limit),
+        }),
+        CLI_SEARCH_WAIT,
+    );
+
     // CLI search is one-shot and runs to completion; no cancellation is needed,
     // but the lower-level API requires a token, so we pass a permanently-false one.
     let cancel = Arc::new(AtomicBool::new(false));
-    let search_result = match search_multiple_paths(query, search_paths, use_regex, &cancel) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Search error: {}", e);
-            std::process::exit(1);
+    let (local_matches, local_truncated) = if selection.local {
+        match search_multiple_paths(query, search_paths, use_regex, &cancel) {
+            Ok(r) => (r.matches, r.truncated),
+            Err(e) => {
+                eprintln!("Search error: {}", e);
+                std::process::exit(1);
+            }
         }
+    } else {
+        (Vec::new(), false)
     };
 
-    if search_result.truncated {
+    if local_truncated {
         eprintln!("Warning: results may be incomplete (per-file match limit reached)");
     }
 
     let snippet_regex = build_snippet_regex(query, use_regex, full_content);
 
-    let groups = group_by_session(search_result.matches);
+    let mut groups = group_by_session(local_matches);
+    let mut truncated = local_truncated;
+    let outcomes = join_remote(remote);
+    for (name, outcome) in &outcomes {
+        if let HostOutcome::Reply(Reply::Search(found)) = outcome {
+            truncated |= found.truncated;
+            let host = Host::Remote(name.clone());
+            groups.extend(
+                found
+                    .groups
+                    .iter()
+                    .cloned()
+                    .map(|g| g.into_group(host.clone()).0),
+            );
+        }
+    }
+    groups.sort_by_key(|g| std::cmp::Reverse(g.latest_timestamp()));
 
+    // A host sends at most a few matches per session and says how many it
+    // found; count those so `total_matches` and `truncated` stay honest.
     let total_matches: usize = groups
         .iter()
-        .map(|g| g.matches.iter().filter(|m| m.message.is_some()).count())
+        .map(|g| match g.matches_total {
+            Some(total) => total,
+            None => g.matches.iter().filter(|m| m.message.is_some()).count(),
+        })
         .sum();
 
-    let (shown, sessions_shown) =
-        print_group_matches(&groups, query, full_content, limit, snippet_regex.as_ref());
+    let printed = print_group_matches(&groups, query, full_content, limit, snippet_regex.as_ref());
 
     // The summary is always the last line, even with zero matches, so machine
     // consumers can tell "nothing found" from "search did not run".
     let summary = CliSearchSummary {
         record_type: "summary",
-        shown,
+        shown: printed.shown,
         total_matches,
-        sessions: sessions_shown.len(),
-        truncated: search_result.truncated || total_matches > shown,
+        sessions: printed.sessions.len(),
+        truncated: truncated || total_matches > printed.shown,
+        hosts: host_summaries(selection, &outcomes, &printed.per_host),
     };
     print_json_line(&summary);
+}
+
+type RemoteQuery = Option<std::thread::JoinHandle<Vec<(String, HostOutcome)>>>;
+
+/// Start asking the selected remote hosts; local work runs meanwhile.
+fn spawn_remote_query(
+    selection: &HostSelection,
+    request: Request,
+    wait: std::time::Duration,
+) -> RemoteQuery {
+    if selection.remote.is_empty() {
+        return None;
+    }
+    let hosts = selection.remote.clone();
+    Some(std::thread::spawn(move || {
+        query_hosts(&hosts, &request, wait)
+    }))
+}
+
+fn join_remote(remote: RemoteQuery) -> Vec<(String, HostOutcome)> {
+    remote.and_then(|h| h.join().ok()).unwrap_or_default()
+}
+
+fn host_summaries(
+    selection: &HostSelection,
+    outcomes: &[(String, HostOutcome)],
+    shown: &std::collections::HashMap<String, usize>,
+) -> Vec<CliHostSummary> {
+    let count = |name: &str| shown.get(name).copied().unwrap_or(0);
+    let mut out = Vec::new();
+    if selection.local {
+        out.push(CliHostSummary {
+            name: "local".to_string(),
+            status: "ok",
+            shown: count("local"),
+            error: None,
+        });
+    }
+    out.extend(outcomes.iter().map(|(name, outcome)| {
+        let (status, error) = outcome.status();
+        CliHostSummary {
+            name: name.clone(),
+            status,
+            shown: count(name),
+            error,
+        }
+    }));
+    out
 }
 
 /// In regex mode the query pattern rarely appears literally in the content,
@@ -153,32 +264,48 @@ pub(crate) fn render_match_content_with(
     }
 }
 
-/// Print one JSON line per match, stopping at `limit`. Returns the number of
-/// rows printed and the set of session ids they belong to.
+/// What `print_group_matches` printed.
+struct Printed {
+    shown: usize,
+    sessions: std::collections::HashSet<String>,
+    /// Rows printed per host label.
+    per_host: std::collections::HashMap<String, usize>,
+}
+
+/// Print one JSON line per match, stopping at `limit`.
 fn print_group_matches(
     groups: &[SessionGroup],
     query: &str,
     full_content: bool,
     limit: usize,
     snippet_regex: Option<&regex::Regex>,
-) -> (usize, std::collections::HashSet<String>) {
-    let mut shown = 0;
-    let mut sessions_shown = std::collections::HashSet::new();
+) -> Printed {
+    let mut printed = Printed {
+        shown: 0,
+        sessions: std::collections::HashSet::new(),
+        per_host: std::collections::HashMap::new(),
+    };
 
     'groups: for group in groups {
-        let project = extract_project_from_path(&group.file_path);
+        // A remote host sent the label; its files are not here to read.
+        let project = group
+            .project_label
+            .clone()
+            .unwrap_or_else(|| extract_project_from_path(&group.file_path));
         let provider = SessionProvider::from_path(&group.file_path);
         let source = SessionSource::from_path(&group.file_path);
         let is_opencode = crate::session::opencode::parse_session_path(&group.file_path).is_some();
+        let host = group.host.label().to_string();
 
         for m in &group.matches {
-            if shown >= limit {
+            if printed.shown >= limit {
                 break 'groups;
             }
 
             if let Some(ref msg) = m.message {
                 let result = CliSearchResult {
                     record_type: "match",
+                    host: host.clone(),
                     session_id: msg.session_id.clone(),
                     project: project.clone(),
                     provider: provider.display_name().to_string(),
@@ -196,14 +323,15 @@ fn print_group_matches(
                 };
 
                 if print_json_line(&result) {
-                    shown += 1;
-                    sessions_shown.insert(msg.session_id.clone());
+                    printed.shown += 1;
+                    printed.sessions.insert(msg.session_id.clone());
+                    *printed.per_host.entry(host.clone()).or_default() += 1;
                 }
             }
         }
     }
 
-    (shown, sessions_shown)
+    printed
 }
 
 /// Serialize `value` and print it as a single line. Returns whether the line
@@ -267,7 +395,11 @@ pub fn cli_show(
     uuid: Option<&str>,
     context: usize,
     max_chars: usize,
+    host: Option<&crate::remote::config::HostConfig>,
 ) {
+    if let Some(host) = host {
+        std::process::exit(show_remote(host, file_path, line, uuid, context, max_chars));
+    }
     let result =
         if let Some((db, session_id)) = crate::session::opencode::parse_session_path(file_path) {
             show_opencode(&db, &session_id, file_path, uuid, context, max_chars)
@@ -277,6 +409,40 @@ pub fn cli_show(
     if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
+    }
+}
+
+/// `ccs show` on the host that has the file: the window of messages is
+/// exactly what that ccs prints, so its output passes straight through.
+fn show_remote(
+    host: &crate::remote::config::HostConfig,
+    file_path: &str,
+    line: Option<usize>,
+    uuid: Option<&str>,
+    context: usize,
+    max_chars: usize,
+) -> i32 {
+    let mut args = vec!["show".to_string(), file_path.to_string()];
+    if let Some(line) = line {
+        args.extend(["--line".to_string(), line.to_string()]);
+    }
+    if let Some(uuid) = uuid {
+        args.extend(["--uuid".to_string(), uuid.to_string()]);
+    }
+    args.extend(["--context".to_string(), context.to_string()]);
+    args.extend(["--max-chars".to_string(), max_chars.to_string()]);
+    let mut command =
+        crate::remote::ssh::ssh_command(host, &crate::remote::ssh::SshMode::Command(&args));
+    match command.status() {
+        Ok(status) if status.code() == Some(255) => {
+            eprintln!("Error: {}: не удалось подключиться", host.name);
+            1
+        }
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("Error: cannot start ssh: {e}");
+            1
+        }
     }
 }
 
@@ -518,7 +684,64 @@ fn truncate_chars(s: &str, max: usize) -> (String, bool) {
 }
 
 /// Run CLI list command — enumerate all sessions with metadata
-pub fn cli_list(search_paths: &[String], limit: usize) {
+pub fn cli_list(search_paths: &[String], limit: usize, selection: &HostSelection) {
+    let remote = spawn_remote_query(
+        selection,
+        Request::Recent(RecentParams {
+            limit,
+            project: None,
+        }),
+        CLI_LIST_WAIT,
+    );
+    let mut sessions = if selection.local {
+        local_list(search_paths, limit)
+    } else {
+        Vec::new()
+    };
+    for (name, outcome) in join_remote(remote) {
+        match outcome {
+            HostOutcome::Reply(Reply::Recent(rows)) => {
+                sessions.extend(rows.iter().map(|r| remote_list_row(&name, r)))
+            }
+            other => {
+                let (status, error) = other.status();
+                eprintln!("{name}: {status} {}", error.unwrap_or_default());
+            }
+        }
+    }
+
+    // Sort by last_active descending
+    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+    // Deduplicate by session_id on each host (keep newest)
+    let mut seen = std::collections::HashSet::new();
+    sessions.retain(|s| seen.insert((s.host.clone(), s.session_id.clone())));
+
+    for session in sessions.iter().take(limit) {
+        if let Ok(json) = serde_json::to_string(session) {
+            println!("{}", json);
+        }
+    }
+}
+
+fn remote_list_row(host: &str, row: &crate::remote::wire::WireRecent) -> ListResult {
+    ListResult {
+        host: host.to_string(),
+        session_id: row.session_id.clone(),
+        project: row.project.clone(),
+        provider: SessionProvider::from_path(&row.file_path)
+            .display_name()
+            .to_string(),
+        source: SessionSource::from_path(&row.file_path)
+            .display_name()
+            .to_string(),
+        file_path: row.file_path.clone(),
+        last_active: row.timestamp.to_rfc3339(),
+        message_count: row.message_count.unwrap_or(0),
+    }
+}
+
+fn local_list(search_paths: &[String], limit: usize) -> Vec<ListResult> {
     let mut sessions: Vec<ListResult> = collect_session_jsonl_files(search_paths)
         .into_iter()
         .filter_map(|path| extract_session_metadata(&path))
@@ -536,18 +759,7 @@ pub fn cli_list(search_paths: &[String], limit: usize) {
         sessions.extend(collect_opencode_list_entries(search_paths, limit));
     }
 
-    // Sort by last_active descending
-    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
-
-    // Deduplicate by session_id (keep newest)
-    let mut seen = std::collections::HashSet::new();
-    sessions.retain(|s| seen.insert(s.session_id.clone()));
-
-    for session in sessions.iter().take(limit) {
-        if let Ok(json) = serde_json::to_string(session) {
-            println!("{}", json);
-        }
-    }
+    sessions
 }
 
 fn collect_opencode_list_entries(search_paths: &[String], limit: usize) -> Vec<ListResult> {
@@ -565,6 +777,7 @@ fn collect_opencode_list_entries(search_paths: &[String], limit: usize) -> Vec<L
                 .clone()
                 .unwrap_or_else(|| summary.project_id.clone());
             out.push(ListResult {
+                host: "local".to_string(),
                 session_id: summary.id,
                 project,
                 provider: "Opencode".to_string(),
@@ -614,6 +827,7 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
     let last_active = last_timestamp?.to_rfc3339();
 
     Some(ListResult {
+        host: "local".to_string(),
         session_id,
         project,
         provider: provider.display_name().to_string(),

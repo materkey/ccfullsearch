@@ -737,6 +737,8 @@ impl PickedSession {
         if let Some(ref uuid) = self.message_uuid {
             out.push_str(&format!("\nmessage_uuid: {}", uuid));
         }
+        // Last, so the lines older readers expect keep their places.
+        out.push_str(&format!("\nhost: {}", self.host.label()));
         out
     }
 
@@ -3879,6 +3881,19 @@ mod tests {
     }
 
     #[test]
+    fn pick_output_when_remote_then_host_line() {
+        let picked = PickedSession {
+            host: Host::Remote("Z270XX".into()),
+            session_id: "s".into(),
+            file_path: "/f".into(),
+            source: SessionSource::CLI,
+            project: "p".into(),
+            message_uuid: None,
+        };
+        assert!(picked.to_key_value().lines().any(|l| l == "host: Z270XX"));
+    }
+
+    #[test]
     fn test_picked_session_to_key_value_cli() {
         let picked = PickedSession {
             host: Host::Local,
@@ -3891,7 +3906,7 @@ mod tests {
         let output = picked.to_key_value();
         assert_eq!(
             output,
-            "session_id: abc-123\nfile_path: /path/to/session.jsonl\nsource: CLI\nproject: my-project"
+            "session_id: abc-123\nfile_path: /path/to/session.jsonl\nsource: CLI\nproject: my-project\nhost: local"
         );
     }
 

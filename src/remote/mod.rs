@@ -2,10 +2,51 @@
 
 pub mod client;
 pub mod config;
+pub mod oneshot;
 pub mod serve;
 pub mod server;
 pub mod ssh;
 pub mod wire;
+
+/// Which machines a CLI command asks, from its repeatable `--host` values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSelection {
+    pub local: bool,
+    pub remote: Vec<config::HostConfig>,
+}
+
+/// `all` (local and every host), `local`, `remote` (every host) or a host
+/// name; repeatable. An unknown name is an error rather than silently
+/// searching less.
+pub fn select_hosts(
+    values: &[String],
+    hosts: &[config::HostConfig],
+) -> Result<HostSelection, String> {
+    let mut local = false;
+    let mut names: Vec<&str> = Vec::new();
+    for value in values {
+        match value.as_str() {
+            "all" => {
+                local = true;
+                names.extend(hosts.iter().map(|h| h.name.as_str()));
+            }
+            "local" => local = true,
+            "remote" => names.extend(hosts.iter().map(|h| h.name.as_str())),
+            name if hosts.iter().any(|h| h.name == name) => names.push(name),
+            name => {
+                return Err(format!(
+                    "unknown host {name} (not in [[hosts]] of config.toml or CCS_HOSTS)"
+                ))
+            }
+        }
+    }
+    let remote = hosts
+        .iter()
+        .filter(|h| names.contains(&h.name.as_str()))
+        .cloned()
+        .collect();
+    Ok(HostSelection { local, remote })
+}
 
 /// The machine a session file lives on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -69,6 +110,37 @@ mod tests {
     #[test]
     fn session_ref_when_local_then_local_path() {
         assert_eq!(SessionRef::local("/x").local_path(), Some("/x"));
+    }
+
+    fn hosts() -> Vec<config::HostConfig> {
+        ["A", "B"]
+            .map(|n| config::HostConfig {
+                name: n.into(),
+                ccs_path: "ccs".into(),
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn select_hosts_when_all_then_local_and_every_host() {
+        let s = select_hosts(&["all".into()], &hosts()).unwrap();
+        assert!(s.local);
+        assert_eq!(s.remote.len(), 2);
+    }
+
+    #[test]
+    fn select_hosts_when_local_and_name_then_both() {
+        let s = select_hosts(&["local".into(), "B".into()], &hosts()).unwrap();
+        assert!(s.local);
+        assert_eq!(
+            s.remote.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+            ["B"]
+        );
+    }
+
+    #[test]
+    fn select_hosts_when_unknown_name_then_error() {
+        assert!(select_hosts(&["C".into()], &hosts()).is_err());
     }
 
     #[test]

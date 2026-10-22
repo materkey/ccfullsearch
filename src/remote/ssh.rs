@@ -19,6 +19,8 @@ const COMMON_OPTIONS: [&str; 8] = [
 pub enum SshMode<'a> {
     /// `ccs serve --stdio` over pipes; ssh must never prompt.
     Serve,
+    /// One `ccs <args>` run without a terminal (e.g. `ccs show`).
+    Command(&'a [String]),
     /// `ccs resume` on a terminal. The session id travels too: an Opencode
     /// `<db>#<id>` path names no file the remote ccs could read it from.
     Resume {
@@ -34,7 +36,9 @@ pub enum SshMode<'a> {
 pub fn ssh_args(host: &HostConfig, mode: &SshMode) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     match mode {
-        SshMode::Serve => args.extend(["-o", "BatchMode=yes"].map(String::from)),
+        SshMode::Serve | SshMode::Command(_) => {
+            args.extend(["-o", "BatchMode=yes"].map(String::from))
+        }
         SshMode::Resume { .. } => args.push("-t".to_string()),
     }
     args.extend(COMMON_OPTIONS.map(String::from));
@@ -42,6 +46,10 @@ pub fn ssh_args(host: &HostConfig, mode: &SshMode) -> Vec<String> {
     match mode {
         SshMode::Serve => {
             args.extend([host.ccs_path.clone(), "serve".into(), "--stdio".into()]);
+        }
+        SshMode::Command(ccs_args) => {
+            let quoted: Vec<String> = ccs_args.iter().map(|a| shell_quote(a)).collect();
+            args.push(format!("{} {}", host.ccs_path, quoted.join(" ")));
         }
         SshMode::Resume {
             session_id,

@@ -46,12 +46,18 @@ enum Commands {
         /// Output full message content instead of a snippet around the match
         #[arg(long)]
         full_content: bool,
+        /// Hosts to search: all, local, remote or a host name (repeatable)
+        #[arg(long, default_values_t = [ccs::cli::CLI_DEFAULT_HOSTS.to_string()])]
+        host: Vec<String>,
     },
     /// List all Claude Code sessions
     List {
         /// Maximum number of results
         #[arg(long, default_value = "50")]
         limit: usize,
+        /// Hosts to list: all, local, remote or a host name (repeatable)
+        #[arg(long, default_values_t = [ccs::cli::CLI_DEFAULT_HOSTS.to_string()])]
+        host: Vec<String>,
     },
     /// Show messages around a search hit (drill-down for `ccs search` results)
     Show {
@@ -69,6 +75,9 @@ enum Commands {
         /// Maximum characters of content per message
         #[arg(long, default_value = "2000")]
         max_chars: usize,
+        /// Host the file is on (the host field of search output); local by default
+        #[arg(long, default_value = "local")]
+        host: String,
     },
     /// Pick a session interactively and output its info
     Pick {
@@ -77,6 +86,9 @@ enum Commands {
         /// Write output to file instead of stdout
         #[arg(long)]
         output: Option<String>,
+        /// Hosts to pick from: all, local, remote or a host name (repeatable)
+        #[arg(long, default_values_t = [ccs::cli::CLI_DEFAULT_HOSTS.to_string()])]
+        host: Vec<String>,
     },
     #[cfg(not(windows))]
     /// Update ccs to the latest version
@@ -203,7 +215,30 @@ fn init_app(
     picker_mode: bool,
     initial_query: Option<String>,
 ) -> ccs::tui::App {
-    let mut app = ccs::tui::App::new(search_paths).with_remote_hosts(remote_hosts());
+    let selection = ccs::remote::HostSelection {
+        local: true,
+        remote: remote_hosts(),
+    };
+    init_app_with_hosts(
+        search_paths,
+        tree_target,
+        picker_mode,
+        initial_query,
+        selection,
+    )
+}
+
+fn init_app_with_hosts(
+    search_paths: Vec<String>,
+    tree_target: Option<String>,
+    picker_mode: bool,
+    initial_query: Option<String>,
+    selection: ccs::remote::HostSelection,
+) -> ccs::tui::App {
+    let mut app = ccs::tui::App::new(search_paths).with_remote_hosts(selection.remote);
+    if !selection.local {
+        app.hosts.filter = ccs::tui::hosts_state::HostFilter::Remote;
+    }
     app.picker_mode = picker_mode;
 
     prefill_query(&mut app, initial_query);
@@ -348,12 +383,22 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             regex,
             limit,
             full_content,
+            host,
         } => {
-            ccs::cli::cli_search(&query, &ccs::get_search_paths(), regex, limit, full_content);
+            let selection = select_hosts_or_exit(&host);
+            ccs::cli::cli_search(
+                &query,
+                &ccs::get_search_paths(),
+                regex,
+                limit,
+                full_content,
+                &selection,
+            );
             Ok(())
         }
-        Commands::List { limit } => {
-            ccs::cli::cli_list(&ccs::get_search_paths(), limit);
+        Commands::List { limit, host } => {
+            let selection = select_hosts_or_exit(&host);
+            ccs::cli::cli_list(&ccs::get_search_paths(), limit, &selection);
             Ok(())
         }
         Commands::Show {
@@ -362,11 +407,29 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             uuid,
             context,
             max_chars,
+            host,
         } => {
-            ccs::cli::cli_show(&file_path, line, uuid.as_deref(), context, max_chars);
+            let remote = (host != "local").then(|| {
+                find_host(&host).unwrap_or_else(|e| {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                })
+            });
+            ccs::cli::cli_show(
+                &file_path,
+                line,
+                uuid.as_deref(),
+                context,
+                max_chars,
+                remote.as_ref(),
+            );
             Ok(())
         }
-        Commands::Pick { query, output } => run_pick(query, output),
+        Commands::Pick {
+            query,
+            output,
+            host,
+        } => run_pick(query, output, &host),
         Commands::Serve { stdio } => run_serve(stdio),
         Commands::Resume {
             file,
@@ -412,6 +475,13 @@ fn resume_session_id(file: &str, given: Option<&str>) -> String {
     given
         .map(str::to_string)
         .unwrap_or_else(|| session_id_for_resume(file))
+}
+
+fn select_hosts_or_exit(values: &[String]) -> ccs::remote::HostSelection {
+    ccs::remote::select_hosts(values, &remote_hosts()).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(2);
+    })
 }
 
 fn find_host(name: &str) -> Result<ccs::remote::config::HostConfig, String> {
@@ -460,12 +530,13 @@ fn run_serve(stdio: bool) -> io::Result<()> {
 }
 
 /// Handle `ccs pick`: run the TUI in picker mode and exit with the pick result.
-fn run_pick(query: Option<String>, output: Option<String>) -> io::Result<()> {
+fn run_pick(query: Option<String>, output: Option<String>, host: &[String]) -> io::Result<()> {
     // Remove any stale output file upfront so that every non-success
     // exit path (TUI init error, write failure, cancel) leaves a clean
     // state for callers that reuse the same --output path.
     remove_stale_output(output.as_deref());
-    let mut app = init_app(ccs::get_search_paths(), None, true, query);
+    let selection = select_hosts_or_exit(host);
+    let mut app = init_app_with_hosts(ccs::get_search_paths(), None, true, query, selection);
     let outcome = run_tui(&mut app)?;
     std::process::exit(pick_exit_code(outcome, output.as_deref()));
 }
