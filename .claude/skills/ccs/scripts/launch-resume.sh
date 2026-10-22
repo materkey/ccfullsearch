@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# launch claude --resume in a terminal overlay (tmux/kitty/wezterm).
-# usage: launch-resume.sh <session_id> [--cwd <dir>]
-#        launch-resume.sh <session_id> --host <host> --file <file_path> [--uuid <uuid>]
-# with --host (a remote host from `ccs pick`), `ccs resume --host` opens the
-# session on that machine over ssh instead of running claude here.
+# resume a session in a terminal overlay (tmux/kitty/wezterm).
+# usage: launch-resume.sh <session_id> --file <file_path> [--uuid <uuid>] [--host <host>]
+#        launch-resume.sh <session_id> [--cwd <dir>]
+# with --file, `ccs resume` picks the agent (Claude, Codex, Opencode), the
+# project directory and the branch at --uuid; with --host (a remote host from
+# `ccs pick`) it opens the session on that machine over ssh. without --file it
+# falls back to `claude --resume` in --cwd.
 # blocks until the session exits, then returns.
 
 set -euo pipefail
 
-SESSION_ID="${1:?usage: launch-resume.sh <session_id> [--cwd <dir>]}"
+SESSION_ID="${1:?usage: launch-resume.sh <session_id> --file <file_path> [--uuid <uuid>] [--host <host>]}"
 shift
 
 # parse optional --cwd / --host / --file / --uuid
@@ -30,17 +32,22 @@ done
 # single-quote a value for `sh -c`
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-if [ -n "$HOST" ] && [ "$HOST" != "local" ]; then
-    CCS_BIN=$(command -v ccs 2>/dev/null || true)
-    if [ -z "$CCS_BIN" ] || [ -z "$FILE" ]; then
-        echo "error: remote resume needs ccs in PATH and --file" >&2
-        exit 1
-    fi
-    RESUME_CMD="$(q "$CCS_BIN") resume --host $(q "$HOST") --session-id $(q "$SESSION_ID") --file $(q "$FILE")"
+CCS_BIN=$(command -v ccs 2>/dev/null || true)
+if [ -n "$HOST" ] && [ "$HOST" != "local" ] && { [ -z "$CCS_BIN" ] || [ -z "$FILE" ]; }; then
+    echo "error: remote resume needs ccs in PATH and --file" >&2
+    exit 1
+fi
+
+if [ -n "$CCS_BIN" ] && [ -n "$FILE" ]; then
+    RESUME_CMD="$(q "$CCS_BIN") resume --session-id $(q "$SESSION_ID") --file $(q "$FILE")"
     if [ -n "$UUID" ]; then
         RESUME_CMD="$RESUME_CMD --uuid $(q "$UUID")"
     fi
-    OVERLAY_TITLE="claude: resume $SESSION_ID on $HOST"
+    OVERLAY_TITLE="resume $SESSION_ID"
+    if [ -n "$HOST" ] && [ "$HOST" != "local" ]; then
+        RESUME_CMD="$RESUME_CMD --host $(q "$HOST")"
+        OVERLAY_TITLE="$OVERLAY_TITLE on $HOST"
+    fi
 else
     CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
     if [ -z "$CLAUDE_BIN" ]; then

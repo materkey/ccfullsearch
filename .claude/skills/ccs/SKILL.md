@@ -69,20 +69,9 @@ ccs show <file_path> --host <host> --uuid <message_uuid> --context 20
 
 **Option 2: "Enter session (overlay)"** — resume the session in a terminal overlay:
 ```bash
-# Determine project_dir from file_path:
-# .claude/projects/-Users-foo-myproject/session.jsonl → /Users/foo/myproject
-# (replace leading dash with /, then convert all dashes-between-path-segments to /)
+${SKILL_DIR}/scripts/launch-resume.sh <session_id> --file <file_path> [--uuid <message_uuid>] [--host <host>]
 ```
-Then launch in overlay:
-```bash
-${SKILL_DIR}/scripts/launch-resume.sh <session_id> --cwd <project_dir>
-```
-This opens `claude --resume` in a tmux popup / kitty overlay / wezterm split-pane. Blocks until claude exits, then returns control here.
-
-If `host` is not `local`, the session opens on that machine over ssh (no `--cwd` needed, the remote ccs finds the project):
-```bash
-${SKILL_DIR}/scripts/launch-resume.sh <session_id> --host <host> --file <file_path> [--uuid <message_uuid>]
-```
+This runs `ccs resume` in a tmux popup / kitty overlay / wezterm split-pane. `ccs` picks the agent (Claude, Codex or Opencode), the project directory, and the branch at `message_uuid`; with a `host` other than `local` the session opens on that machine over ssh. Blocks until the session exits, then returns control here.
 
 For **Desktop** sessions (`source: Desktop`): overlay resume is not available, only "Read here" and `open -a Claude` are options.
 
@@ -158,10 +147,10 @@ Cite `project` and `timestamp` from the match. Say if the result set was truncat
 #### List all sessions
 
 ```bash
-ccs list [--limit N]
+ccs list [--limit N] [--host local]
 ```
 
-Default limit: 50 sessions, sorted by last activity (newest first). Fields: `session_id`, `project`, `provider`, `source`, `file_path`, `last_active`, `message_count`.
+Default limit: 50 sessions, sorted by last activity (newest first). Fields: `host`, `session_id`, `project`, `provider`, `source`, `file_path`, `last_active`, `message_count`. `--host` works as in `search`.
 
 #### Pick a session (non-interactive output)
 
@@ -191,10 +180,11 @@ ccs show /path/to/session.jsonl --line 381 --context 3
 
 ### Resume a found session
 
-After finding a session_id from search/list, resume it:
+After finding a session in search/list output, resume it by its `file_path`:
 ```bash
-claude --resume <session_id>
+ccs resume --file <file_path> [--uuid <message_uuid>] [--host <host>]
 ```
+`ccs` starts the right agent in the session's project directory; `--uuid` resumes from that message (a fork if it is not the latest one), `--host` runs it on the remote host the session lives on. Plain `claude --resume <session_id>` only finds Claude sessions of the current project.
 
 ## Tips
 
