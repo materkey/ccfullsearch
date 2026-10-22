@@ -20,13 +20,23 @@ pub fn test_prepare_cli_resume_session_id(
     launcher::prepare_resume(session_id, file_path)
 }
 
+/// Whether a session runs in this terminal and hands it back when it ends.
+/// Claude Desktop opens its own app instead; every other provider reports
+/// `SessionSource::CLI`.
+pub fn runs_in_terminal(source: SessionSource) -> bool {
+    source != SessionSource::ClaudeDesktop
+}
+
 /// Whether to replace the current process (exec) or spawn a child and wait.
 #[derive(Clone, Copy)]
 enum ResumeMode {
-    /// Normal mode: replace the current process via exec (Codex excepted, see
-    /// `EXEC_LAUNCHERS`).
+    /// Replace the current process via exec (Codex excepted, see
+    /// `EXEC_LAUNCHERS`). The picker runs terminal sessions as `Child` even in
+    /// normal mode; exec is left for Claude Desktop and a direct
+    /// `--tree` + `--resume-uuid` resume.
     Exec,
-    /// Overlay mode: spawn a child and return when it exits.
+    /// Spawn a child and return when it exits: overlay mode, and terminal
+    /// sessions the picker may come back to.
     Child,
 }
 
@@ -210,7 +220,8 @@ pub fn resume(
 }
 
 /// Resume a session as a child process.
-/// Used in overlay mode where TUI needs to regain control after the agent exits.
+/// Used where the TUI needs to regain control after the agent exits: overlay
+/// mode, and terminal sessions launched from the picker in normal mode.
 pub fn resume_child(
     session_id: &str,
     file_path: &str,
@@ -229,6 +240,12 @@ pub fn resume_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_source_when_asking_terminal_then_only_desktop_is_not() {
+        assert!(runs_in_terminal(SessionSource::CLI));
+        assert!(!runs_in_terminal(SessionSource::ClaudeDesktop));
+    }
 
     fn stub_codex(_: &str, _: &str) -> Result<(), String> {
         Err("stub-codex".to_string())

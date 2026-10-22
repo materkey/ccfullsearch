@@ -87,7 +87,9 @@ ccs
 
 Start typing to search. Press `Enter` to resume the selected session.
 
-If Codex fails to start the session, `ccs` shows the error; press `Enter` to return to the picker with your search query restored.
+Opened the wrong session? Leave it within a minute (`/exit` or `Ctrl+C`) and `ccs` comes back exactly where you were: the same query, filters and cursor, with the session you just opened tagged `[opened]`. Leaving after a longer session returns to the shell as before.
+
+If Claude, Codex or Opencode fails to start the session, `ccs` shows the error; press `Enter` to return to the picker.
 
 Search from the CLI:
 
@@ -296,7 +298,7 @@ message_uuid: def-456
 ccs --overlay
 ```
 
-Overlay mode resumes the selected session as a child process. When the resumed tool exits, `ccs` returns to the picker and restores the current search query.
+Overlay mode resumes the selected session as a child process. When the resumed tool exits, `ccs` always returns to the picker in the state you left it, however long the session ran.
 
 This is useful when you want to review or resume several related sessions without relaunching the picker each time.
 

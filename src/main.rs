@@ -10,7 +10,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io::{self, stdout, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "ccs", about = "Claude Code Session Search", version = env!("CARGO_PKG_VERSION"))]
@@ -419,10 +419,9 @@ fn run_direct_resume(
     Ok(())
 }
 
-/// Return to the TUI after overlay sessions or failed launches. Codex runs as
-/// a child even without overlay so bootstrap failures remain recoverable. The
-/// same app comes back each time, so the picker reopens in the state it was
-/// left in.
+/// Return to the TUI after an overlay session, a quick exit from a resumed
+/// session, or a failed launch. The same app comes back each time, so the
+/// picker reopens in the state it was left in.
 fn run_tui_loop(
     search_paths: Vec<String>,
     tree_target: Option<String>,
@@ -452,7 +451,7 @@ enum AfterResume {
 }
 
 /// Decide what to do after the TUI exits. Returns `true` to loop back into
-/// the same app (overlay resume or failed Codex launch), `false` to stop
+/// the same app (overlay resume, quick exit or failed launch), `false` to stop
 /// (quit, or a resume that is over).
 fn handle_outcome(outcome: ccs::tui::TuiOutcome, overlay: bool, app: &mut ccs::tui::App) -> bool {
     match outcome {
@@ -492,50 +491,65 @@ fn resume_outcome(
     uuid: Option<&str>,
     overlay: bool,
 ) -> AfterResume {
-    let result = launch_resume(session_id, file_path, source, uuid, overlay);
+    let child = picker_launch_runs_as_child(source, overlay);
+    let started = Instant::now();
+    let result = launch_resume(session_id, file_path, source, uuid, child);
+    let quick_exit = is_quick_exit(source, started.elapsed());
     let launched = result.is_ok();
-    if picker_follows_resume(result, file_path, overlay) {
+    if picker_follows_resume(result, child, overlay, quick_exit) {
         AfterResume::Picker { launched }
     } else {
         AfterResume::Exit
     }
 }
 
-/// Resume in the mode ccs was started in: a child under `--overlay`, otherwise
-/// exec. Codex runs as a child either way, see `resume_codex_child`.
+/// Resume as a child or via exec, as the caller chose. Codex runs as a child
+/// either way, see `resume_codex_child`.
 fn launch_resume(
     session_id: &str,
     file_path: &str,
     source: ccs::session::SessionSource,
     uuid: Option<&str>,
-    overlay: bool,
+    child: bool,
 ) -> Result<(), String> {
-    if overlay {
+    if child {
         ccs::resume::resume_child(session_id, file_path, source, uuid)
     } else {
         ccs::resume::resume(session_id, file_path, source, uuid)
     }
 }
 
-/// Whether the picker comes back after a resume attempt. A failure that
-/// leaves nothing to return to exits with status 1.
-fn picker_follows_resume(result: Result<(), String>, file_path: &str, overlay: bool) -> bool {
+/// Whether the picker launches this session as a child: always under
+/// `--overlay`, otherwise for every session that runs in the terminal, so a
+/// quick exit can come back to the picker.
+fn picker_launch_runs_as_child(source: ccs::session::SessionSource, overlay: bool) -> bool {
+    overlay || ccs::resume::runs_in_terminal(source)
+}
+
+/// Whether a session closed soon enough to count as opened by mistake.
+fn is_quick_exit(source: ccs::session::SessionSource, ran_for: Duration) -> bool {
+    ccs::resume::runs_in_terminal(source) && ran_for < ccs::resume::launcher::QUICK_EXIT_WINDOW
+}
+
+/// Whether the picker comes back after a resume attempt: always under
+/// `--overlay`, otherwise after a quick exit. A failed launch is held on
+/// screen when it ran as a child; one that leaves nothing to return to exits
+/// with status 1.
+fn picker_follows_resume(
+    result: Result<(), String>,
+    child: bool,
+    overlay: bool,
+    quick_exit: bool,
+) -> bool {
     let Err(error) = result else {
-        return overlay;
+        return overlay || quick_exit;
     };
     eprintln!("Error resuming session: {error}");
-    let stay =
-        failed_launch_waits(file_path, overlay) && wait_for_enter("Press Enter to return to ccs: ");
+    let stay = child && wait_for_enter("Press Enter to return to ccs: ");
     if !stay {
         std::process::exit(1);
     }
     true
-}
-
-/// Whether a failed launch ran as a child, so the picker comes back after it.
-/// Codex always runs as a child, see `resume_codex_child`.
-fn failed_launch_waits(file_path: &str, overlay: bool) -> bool {
-    overlay || is_codex_session(file_path)
 }
 
 /// Hold a failed launch on screen until the user has read it; the
@@ -547,33 +561,44 @@ fn wait_for_enter(prompt: &str) -> bool {
     io::stdin().read_line(&mut String::new()).unwrap_or(0) > 0
 }
 
-fn is_codex_session(file_path: &str) -> bool {
-    ccs::SessionProvider::from_path(file_path) == ccs::SessionProvider::Codex
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccs::session::SessionSource;
 
     #[test]
-    fn successful_resume_when_deciding_next_step_then_picker_returns_only_in_overlay() {
-        assert!(picker_follows_resume(Ok(()), "session.jsonl", true));
-        assert!(!picker_follows_resume(Ok(()), "session.jsonl", false));
+    fn successful_resume_when_deciding_next_step_then_picker_returns_in_overlay_or_after_quick_exit(
+    ) {
+        assert!(picker_follows_resume(Ok(()), true, true, false));
+        assert!(picker_follows_resume(Ok(()), true, false, true));
+        assert!(!picker_follows_resume(Ok(()), true, false, false));
     }
 
     #[test]
-    fn failed_launch_when_deciding_whether_to_wait_then_only_child_launches_wait() {
-        assert!(failed_launch_waits(
-            "/home/u/.claude/projects/-p/s.jsonl",
+    fn cli_session_when_measuring_exit_then_quick_only_below_window() {
+        let w = ccs::resume::launcher::QUICK_EXIT_WINDOW;
+        assert!(is_quick_exit(
+            SessionSource::CLI,
+            w - Duration::from_millis(1)
+        ));
+        assert!(!is_quick_exit(SessionSource::CLI, w));
+    }
+
+    #[test]
+    fn desktop_session_when_measuring_exit_then_never_quick() {
+        assert!(!is_quick_exit(SessionSource::ClaudeDesktop, Duration::ZERO));
+    }
+
+    #[test]
+    fn picker_resume_when_choosing_launch_mode_then_child_unless_desktop_without_overlay() {
+        assert!(picker_launch_runs_as_child(SessionSource::CLI, false));
+        assert!(!picker_launch_runs_as_child(
+            SessionSource::ClaudeDesktop,
+            false
+        ));
+        assert!(picker_launch_runs_as_child(
+            SessionSource::ClaudeDesktop,
             true
-        ));
-        assert!(failed_launch_waits(
-            "/home/u/.codex/sessions/2026/01/01/rollout-x.jsonl",
-            false
-        ));
-        assert!(!failed_launch_waits(
-            "/home/u/.claude/projects/-p/s.jsonl",
-            false
         ));
     }
 
@@ -618,42 +643,6 @@ mod tests {
             result.is_err(),
             "--resume-uuid without --tree should be a parse error"
         );
-    }
-
-    /// Simulates the overlay loop decision: Resume outcome + overlay=true
-    /// should signal "continue" (return true), while overlay=false should
-    /// signal "break after resume" (return false).
-    fn should_loop_back(outcome: &ccs::tui::TuiOutcome, overlay: bool) -> bool {
-        matches!(outcome, ccs::tui::TuiOutcome::Resume { .. }) && overlay
-    }
-
-    #[test]
-    fn test_overlay_resume_loops_back() {
-        let outcome = ccs::tui::TuiOutcome::Resume {
-            session_id: "test-id".to_string(),
-            file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::session::SessionSource::CLI,
-            uuid: None,
-        };
-        assert!(should_loop_back(&outcome, true));
-    }
-
-    #[test]
-    fn test_no_overlay_resume_does_not_loop() {
-        let outcome = ccs::tui::TuiOutcome::Resume {
-            session_id: "test-id".to_string(),
-            file_path: "/tmp/test.jsonl".to_string(),
-            source: ccs::session::SessionSource::CLI,
-            uuid: None,
-        };
-        assert!(!should_loop_back(&outcome, false));
-    }
-
-    #[test]
-    fn test_quit_outcome_does_not_loop() {
-        let outcome = ccs::tui::TuiOutcome::Quit;
-        assert!(!should_loop_back(&outcome, true));
-        assert!(!should_loop_back(&outcome, false));
     }
 
     #[test]

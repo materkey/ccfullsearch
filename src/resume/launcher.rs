@@ -13,6 +13,9 @@ const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
 /// How long after launch an error exit of a resumed child is still treated as
 /// a failed resume.
 const BOOTSTRAP_WINDOW: Duration = Duration::from_secs(10);
+/// A resumed session closed sooner than this was most likely opened by
+/// mistake, so the picker comes back instead of the shell.
+pub const QUICK_EXIT_WINDOW: Duration = Duration::from_secs(60);
 
 /// Session metadata extracted from a single JSONL parse pass.
 struct SessionAnalysis {
