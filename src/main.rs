@@ -422,7 +422,7 @@ fn run_direct_resume(
 
     if let Err(e) = launch_resume(&session_id, &file_path, source, Some(uuid), overlay) {
         eprintln!("Error resuming session: {}", e);
-        if overlay && is_codex_session(&file_path) {
+        if overlay {
             wait_for_enter("Press Enter to close: ");
         }
         std::process::exit(1);
@@ -538,18 +538,21 @@ fn picker_follows_resume(result: Result<(), String>, file_path: &str, overlay: b
         return overlay;
     };
     eprintln!("Error resuming session: {error}");
-    let stay = if is_codex_session(file_path) {
-        wait_for_enter("Press Enter to return to ccs: ")
-    } else {
-        overlay
-    };
+    let stay =
+        failed_launch_waits(file_path, overlay) && wait_for_enter("Press Enter to return to ccs: ");
     if !stay {
         std::process::exit(1);
     }
     true
 }
 
-/// Hold a failed Codex launch on screen until the user has read it; the
+/// Whether a failed launch ran as a child, so the picker comes back after it.
+/// Codex always runs as a child, see `resume_codex_child`.
+fn failed_launch_waits(file_path: &str, overlay: bool) -> bool {
+    overlay || is_codex_session(file_path)
+}
+
+/// Hold a failed launch on screen until the user has read it; the
 /// picker's alternate screen or a closing overlay popup would hide it at once.
 /// Returns `false` when stdin is closed and nobody can acknowledge.
 fn wait_for_enter(prompt: &str) -> bool {
@@ -582,12 +585,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_claude_resume_in_overlay_when_deciding_next_step_then_picker_returns() {
-        let result = Err("claude not found".to_string());
-        assert!(picker_follows_resume(
-            result,
-            "/home/u/.claude/projects/-p/session.jsonl",
+    fn failed_launch_when_deciding_whether_to_wait_then_only_child_launches_wait() {
+        assert!(failed_launch_waits(
+            "/home/u/.claude/projects/-p/s.jsonl",
             true
+        ));
+        assert!(failed_launch_waits(
+            "/home/u/.codex/sessions/2026/01/01/rollout-x.jsonl",
+            false
+        ));
+        assert!(!failed_launch_waits(
+            "/home/u/.claude/projects/-p/s.jsonl",
+            false
         ));
     }
 

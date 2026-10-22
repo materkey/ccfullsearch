@@ -10,8 +10,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const SESSIONS_INDEX_FILE: &str = "sessions-index.json";
-/// How long after launch a Codex error exit is still treated as a failed resume.
-const CODEX_BOOTSTRAP_WINDOW: Duration = Duration::from_secs(10);
+/// How long after launch an error exit of a resumed child is still treated as
+/// a failed resume.
+const BOOTSTRAP_WINDOW: Duration = Duration::from_secs(10);
 
 /// Session metadata extracted from a single JSONL parse pass.
 struct SessionAnalysis {
@@ -355,17 +356,14 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
         resume_arg
     );
 
-    // Any exit code is acceptable — Claude CLI exits non-zero on Ctrl-C (130),
-    // /exit, or other normal termination paths. In overlay mode we just need to
-    // know that the process finished so we can return to the TUI.
-    wait_child(
-        Command::new(&claude_path)
-            .current_dir(&working_dir)
-            .args(["--resume", &resume_arg]),
-    )
-    .map_err(|e| format!("Failed to spawn claude: {}", e))?;
-
-    Ok(())
+    // Claude exits with 0 on both /exit and Ctrl+C, while a failed start
+    // ("No conversation found") exits with 1, so a non-zero code within
+    // BOOTSTRAP_WINDOW is a failed launch.
+    let mut command = Command::new(&claude_path);
+    command
+        .current_dir(&working_dir)
+        .args(["--resume", &resume_arg]);
+    run_child(&mut command, "Claude")
 }
 
 /// Resolve everything needed to launch a Codex resume: the working directory,
@@ -397,22 +395,24 @@ pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), Strin
     command
         .current_dir(&working_dir)
         .args(["resume", "-C", &working_dir, &resume_arg]);
-    run_codex_command(&mut command)
+    run_child(&mut command, "Codex")
 }
 
-fn run_codex_command(command: &mut Command) -> Result<(), String> {
+/// Run a resumed agent as a child and report a failed launch, see
+/// `child_exit_result`.
+fn run_child(command: &mut Command, name: &str) -> Result<(), String> {
     let started = Instant::now();
-    let status = wait_child(command).map_err(|e| format!("Failed to spawn codex: {}", e))?;
-    codex_exit_result(status.code(), started.elapsed())
+    let status = wait_child(command).map_err(|e| format!("Failed to spawn {name}: {e}"))?;
+    child_exit_result(name, status.code(), started.elapsed())
 }
 
 /// Only an error exit this soon after launch counts as a failed resume. A later
 /// one ends a session that did start, and 130 or a signal (no exit code) means
-/// someone stopped Codex on purpose.
-fn codex_exit_result(code: Option<i32>, ran_for: Duration) -> Result<(), String> {
+/// someone stopped the agent on purpose.
+fn child_exit_result(name: &str, code: Option<i32>, ran_for: Duration) -> Result<(), String> {
     match code {
-        Some(code) if code != 0 && code != 130 && ran_for < CODEX_BOOTSTRAP_WINDOW => {
-            Err(format!("Codex exited with status {code}"))
+        Some(code) if code != 0 && code != 130 && ran_for < BOOTSTRAP_WINDOW => {
+            Err(format!("{name} exited with status {code}"))
         }
         _ => Ok(()),
     }
@@ -492,14 +492,11 @@ pub fn resume_opencode_child(session_id: &str, file_path: &str) -> Result<(), St
         resume_arg
     );
 
-    wait_child(
-        Command::new(&opencode_path)
-            .current_dir(&working_dir)
-            .args(["--session", &resume_arg]),
-    )
-    .map_err(|e| format!("Failed to spawn opencode: {}", e))?;
-
-    Ok(())
+    let mut command = Command::new(&opencode_path);
+    command
+        .current_dir(&working_dir)
+        .args(["--session", &resume_arg]);
+    run_child(&mut command, "Opencode")
 }
 
 /// Open Claude Desktop app for Desktop sessions
@@ -513,7 +510,7 @@ pub fn resume_desktop() -> Result<(), String> {
 /// Uses `open -W` so the TUI regains control only after the user closes Claude Desktop.
 pub fn resume_desktop_child() -> Result<(), String> {
     // Ignore exit code: `open -W` can return non-zero for benign reasons
-    // (e.g., app already running). Same approach as resume_cli_child().
+    // (e.g., app already running).
     wait_child(Command::new("open").args(["-W", "-a", "Claude"]))
         .map_err(|e| format!("Failed to open Claude Desktop: {}", e))?;
 
@@ -665,27 +662,52 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "exit 1"]);
         assert_eq!(
-            run_codex_command(&mut command).unwrap_err(),
+            run_child(&mut command, "Codex").unwrap_err(),
             "Codex exited with status 1"
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn codex_error_exit_when_within_bootstrap_window_then_is_failed_resume() {
-        let just_inside = CODEX_BOOTSTRAP_WINDOW - Duration::from_millis(1);
-        assert!(codex_exit_result(Some(1), Duration::ZERO).is_err());
-        assert!(codex_exit_result(Some(1), just_inside).is_err());
+    fn claude_like_child_when_exiting_with_error_at_once_then_returns_error() {
+        let _guard = WAIT_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 1"]);
+        assert_eq!(
+            run_child(&mut command, "Claude").unwrap_err(),
+            "Claude exited with status 1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_like_child_when_exiting_cleanly_at_once_then_returns_ok() {
+        let _guard = WAIT_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+        assert!(run_child(&mut command, "Claude").is_ok());
     }
 
     #[test]
-    fn codex_error_exit_when_session_already_ran_then_returns_normally() {
-        assert!(codex_exit_result(Some(1), CODEX_BOOTSTRAP_WINDOW).is_ok());
+    fn child_error_exit_when_within_bootstrap_window_then_is_failed_resume() {
+        let just_inside = BOOTSTRAP_WINDOW - Duration::from_millis(1);
+        assert!(child_exit_result("Codex", Some(1), Duration::ZERO).is_err());
+        assert!(child_exit_result("Codex", Some(1), just_inside).is_err());
     }
 
     #[test]
-    fn codex_success_interrupt_or_signal_when_child_exits_then_returns_normally() {
+    fn child_error_exit_when_session_already_ran_then_returns_normally() {
+        assert!(child_exit_result("Codex", Some(1), BOOTSTRAP_WINDOW).is_ok());
+    }
+
+    #[test]
+    fn child_success_interrupt_or_signal_when_child_exits_then_returns_normally() {
         for code in [Some(0), Some(130), None] {
-            assert!(codex_exit_result(code, Duration::ZERO).is_ok());
+            assert!(child_exit_result("Codex", code, Duration::ZERO).is_ok());
         }
     }
 
