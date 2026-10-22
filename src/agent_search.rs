@@ -28,6 +28,15 @@ pub struct AgentHit {
     pub session_id: String,
     pub file_path: String,
     pub why: String,
+    /// `host` of the search row; absent or `local` for this machine.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// `project` and `timestamp` of the search row, for a remote hit whose
+    /// file is not here to read.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A hit resolved to a session on disk.
@@ -112,9 +121,12 @@ Work fast: in your FIRST turn issue 3-5 `{ccs} search` calls in parallel (Russia
 phrasings, synonyms, product/tool names, a --regex alternation). Open a session with \
 `{ccs} show` only when snippets are ambiguous. Stop as soon as you are confident.
 Skip matches whose file_path contains '#' (Opencode sessions cannot be opened here).
+Each match has a `host`: `local`, or another machine. For a session on another machine pass \
+`--host <host>` to `{ccs} show`.
 Final answer: ONLY a JSON array of up to {MAX_HITS} objects {{\"session_id\": \"...\", \
-\"file_path\": \"...\", \"why\": \"<10 words>\"}}, best match first, [] if nothing fits. \
-No prose, no code fences."
+\"file_path\": \"...\", \"why\": \"<10 words>\", \"host\": \"...\", \"project\": \"...\", \
+\"timestamp\": \"...\"}} (host, project, timestamp copied from the match), best match first, \
+[] if nothing fits. No prose, no code fences."
     )
 }
 
@@ -518,13 +530,35 @@ fn resolve_hits(hits: Vec<AgentHit>) -> Vec<FoundSession> {
     hits.into_iter()
         .filter(|hit| !hit.file_path.contains('#'))
         .filter_map(|hit| {
-            let session = extract_summary(Path::new(&hit.file_path))?;
+            let session = match hit.host.as_deref() {
+                None | Some("local") => extract_summary(Path::new(&hit.file_path))?,
+                Some(host) => remote_hit_session(host, &hit),
+            };
             Some(FoundSession {
                 session,
                 why: hit.why,
             })
         })
         .collect()
+}
+
+/// A hit on another machine: its file is there, so the row is built from
+/// what the agent read in the search output. Enter resumes it over ssh.
+fn remote_hit_session(host: &str, hit: &AgentHit) -> RecentSession {
+    RecentSession {
+        session_id: hit.session_id.clone(),
+        file_path: hit.file_path.clone(),
+        project: hit.project.clone().unwrap_or_default(),
+        source: crate::session::SessionSource::from_path(&hit.file_path),
+        timestamp: hit.timestamp.unwrap_or_else(chrono::Utc::now),
+        summary: hit.why.clone(),
+        automation: None,
+        branch: None,
+        message_count: None,
+        preview_role: crate::session::record::MessageRole::User,
+        cwd: None,
+        host: crate::remote::Host::Remote(host.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -696,6 +730,9 @@ mod tests {
         assert_eq!(
             parse_hits(text).unwrap(),
             vec![AgentHit {
+                host: None,
+                project: None,
+                timestamp: None,
                 session_id: "a".into(),
                 file_path: "/p".into(),
                 why: "w".into()
@@ -723,16 +760,25 @@ mod tests {
     fn missing_and_opencode_paths_resolve_hits_drops_them() {
         let hits = vec![
             AgentHit {
+                host: None,
+                project: None,
+                timestamp: None,
                 session_id: "sess-linear-001".into(),
                 file_path: fixture("linear_session.jsonl"),
                 why: "sorting lists".into(),
             },
             AgentHit {
+                host: None,
+                project: None,
+                timestamp: None,
                 session_id: "gone".into(),
                 file_path: "/nope.jsonl".into(),
                 why: "w".into(),
             },
             AgentHit {
+                host: None,
+                project: None,
+                timestamp: None,
                 session_id: "ses_1".into(),
                 file_path: "/db.sqlite#ses_1".into(),
                 why: "w".into(),
@@ -742,6 +788,43 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].session.session_id, "sess-linear-001");
         assert_eq!(found[0].why, "sorting lists");
+    }
+
+    #[test]
+    fn remote_hit_resolve_hits_keeps_it_with_host_and_reported_project() {
+        let hits: Vec<AgentHit> = serde_json::from_str(
+            r#"[{"session_id": "r1", "file_path": "/home/m/.claude/projects/-p/r1.jsonl",
+                 "why": "kotlin bump", "host": "Z270XX", "project": "infra",
+                 "timestamp": "2026-10-22T11:00:00Z"}]"#,
+        )
+        .unwrap();
+        let found = resolve_hits(hits);
+        assert_eq!(found.len(), 1);
+        let session = &found[0].session;
+        assert_eq!(session.host, crate::remote::Host::Remote("Z270XX".into()));
+        assert_eq!(session.project, "infra");
+        assert_eq!(session.session_id, "r1");
+    }
+
+    #[test]
+    fn local_host_field_resolve_hits_reads_the_file_here() {
+        let hits = vec![AgentHit {
+            session_id: "sess-linear-001".into(),
+            file_path: fixture("linear_session.jsonl"),
+            why: "sorting lists".into(),
+            host: Some("local".into()),
+            project: None,
+            timestamp: None,
+        }];
+        let found = resolve_hits(hits);
+        assert_eq!(found[0].session.host, crate::remote::Host::Local);
+    }
+
+    #[test]
+    fn system_prompt_when_hosts_then_explains_host_field_and_show_host() {
+        let p = system_prompt(Path::new("/opt/ccs"));
+        assert!(p.contains("--host"), "{p}");
+        assert!(p.contains("\"host\""), "{p}");
     }
 
     #[cfg(unix)]

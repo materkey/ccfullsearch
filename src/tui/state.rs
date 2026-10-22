@@ -1407,8 +1407,9 @@ impl App {
     }
 
     fn enter_tree_mode_for_hit(&mut self) {
-        if let Some(file_path) = self.ai.selected_hit().map(|h| h.session.file_path.clone()) {
-            self.enter_tree_mode_for_file(&file_path);
+        if let Some(hit) = self.ai.selected_hit() {
+            let (session, label) = (hit.session.session_ref(), Some(hit.session.project.clone()));
+            self.enter_tree_mode_for_ref(session, label);
         }
     }
 
@@ -2528,6 +2529,24 @@ mod tests {
             session: make_recent_session(file_path),
             why: format!("why {file_path}"),
         }
+    }
+
+    #[test]
+    fn ai_hit_tree_when_remote_hit_then_tree_requested_from_its_host() {
+        use crate::remote::client::{HostState, Request};
+        use crate::tui::hosts_state::fake::FakeLink;
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app =
+            App::new(vec!["/test".to_string()]).with_host_links(vec![Box::new(link.clone())]);
+        let mut session = make_recent_session("/home/m/.claude/projects/-p/r1.jsonl");
+        session.host = Host::Remote("Z".into());
+        app.ai.active = true;
+        app.ai.hits = Some(vec![FoundSession {
+            session,
+            why: "w".into(),
+        }]);
+        app.enter_tree_mode_for_hit();
+        assert!(matches!(link.last_sent(), Some((_, Request::Tree(_)))));
     }
 
     #[test]
