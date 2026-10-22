@@ -1,0 +1,33 @@
+{
+  "analyzer": "scb-check==0.2.0",
+  "scope": "src",
+  "head": "25757a0d2d07a68aa67d9eda74cc9aff51ffcc55",
+  "report": {
+    "verbosity": 0.08978488210266809,
+    "erosion": 0.03702085609824355,
+    "cog_erosion": 0.331767183217713,
+    "files_scanned": 39,
+    "total_loc": 25149,
+    "verbosity_flagged_loc": 2258,
+    "clone_loc": 2258,
+    "ast_grep_flagged_loc": 0,
+    "structural_rule_loc": 0,
+    "structural_rule_findings": 0,
+    "total_functions": 1966,
+    "high_cc_functions": 5,
+    "high_cog_functions": 39,
+    "total_mass": 13120.15590874497,
+    "high_cc_mass": 485.7194038841674,
+    "total_cog_mass": 10269.46515252162,
+    "high_cog_mass": 3407.0715268045587,
+    "syntax_tree_count": 39,
+    "syntax_node_count": 349888,
+    "syntax_by_language": {
+      "rust": {
+        "tree_count": 39,
+        "node_count": 349888
+      }
+    }
+  },
+  "waivers": {}
+}
