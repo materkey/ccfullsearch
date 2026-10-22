@@ -358,11 +358,12 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
     // Any exit code is acceptable — Claude CLI exits non-zero on Ctrl-C (130),
     // /exit, or other normal termination paths. In overlay mode we just need to
     // know that the process finished so we can return to the TUI.
-    Command::new(&claude_path)
-        .current_dir(&working_dir)
-        .args(["--resume", &resume_arg])
-        .status()
-        .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+    wait_child(
+        Command::new(&claude_path)
+            .current_dir(&working_dir)
+            .args(["--resume", &resume_arg]),
+    )
+    .map_err(|e| format!("Failed to spawn claude: {}", e))?;
 
     Ok(())
 }
@@ -401,9 +402,7 @@ pub fn resume_codex_child(session_id: &str, file_path: &str) -> Result<(), Strin
 
 fn run_codex_command(command: &mut Command) -> Result<(), String> {
     let started = Instant::now();
-    let status = command
-        .status()
-        .map_err(|e| format!("Failed to spawn codex: {}", e))?;
+    let status = wait_child(command).map_err(|e| format!("Failed to spawn codex: {}", e))?;
     codex_exit_result(status.code(), started.elapsed())
 }
 
@@ -493,11 +492,12 @@ pub fn resume_opencode_child(session_id: &str, file_path: &str) -> Result<(), St
         resume_arg
     );
 
-    Command::new(&opencode_path)
-        .current_dir(&working_dir)
-        .args(["--session", &resume_arg])
-        .status()
-        .map_err(|e| format!("Failed to spawn opencode: {}", e))?;
+    wait_child(
+        Command::new(&opencode_path)
+            .current_dir(&working_dir)
+            .args(["--session", &resume_arg]),
+    )
+    .map_err(|e| format!("Failed to spawn opencode: {}", e))?;
 
     Ok(())
 }
@@ -514,12 +514,96 @@ pub fn resume_desktop() -> Result<(), String> {
 pub fn resume_desktop_child() -> Result<(), String> {
     // Ignore exit code: `open -W` can return non-zero for benign reasons
     // (e.g., app already running). Same approach as resume_cli_child().
-    Command::new("open")
-        .args(["-W", "-a", "Claude"])
-        .status()
+    wait_child(Command::new("open").args(["-W", "-a", "Claude"]))
         .map_err(|e| format!("Failed to open Claude Desktop: {}", e))?;
 
     Ok(())
+}
+
+/// Spawn `command` and wait for it while ccs stays out of its way: SIGINT and
+/// SIGQUIT are ignored in ccs (the child gets the defaults back), a child that
+/// stops itself stops ccs too, and keys typed while the child was closing are
+/// discarded so the picker does not act on them.
+#[cfg(unix)]
+fn wait_child(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+
+    // Ignore before spawning: a child signalling the group right away must
+    // not find ccs still on the default disposition.
+    let _ignored = IgnoredInterrupts::install();
+    // SAFETY: `signal` is async-signal-safe, so it may run between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    let status = wait_through_stops(child.id() as libc::pid_t)?;
+    // SAFETY: flushing the input queue of fd 0 has no memory effects; it
+    // fails harmlessly when stdin is not a terminal.
+    unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
+    Ok(std::process::ExitStatus::from_raw(status))
+}
+
+#[cfg(not(unix))]
+fn wait_child(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    command.status()
+}
+
+/// Wait for `pid` to exit. Claude handles Ctrl+Z in raw mode and stops only
+/// itself, which plain `wait` never reports; ccs then stops too so the shell
+/// gets the terminal back, and `fg` continues the whole process group.
+#[cfg(unix)]
+fn wait_through_stops(pid: libc::pid_t) -> std::io::Result<libc::c_int> {
+    loop {
+        let mut status = 0;
+        // SAFETY: `pid` is our own child and `status` is a valid out-pointer.
+        if unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) } == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if !libc::WIFSTOPPED(status) {
+            return Ok(status);
+        }
+        // SAFETY: raising SIGSTOP on ourselves only suspends the process.
+        unsafe { libc::raise(libc::SIGSTOP) };
+    }
+}
+
+/// SIGINT and SIGQUIT set to `SIG_IGN` until dropped, then restored.
+#[cfg(unix)]
+struct IgnoredInterrupts {
+    int: libc::sighandler_t,
+    quit: libc::sighandler_t,
+}
+
+#[cfg(unix)]
+impl IgnoredInterrupts {
+    fn install() -> Self {
+        // SAFETY: `SIG_IGN` installs no handler code, only a disposition.
+        unsafe {
+            Self {
+                int: libc::signal(libc::SIGINT, libc::SIG_IGN),
+                quit: libc::signal(libc::SIGQUIT, libc::SIG_IGN),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for IgnoredInterrupts {
+    fn drop(&mut self) {
+        // SAFETY: restores the dispositions `install` replaced.
+        unsafe {
+            libc::signal(libc::SIGINT, self.int);
+            libc::signal(libc::SIGQUIT, self.quit);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -544,11 +628,40 @@ fn exec_command(cmd: &mut Command) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Mutex, PoisonError};
     use tempfile::TempDir;
+
+    /// `wait_child` swaps process-wide signal dispositions, and tests run in parallel.
+    static WAIT_CHILD_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn child_interrupts_parent_when_waiting_then_parent_survives() {
+        let _guard = WAIT_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let status =
+            wait_child(Command::new("sh").args(["-c", "kill -INT $PPID; exit 0"])).unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_interrupts_itself_when_waiting_then_child_dies_by_sigint() {
+        use std::os::unix::process::ExitStatusExt;
+        let _guard = WAIT_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let status = wait_child(Command::new("sh").args(["-c", "kill -INT $$; sleep 5"])).unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGINT));
+    }
 
     #[cfg(unix)]
     #[test]
     fn codex_failure_when_child_exits_at_once_then_returns_error() {
+        let _guard = WAIT_CHILD_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut command = Command::new("sh");
         command.args(["-c", "exit 1"]);
         assert_eq!(
