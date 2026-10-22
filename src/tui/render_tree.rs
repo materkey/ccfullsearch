@@ -1,4 +1,4 @@
-use crate::search::{extract_project_from_path, sanitize_content};
+use crate::search::sanitize_content;
 use crate::tree::TreeRow;
 use crate::tui::render_search::{build_help_line, clear_area, truncate_to_width, HintItem, DIM_FG};
 use crate::tui::view::AppView;
@@ -26,7 +26,7 @@ pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
         } else {
             &tree.session_id
         };
-        let project = extract_project_from_path(&tree.file_path);
+        let project = tree.project();
         format!(
             "Branch Tree: {} | {} | {} messages, {} branches",
             project,

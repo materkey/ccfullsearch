@@ -62,6 +62,8 @@ pub struct SessionTree {
     pub host: Host,
     /// Branch count sent by the remote host, which has the nodes.
     remote_branch_count: Option<usize>,
+    /// Project label the remote host sent with the session's row.
+    pub project_label: Option<String>,
 }
 
 impl SessionTree {
@@ -104,6 +106,7 @@ impl SessionTree {
             content_cache: RefCell::new(HashMap::new()),
             host: Host::Local,
             remote_branch_count: None,
+            project_label: None,
         };
 
         tree.flatten_to_rows();
@@ -183,6 +186,7 @@ impl SessionTree {
             content_cache: RefCell::new(full_content_cache),
             host: Host::Local,
             remote_branch_count: None,
+            project_label: None,
         };
 
         tree.flatten_to_rows();
@@ -195,6 +199,23 @@ impl SessionTree {
             return count;
         }
         self.children.values().filter(|kids| kids.len() > 1).count()
+    }
+
+    /// Project shown for the tree: derived from the path for a local file,
+    /// the host's label for a remote one (its file is not here to read).
+    pub fn project(&self) -> String {
+        if self.host.is_local() {
+            crate::search::extract_project_from_path(&self.file_path)
+        } else {
+            self.project_label.clone().unwrap_or_default()
+        }
+    }
+
+    /// Full text of `uuid` fetched from the remote host.
+    pub(crate) fn insert_cached_content(&self, uuid: &str, text: String) {
+        self.content_cache
+            .borrow_mut()
+            .insert(uuid.to_string(), text);
     }
 
     /// A tree built elsewhere: a remote host sent its rows, tip and branch
@@ -225,6 +246,7 @@ impl SessionTree {
             content_cache: RefCell::new(HashMap::new()),
             host,
             remote_branch_count: Some(branch_count),
+            project_label: None,
         }
     }
 
@@ -235,6 +257,10 @@ impl SessionTree {
         // Check cache first
         if let Some(cached) = self.content_cache.borrow().get(uuid) {
             return Some(cached.clone());
+        }
+        // A remote tree's file is on its host; its text arrives via `show`.
+        if !self.host.is_local() {
+            return None;
         }
 
         let node = self.nodes.get(uuid)?;
@@ -654,6 +680,7 @@ impl SessionTree {
             content_cache: RefCell::new(HashMap::new()),
             host: Host::Local,
             remote_branch_count: None,
+            project_label: None,
         }
     }
 }
@@ -664,6 +691,21 @@ mod tests {
     use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn remote_tree_get_full_content_when_not_cached_then_none_without_disk() {
+        let tree = SessionTree::from_rows(
+            Host::Remote("Z".into()),
+            "s1".into(),
+            "/no/such/file.jsonl".into(),
+            None,
+            0,
+            vec![],
+        );
+        assert_eq!(tree.get_full_content("u1"), None);
+        tree.insert_cached_content("u1", "full".into());
+        assert_eq!(tree.get_full_content("u1").as_deref(), Some("full"));
+    }
 
     /// Helper: create a simple linear session (no branches)
     fn create_linear_session(dir: &TempDir) -> std::path::PathBuf {

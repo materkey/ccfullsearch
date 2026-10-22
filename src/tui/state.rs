@@ -13,7 +13,7 @@ use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
 use crate::session::{SessionProvider, SessionSource};
 use crate::tree::SessionTree;
 use crate::tui::dispatch::{KeyAction, KeyContext};
-use crate::tui::hosts_state::{HostsState, PendingKind, RemoteSearch};
+use crate::tui::hosts_state::{HostsState, PendingKind, RemoteSearch, ShowKey};
 use crate::tui::search_mode::session_outcome;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -841,6 +841,11 @@ pub struct SearchState {
     /// Whether the shown results are incomplete: a per-file match limit was
     /// hit here, or a host cut its answer (session cap, per-session cap)
     pub search_truncated: bool,
+    /// Full text of remote matches, fetched for the preview.
+    pub(crate) preview_cache: HashMap<crate::tui::hosts_state::ShowTarget, String>,
+    /// Messages whose `show` failed; not asked for again on every tick, only
+    /// after a new search, a reconnect of their host or a reopened tree.
+    pub(crate) failed_shows: HashSet<crate::tui::hosts_state::ShowTarget>,
     /// Local groups for `shown_seq`; merged with remote groups into `all_groups`.
     pub(crate) local_groups: Vec<SessionGroup>,
     /// Matches in `local_groups` as ripgrep reported them.
@@ -868,6 +873,9 @@ pub struct TreeState {
     pub(crate) tree_load_rx: Option<Receiver<Result<SessionTree, String>>>,
     /// Whether tree mode was the initial mode (launched with --tree)
     pub tree_mode_standalone: bool,
+    /// The remote session whose tree is being fetched, and the project label
+    /// its host sent; a reply for any other session is stale.
+    pub(crate) remote_loading: Option<(SessionRef, Option<String>)>,
 }
 
 /// Ctrl+G agent search state. Three phases: input (no agent, no hits),
@@ -1029,6 +1037,8 @@ impl App {
                 search_rx: result_rx,
                 result_tx,
                 search_seq: 0,
+                preview_cache: HashMap::new(),
+                failed_shows: HashSet::new(),
                 local_groups: Vec::new(),
                 local_count: 0,
                 shown_seq: 0,
@@ -1043,6 +1053,7 @@ impl App {
                 tree_loading: false,
                 tree_load_rx: None,
                 tree_mode_standalone: false,
+                remote_loading: None,
             },
             typing: false,
             search_paths,
@@ -1531,6 +1542,7 @@ impl App {
         self.poll_message_counts();
         self.poll_ai_result();
         self.poll_hosts();
+        self.request_preview_if_needed();
 
         // Check for search results from background threads
         while let Ok(result) = self.search.search_rx.try_recv() {
@@ -1750,6 +1762,9 @@ impl App {
         }
         self.search.shown_seq = seq;
         self.search.search_truncated = false;
+        // A failure may have been a timeout or a dropped link: a new search
+        // asks again.
+        self.search.failed_shows.clear();
         self.search.local_groups.clear();
         self.search.local_count = 0;
         self.search.group_cursor = 0;
@@ -1862,6 +1877,9 @@ impl App {
             if ready {
                 // A new connection: errors of the old one no longer apply.
                 status.last_error = None;
+                self.search
+                    .failed_shows
+                    .retain(|(session, _)| session.host.label() != name);
             } else {
                 status.waiting = false;
             }
@@ -1908,6 +1926,16 @@ impl App {
                     status.last_error = Some(e);
                 }
             }
+            (PendingKind::Show { target, tree }, Ok(Reply::Show(shown))) => {
+                self.apply_remote_show(target, tree, shown.content);
+            }
+            (PendingKind::Tree(session), Ok(Reply::Tree(tree))) => {
+                self.apply_remote_tree(session, Ok(tree));
+            }
+            (PendingKind::Tree(session), Err(e)) => self.apply_remote_tree(session, Err(e)),
+            (PendingKind::Show { target, .. }, Err(_)) => {
+                self.search.failed_shows.insert(target);
+            }
             (_, Ok(_)) => {}
             (PendingKind::Search { .. }, Err(e)) => {
                 if let Some(status) = status {
@@ -1942,6 +1970,169 @@ impl App {
             .searches
             .insert(name.to_string(), RemoteSearch { seq, groups });
         self.rebuild_all_groups(anchor);
+    }
+
+    fn apply_remote_show(
+        &mut self,
+        target: crate::tui::hosts_state::ShowTarget,
+        tree: bool,
+        text: String,
+    ) {
+        if !tree {
+            self.search.preview_cache.insert(target, text);
+            return;
+        }
+        let (session, ShowKey::Uuid(uuid)) = target else {
+            return;
+        };
+        if let Some(t) = self.tree.session_tree.as_ref() {
+            if t.host == session.host && t.file_path == session.file_path {
+                t.insert_cached_content(&uuid, text);
+            }
+        }
+    }
+
+    fn apply_remote_tree(
+        &mut self,
+        session: SessionRef,
+        result: Result<crate::remote::wire::WireTree, String>,
+    ) {
+        let label = match &self.tree.remote_loading {
+            Some((loading, label)) if *loading == session => label.clone(),
+            _ => return,
+        };
+        self.tree.remote_loading = None;
+        if !self.tree_mode || !self.tree.tree_loading {
+            return;
+        }
+        match result {
+            Ok(tree) => {
+                let mut tree = tree.into_tree(session.host);
+                tree.project_label = label;
+                self.tree.session_tree = Some(tree);
+                self.tree.tree_loading = false;
+            }
+            Err(e) => {
+                self.search.error = Some(format!("Tree load error: {}", e));
+                self.tree.tree_loading = false;
+                self.tree_mode = false;
+            }
+        }
+        self.needs_full_redraw = true;
+    }
+
+    /// Ask the host for the full text the preview shows next, once. Runs
+    /// from `tick`, never from drawing.
+    pub(crate) fn request_preview_if_needed(&mut self) {
+        if !self.preview_mode || !self.hosts.has_hosts() {
+            return;
+        }
+        let Some((target, tree, request)) = self.preview_request() else {
+            return;
+        };
+        let cached = !tree && self.search.preview_cache.contains_key(&target);
+        let failed = self.search.failed_shows.contains(&target);
+        if cached || failed || self.hosts.show_pending(&target) {
+            return;
+        }
+        let name = target.0.host.label().to_string();
+        self.hosts
+            .send_to(&name, request, PendingKind::Show { target, tree });
+    }
+
+    /// The remote message the preview needs and has not got.
+    fn preview_request(&self) -> Option<(crate::tui::hosts_state::ShowTarget, bool, Request)> {
+        if self.tree_mode {
+            let tree = self.tree.session_tree.as_ref()?;
+            if tree.host.is_local() {
+                return None;
+            }
+            let row = tree.rows.get(self.tree.tree_cursor)?;
+            if tree.get_full_content(&row.uuid).is_some() {
+                return None;
+            }
+            let session = SessionRef::new(tree.host.clone(), tree.file_path.clone());
+            let request = Request::Show(crate::remote::wire::ShowParams {
+                file_path: tree.file_path.clone(),
+                line: None,
+                uuid: Some(row.uuid.clone()),
+            });
+            return Some(((session, ShowKey::Uuid(row.uuid.clone())), true, request));
+        }
+        let group = self.selected_group()?;
+        let m = self.selected_match()?;
+        let msg = m.message.as_ref()?;
+        if group.host.is_local() || !m.content_truncated {
+            return None;
+        }
+        let session = SessionRef::new(group.host.clone(), m.file_path.clone());
+        let request = Request::Show(crate::remote::wire::ShowParams {
+            file_path: m.file_path.clone(),
+            line: Some(msg.line_number),
+            uuid: msg.uuid.clone(),
+        });
+        Some(((session, show_key(msg)), false, request))
+    }
+
+    /// The message the preview pane shows: for a cut remote match, with the
+    /// full text once the host sent it.
+    pub(crate) fn preview_message<'a>(
+        &self,
+        group: &SessionGroup,
+        m: &'a crate::search::RipgrepMatch,
+    ) -> Option<std::borrow::Cow<'a, crate::search::Message>> {
+        let msg = m.message.as_ref()?;
+        if group.host.is_local() || !m.content_truncated {
+            return Some(std::borrow::Cow::Borrowed(msg));
+        }
+        let key = (
+            SessionRef::new(group.host.clone(), m.file_path.clone()),
+            show_key(msg),
+        );
+        match self.search.preview_cache.get(&key) {
+            Some(text) => {
+                let mut full = msg.clone();
+                full.content = text.clone();
+                full.text_content = text.clone();
+                Some(std::borrow::Cow::Owned(full))
+            }
+            None => Some(std::borrow::Cow::Borrowed(msg)),
+        }
+    }
+
+    /// Open the tree for a session: read here, or ask its host. `label` is
+    /// the project label the host sent with the row, shown for a remote tree.
+    pub(crate) fn enter_tree_mode_for_ref(&mut self, session: SessionRef, label: Option<String>) {
+        self.hosts.cancel_trees();
+        self.search
+            .failed_shows
+            .retain(|(failed, _)| *failed != session);
+        self.tree.remote_loading = None;
+        if let Some(path) = session.local_path() {
+            let path = path.to_string();
+            self.enter_tree_mode_for_file(&path);
+            return;
+        }
+        let name = session.host.label().to_string();
+        let request = Request::Tree(crate::remote::wire::TreeParams {
+            file_path: session.file_path.clone(),
+        });
+        if !self
+            .hosts
+            .send_to(&name, request, PendingKind::Tree(session.clone()))
+        {
+            self.search.error = Some(format!("{name}: недоступен"));
+            return;
+        }
+        self.tree.remote_loading = Some((session, label));
+        self.tree_mode = true;
+        self.tree.tree_loading = true;
+        self.tree.tree_cursor = 0;
+        self.tree.tree_scroll_offset = 0;
+        self.tree.session_tree = None;
+        self.tree.tree_load_rx = None;
+        self.preview_mode = false;
+        self.needs_full_redraw = true;
     }
 
     /// The search the remote hosts run for the current query.
@@ -2187,6 +2378,15 @@ impl App {
             h.cancel.store(true, Ordering::Relaxed);
         }
     }
+}
+
+/// Which message a `show` names: its uuid when it has one (Opencode rows
+/// share line 1), else its JSONL line.
+fn show_key(msg: &crate::search::Message) -> ShowKey {
+    msg.uuid
+        .clone()
+        .map(ShowKey::Uuid)
+        .unwrap_or(ShowKey::Line(msg.line_number))
 }
 
 #[cfg(test)]

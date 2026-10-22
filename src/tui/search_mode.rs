@@ -292,8 +292,8 @@ impl App {
     /// Enter tree mode for the currently selected recent session.
     pub fn enter_tree_mode_recent(&mut self) {
         if let Some(session) = self.recent.filtered.get(self.recent.cursor) {
-            let file_path = session.file_path.clone();
-            self.enter_tree_mode_for_file(&file_path);
+            let (session, label) = (session.session_ref(), Some(session.project.clone()));
+            self.enter_tree_mode_for_ref(session, label);
         }
     }
 

@@ -8,11 +8,11 @@ use std::thread;
 impl App {
     /// Enter tree mode from search results (press 'b' on a session group)
     pub fn enter_tree_mode(&mut self) {
-        let file_path = match self.selected_group() {
-            Some(group) => group.file_path.clone(),
+        let (session, label) = match self.selected_group() {
+            Some(group) => (group.session_ref(), group.project_label.clone()),
             None => return,
         };
-        self.enter_tree_mode_for_file(&file_path);
+        self.enter_tree_mode_for_ref(session, label);
     }
 
     /// Enter tree mode directly for a file path or session ID
@@ -67,6 +67,8 @@ impl App {
         self.tree.session_tree = None;
         self.tree.tree_loading = false;
         self.tree.tree_load_rx = None;
+        self.tree.remote_loading = None;
+        self.hosts.cancel_trees();
         self.preview_mode = false;
         self.needs_full_redraw = true;
     }

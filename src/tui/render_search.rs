@@ -1645,6 +1645,12 @@ fn render_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect)
         return;
     };
 
+    // A cut remote match shows its full text once the host sent it.
+    let full = app
+        .selected_group()
+        .and_then(|g| app.preview_message(g, m))
+        .unwrap_or(std::borrow::Cow::Borrowed(msg));
+    let msg = full.as_ref();
     let project = app.selected_group().map(group_project).unwrap_or_default();
     let date_str = msg
         .timestamp

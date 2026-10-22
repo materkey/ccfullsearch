@@ -2,7 +2,7 @@
 //! flight, the latest search results per host and what the status bar says.
 
 use crate::remote::client::{ClientEvent, HostLink, HostState, Request};
-use crate::remote::Host;
+use crate::remote::{Host, SessionRef};
 use crate::search::SessionGroup;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -61,9 +61,27 @@ impl HostStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PendingKind {
-    Search { seq: u64 },
+    Search {
+        seq: u64,
+    },
     Recent,
+    /// Full text for a preview; `tree` says where it goes.
+    Show {
+        target: ShowTarget,
+        tree: bool,
+    },
+    Tree(SessionRef),
 }
+
+/// Which message's full text: by uuid when the message has one, else by
+/// JSONL line.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ShowKey {
+    Line(usize),
+    Uuid(String),
+}
+
+pub(crate) type ShowTarget = (SessionRef, ShowKey);
 
 /// One host's answer to the search with this `seq`.
 pub(crate) struct RemoteSearch {
@@ -117,6 +135,13 @@ impl HostsState {
         true
     }
 
+    /// Whether this message's text was already asked for.
+    pub(crate) fn show_pending(&self, target: &ShowTarget) -> bool {
+        self.pending
+            .values()
+            .any(|k| matches!(k, PendingKind::Show { target: t, .. } if t == target))
+    }
+
     /// Send the search `seq` to every host that is up and allowed.
     pub(crate) fn send_search(&mut self, seq: u64, request: &Request) {
         self.cancel_searches();
@@ -138,6 +163,11 @@ impl HostsState {
     /// must not land after the one the user asked for last.
     pub(crate) fn cancel_recents(&mut self) {
         self.cancel_where(|kind| matches!(kind, PendingKind::Recent));
+    }
+
+    /// Cancel every tree request in flight (the user left or opened another tree).
+    pub(crate) fn cancel_trees(&mut self) {
+        self.cancel_where(|kind| matches!(kind, PendingKind::Tree(_)));
     }
 
     fn cancel_where(&mut self, which: impl Fn(&PendingKind) -> bool) {
@@ -692,6 +722,329 @@ mod tests {
             }
             other => panic!("expected pick, got {other:?}"),
         }
+    }
+
+    fn remote_group_selected(link: &FakeLink, app: &mut App, truncated: bool) {
+        type_query(app, "needle");
+        let (id, _) = link.last_sent().unwrap();
+        let mut found = wire_search("r1", 11);
+        found.groups[0].matches[0].content_truncated = truncated;
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Search(found)),
+        });
+        app.poll_hosts();
+        app.search.group_cursor = 0;
+    }
+
+    fn sent_count(link: &FakeLink, pred: impl Fn(&Request) -> bool) -> usize {
+        link.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| pred(r))
+            .count()
+    }
+
+    #[test]
+    fn remote_tree_when_reply_arrives_then_tree_installed_with_branch_count() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, false);
+        app.enter_tree_mode();
+        assert!(app.tree_mode && app.tree.tree_loading);
+        let (id, req) = link.last_sent().unwrap();
+        assert!(matches!(req, Request::Tree(_)), "{req:?}");
+        let tree: crate::remote::wire::WireTree = serde_json::from_value(serde_json::json!({
+            "session_id": "r1", "file_path": "/home/m/.claude/projects/-p/r1.jsonl",
+            "tip_uuid": "u1", "branch_count": 2,
+            "rows": [{"uuid": "u1", "role": "user", "timestamp": "2026-10-22T11:00:00Z",
+                      "content_preview": "hi", "graph_symbols": "* ", "is_on_latest_chain": true,
+                      "is_branch_point": false, "is_compaction": false}]
+        }))
+        .unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Tree(tree)),
+        });
+        app.poll_hosts();
+        let installed = app.tree.session_tree.as_ref().expect("tree installed");
+        assert!(!app.tree.tree_loading);
+        assert_eq!(installed.branch_count(), 2);
+        assert_eq!(installed.host, Host::Remote("Z".into()));
+    }
+
+    fn wire_tree(session_id: &str) -> crate::remote::wire::WireTree {
+        serde_json::from_value(serde_json::json!({
+            "session_id": session_id,
+            "file_path": format!("/home/m/.claude/projects/-p/{session_id}.jsonl"),
+            "tip_uuid": "u1", "branch_count": 0,
+            "rows": [{"uuid": "u1", "role": "user", "timestamp": "2026-10-22T11:00:00Z",
+                      "content_preview": session_id, "graph_symbols": "* ", "is_on_latest_chain": true,
+                      "is_branch_point": false, "is_compaction": false}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tree_reply_when_for_a_tree_left_earlier_then_ignored() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        type_query(&mut app, "needle");
+        let (id, _) = link.last_sent().unwrap();
+        let mut found = wire_search("a", 11);
+        found.groups.extend(wire_search("b", 10).groups);
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Search(found)),
+        });
+        app.poll_hosts();
+        app.search.group_cursor = 0;
+        app.enter_tree_mode();
+        let (tree_a, _) = link.last_sent().unwrap();
+        app.exit_tree_mode();
+        app.search.group_cursor = 1;
+        app.enter_tree_mode();
+        let (tree_b, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id: tree_a,
+            result: Ok(Reply::Tree(wire_tree("a"))),
+        });
+        app.poll_hosts();
+        assert!(
+            app.tree.tree_loading,
+            "A's late reply must not end B's load"
+        );
+        assert!(app.tree.session_tree.is_none());
+        link.push(ClientEvent::Reply {
+            id: tree_b,
+            result: Ok(Reply::Tree(wire_tree("b"))),
+        });
+        app.poll_hosts();
+        assert_eq!(app.tree.session_tree.as_ref().unwrap().session_id, "b");
+    }
+
+    #[test]
+    fn preview_when_cursor_moves_twice_on_same_match_then_one_show_sent() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, true);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        app.request_preview_if_needed();
+        assert_eq!(sent_count(&link, |r| matches!(r, Request::Show(_))), 1);
+    }
+
+    fn opencode_two_matches(link: &FakeLink, app: &mut App) {
+        type_query(app, "needle");
+        let (id, _) = link.last_sent().unwrap();
+        let mut found = wire_search("ses_1", 11);
+        let group = &mut found.groups[0];
+        group.file_path = "/home/m/.local/share/opencode/opencode.db#ses_1".into();
+        let mut second = group.matches[0].clone();
+        let first = &mut group.matches[0];
+        first.uuid = Some("m1".into());
+        first.file_path = Some(group.file_path.clone());
+        first.content_truncated = true;
+        second.uuid = Some("m2".into());
+        second.file_path = Some(group.file_path.clone());
+        second.content_truncated = true;
+        group.matches.push(second);
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Search(found)),
+        });
+        app.poll_hosts();
+        app.search.group_cursor = 0;
+        app.search.expanded = true;
+        app.preview_mode = true;
+    }
+
+    #[test]
+    fn preview_when_two_opencode_matches_share_line_1_then_each_gets_its_own_text() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        opencode_two_matches(&link, &mut app);
+        app.search.sub_cursor = 0;
+        app.request_preview_if_needed();
+        let (id, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Show(crate::remote::wire::WireShow {
+                content: "first message".into(),
+                text_content: "first message".into(),
+            })),
+        });
+        app.poll_hosts();
+        app.search.sub_cursor = 1;
+        app.request_preview_if_needed();
+        assert_eq!(sent_count(&link, |r| matches!(r, Request::Show(_))), 2);
+        let group = app.search.groups[0].clone();
+        let msg = app.preview_message(&group, &group.matches[1]).unwrap();
+        assert_ne!(msg.content, "first message");
+    }
+
+    #[test]
+    fn preview_when_show_fails_then_not_resent_on_every_tick() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, true);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        let (id, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Err("no message with uuid".into()),
+        });
+        app.poll_hosts();
+        app.request_preview_if_needed();
+        app.request_preview_if_needed();
+        assert_eq!(sent_count(&link, |r| matches!(r, Request::Show(_))), 1);
+    }
+
+    fn fail_last_show(link: &FakeLink, app: &mut App) {
+        let (id, req) = link.last_sent().unwrap();
+        assert!(matches!(req, Request::Show(_)), "{req:?}");
+        link.push(ClientEvent::Reply {
+            id,
+            result: Err("timeout".into()),
+        });
+        app.poll_hosts();
+    }
+
+    fn shows(link: &FakeLink) -> usize {
+        sent_count(link, |r| matches!(r, Request::Show(_)))
+    }
+
+    #[test]
+    fn failed_show_when_new_search_then_asked_again() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, true);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        fail_last_show(&link, &mut app);
+        remote_group_selected(&link, &mut app, true);
+        app.request_preview_if_needed();
+        assert_eq!(shows(&link), 2);
+    }
+
+    #[test]
+    fn failed_show_when_host_reconnects_then_asked_again() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, true);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        fail_last_show(&link, &mut app);
+        link.push(ClientEvent::State(HostState::Down {
+            reason: "blip".into(),
+        }));
+        link.push(ClientEvent::State(HostState::Ready));
+        app.poll_hosts();
+        app.request_preview_if_needed();
+        assert_eq!(shows(&link), 2);
+    }
+
+    #[test]
+    fn failed_tree_show_when_tree_reopened_then_asked_again() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, false);
+        let open_tree = |app: &mut App| {
+            app.enter_tree_mode();
+            let (id, _) = link.last_sent().unwrap();
+            link.push(ClientEvent::Reply {
+                id,
+                result: Ok(Reply::Tree(wire_tree("r1"))),
+            });
+            app.poll_hosts();
+            app.preview_mode = true;
+            app.request_preview_if_needed();
+        };
+        open_tree(&mut app);
+        fail_last_show(&link, &mut app);
+        app.exit_tree_mode();
+        open_tree(&mut app);
+        assert_eq!(shows(&link), 2);
+    }
+
+    #[test]
+    fn preview_when_match_not_truncated_then_no_show_sent() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, false);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        assert_eq!(sent_count(&link, |r| matches!(r, Request::Show(_))), 0);
+    }
+
+    #[test]
+    fn preview_when_show_reply_arrives_then_full_text_used() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, true);
+        app.preview_mode = true;
+        app.request_preview_if_needed();
+        let (id, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Show(crate::remote::wire::WireShow {
+                content: "the whole message".into(),
+                text_content: "the whole message".into(),
+            })),
+        });
+        app.poll_hosts();
+        let group = app.search.groups[0].clone();
+        let msg = app.preview_message(&group, &group.matches[0]).unwrap();
+        assert_eq!(msg.content, "the whole message");
+    }
+
+    fn reply_error(link: &FakeLink, app: &mut App, error: &str) {
+        let (id, _) = link.last_sent().expect("a request was sent");
+        link.push(ClientEvent::Reply {
+            id,
+            result: Err(error.into()),
+        });
+        app.poll_hosts();
+    }
+
+    #[test]
+    fn search_reply_when_host_fails_then_status_shows_error() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        type_query(&mut app, "needle");
+        reply_error(&link, &mut app, "timeout");
+        assert_eq!(
+            app.hosts.status_texts(),
+            vec!["Z: ошибка (timeout)".to_string()]
+        );
+    }
+
+    #[test]
+    fn recent_reply_when_host_fails_then_status_shows_error() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        connected(&link, &mut app);
+        reply_error(&link, &mut app, "timeout");
+        assert_eq!(
+            app.hosts.status_texts(),
+            vec!["Z: ошибка (timeout)".to_string()]
+        );
+    }
+
+    #[test]
+    fn tree_reply_when_host_fails_then_tree_mode_left_with_error() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, false);
+        app.enter_tree_mode();
+        reply_error(&link, &mut app, "no such file");
+        assert!(!app.tree_mode);
+        assert_eq!(
+            app.search.error.as_deref(),
+            Some("Tree load error: no such file")
+        );
     }
 
     #[test]
