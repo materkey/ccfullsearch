@@ -802,6 +802,36 @@ mod tests {
         assert_eq!(installed.host, Host::Remote("Z".into()));
     }
 
+    #[test]
+    fn tree_enter_when_remote_tree_then_resume_target_has_host() {
+        let link = FakeLink::new("Z", HostState::Ready);
+        let mut app = app_with(&link);
+        remote_group_selected(&link, &mut app, false);
+        app.enter_tree_mode();
+        let (id, _) = link.last_sent().unwrap();
+        let tree: crate::remote::wire::WireTree = serde_json::from_value(serde_json::json!({
+            "session_id": "r1", "file_path": "/home/m/.claude/projects/-p/r1.jsonl",
+            "tip_uuid": "u2", "branch_count": 1,
+            "rows": [{"uuid": "u1", "role": "user", "timestamp": "2026-10-22T11:00:00Z",
+                      "content_preview": "hi", "graph_symbols": "* ", "is_on_latest_chain": true,
+                      "is_branch_point": false, "is_compaction": false}]
+        }))
+        .unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Tree(tree)),
+        });
+        app.poll_hosts();
+        app.on_enter_tree();
+        match app.take_outcome() {
+            crate::tui::TuiOutcome::Resume { host, uuid, .. } => {
+                assert_eq!(host, Host::Remote("Z".into()));
+                assert_eq!(uuid.as_deref(), Some("u1"));
+            }
+            other => panic!("expected resume, got {other:?}"),
+        }
+    }
+
     fn wire_tree(session_id: &str) -> crate::remote::wire::WireTree {
         serde_json::from_value(serde_json::json!({
             "session_id": session_id,
@@ -850,6 +880,33 @@ mod tests {
         });
         app.poll_hosts();
         assert_eq!(app.tree.session_tree.as_ref().unwrap().session_id, "b");
+    }
+
+    #[test]
+    fn remote_tree_pick_when_opened_from_recent_then_project_from_host() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        app.picker_mode = true;
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("r1", 23)]);
+        app.recent.cursor = app
+            .recent
+            .filtered
+            .iter()
+            .position(|s| s.session_id == "r1")
+            .unwrap();
+        app.enter_tree_mode_recent();
+        let (id, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Tree(wire_tree("r1"))),
+        });
+        app.poll_hosts();
+        app.on_enter_tree();
+        match app.take_outcome() {
+            crate::tui::TuiOutcome::Pick(p) => assert_eq!(p.project, "remote-proj"),
+            other => panic!("expected pick, got {other:?}"),
+        }
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use crate::search::extract_project_from_path;
 use crate::tree::SessionTree;
 use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use crate::tui::App;
@@ -137,9 +136,9 @@ impl App {
         if let Some(ref tree) = self.tree.session_tree {
             if let Some(row) = tree.rows.get(self.tree.tree_cursor) {
                 if self.picker_mode {
-                    let project = extract_project_from_path(&tree.file_path);
+                    let project = tree.project();
                     self.outcome = Some(AppOutcome::Pick(PickedSession {
-                        host: crate::remote::Host::Local,
+                        host: tree.host.clone(),
                         session_id: tree.session_id.clone(),
                         file_path: tree.file_path.clone(),
                         source: tree.source,
@@ -152,7 +151,7 @@ impl App {
                     // appends records), see `fork::should_fork_for_resume`.
                     let on_tip = tree.tip_uuid.as_deref() == Some(row.uuid.as_str());
                     self.outcome = Some(AppOutcome::Resume(ResumeTarget {
-                        host: crate::remote::Host::Local,
+                        host: tree.host.clone(),
                         session_id: tree.session_id.clone(),
                         file_path: tree.file_path.clone(),
                         source: tree.source,

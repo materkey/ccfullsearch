@@ -19,8 +19,10 @@ const COMMON_OPTIONS: [&str; 8] = [
 pub enum SshMode<'a> {
     /// `ccs serve --stdio` over pipes; ssh must never prompt.
     Serve,
-    /// `ccs resume` on a terminal.
+    /// `ccs resume` on a terminal. The session id travels too: an Opencode
+    /// `<db>#<id>` path names no file the remote ccs could read it from.
     Resume {
+        session_id: Option<&'a str>,
         file_path: &'a str,
         uuid: Option<&'a str>,
     },
@@ -41,8 +43,16 @@ pub fn ssh_args(host: &HostConfig, mode: &SshMode) -> Vec<String> {
         SshMode::Serve => {
             args.extend([host.ccs_path.clone(), "serve".into(), "--stdio".into()]);
         }
-        SshMode::Resume { file_path, uuid } => {
-            let mut remote = format!("{} resume --file {}", host.ccs_path, shell_quote(file_path));
+        SshMode::Resume {
+            session_id,
+            file_path,
+            uuid,
+        } => {
+            let mut remote = format!("{} resume", host.ccs_path);
+            if let Some(id) = session_id {
+                remote.push_str(&format!(" --session-id {}", shell_quote(id)));
+            }
+            remote.push_str(&format!(" --file {}", shell_quote(file_path)));
             if let Some(uuid) = uuid {
                 remote.push_str(&format!(" --uuid {}", shell_quote(uuid)));
             }
@@ -110,6 +120,7 @@ mod tests {
         let args = ssh_args(
             &z(),
             &SshMode::Resume {
+                session_id: Some("ses_1"),
                 file_path: "/a b/c.jsonl",
                 uuid: Some("u1"),
             },
@@ -119,7 +130,7 @@ mod tests {
         assert_eq!(args[args.len() - 2], "Z270XX");
         assert_eq!(
             args.last().unwrap(),
-            "ccs resume --file '/a b/c.jsonl' --uuid 'u1'"
+            "ccs resume --session-id 'ses_1' --file '/a b/c.jsonl' --uuid 'u1'"
         );
     }
 
@@ -128,6 +139,7 @@ mod tests {
         let args = ssh_args(
             &z(),
             &SshMode::Resume {
+                session_id: None,
                 file_path: "/s.jsonl",
                 uuid: None,
             },

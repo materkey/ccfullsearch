@@ -81,6 +81,21 @@ enum Commands {
     #[cfg(not(windows))]
     /// Update ccs to the latest version
     Update,
+    /// Resume a session file on this machine, or on a remote host with --host
+    Resume {
+        /// Session file path (file_path from search or pick output)
+        #[arg(long)]
+        file: String,
+        /// Message UUID to resume from (branch-aware resume)
+        #[arg(long)]
+        uuid: Option<String>,
+        /// Session id; read from the file when absent (needed for Opencode `<db>#<id>` paths)
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Remote host from config.toml [[hosts]] / CCS_HOSTS; the session runs there over ssh
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Answer remote-host requests on stdin/stdout (run by another ccs over ssh)
     #[command(hide = true)]
     Serve {
@@ -353,9 +368,77 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
         }
         Commands::Pick { query, output } => run_pick(query, output),
         Commands::Serve { stdio } => run_serve(stdio),
+        Commands::Resume {
+            file,
+            uuid,
+            session_id,
+            host,
+        } => run_resume(
+            &file,
+            uuid.as_deref(),
+            session_id.as_deref(),
+            host.as_deref(),
+        ),
         #[cfg(not(windows))]
         Commands::Update => run_update(),
     }
+}
+
+/// Handle `ccs resume`: run the session here (what a remote ccs does at the
+/// other end of `ssh -t`), or hop to `--host`. Never waits for Enter: the
+/// ccs that started this one decides what to show.
+fn run_resume(
+    file: &str,
+    uuid: Option<&str>,
+    session_id: Option<&str>,
+    host: Option<&str>,
+) -> io::Result<()> {
+    let source = ccs::session::SessionSource::from_path(file);
+    let result = match host {
+        Some(name) => {
+            find_host(name).and_then(|h| launch_remote_resume(&h, session_id, file, source, uuid))
+        }
+        None => ccs::resume::resume(&resume_session_id(file, session_id), file, source, uuid),
+    };
+    if let Err(e) = result {
+        eprintln!("Error resuming session: {e}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// The id the caller passed, else the one in the file.
+fn resume_session_id(file: &str, given: Option<&str>) -> String {
+    given
+        .map(str::to_string)
+        .unwrap_or_else(|| session_id_for_resume(file))
+}
+
+fn find_host(name: &str) -> Result<ccs::remote::config::HostConfig, String> {
+    remote_hosts()
+        .into_iter()
+        .find(|h| h.name == name)
+        .ok_or_else(|| {
+            format!("unknown host {name} (not in [[hosts]] of config.toml or CCS_HOSTS)")
+        })
+}
+
+/// Resume on a remote host. Claude Desktop opens an app on that machine's
+/// screen, which is not this terminal.
+fn launch_remote_resume(
+    host: &ccs::remote::config::HostConfig,
+    session_id: Option<&str>,
+    file_path: &str,
+    source: ccs::session::SessionSource,
+    uuid: Option<&str>,
+) -> Result<(), String> {
+    if source == ccs::session::SessionSource::ClaudeDesktop {
+        return Err(format!(
+            "{}: Claude Desktop-сессию с другой машины не открыть",
+            host.name
+        ));
+    }
+    ccs::resume::launcher::resume_remote_child(host, session_id, file_path, uuid)
 }
 
 /// Handle `ccs serve --stdio`, the remote end another ccs reaches over ssh.
@@ -500,7 +583,14 @@ fn handle_outcome(outcome: ccs::tui::TuiOutcome, overlay: bool, app: &mut ccs::t
             source,
             uuid,
         } => {
-            let after = resume_outcome(&session_id, &file_path, source, uuid.as_deref(), overlay);
+            let after = resume_outcome(
+                &host,
+                &session_id,
+                &file_path,
+                source,
+                uuid.as_deref(),
+                overlay,
+            );
             apply_after_resume(app, after, &host, &session_id)
         }
         _ => {
@@ -529,21 +619,39 @@ fn apply_after_resume(
 
 /// Perform the resume and decide whether the picker follows it.
 fn resume_outcome(
+    host: &ccs::remote::Host,
     session_id: &str,
     file_path: &str,
     source: ccs::session::SessionSource,
     uuid: Option<&str>,
     overlay: bool,
 ) -> AfterResume {
-    let child = picker_launch_runs_as_child(source, overlay);
+    let child = picker_launch_runs_as_child(source, overlay, host.is_local());
     let started = Instant::now();
-    let result = launch_resume(session_id, file_path, source, uuid, child);
+    let result = start_resume(host, session_id, file_path, source, uuid, child);
     let quick_exit = is_quick_exit(source, started.elapsed());
     let launched = result.is_ok();
     if picker_follows_resume(result, child, overlay, quick_exit) {
         AfterResume::Picker { launched }
     } else {
         AfterResume::Exit
+    }
+}
+
+/// Resume on the machine the session lives on: here as a child or via exec,
+/// or on its remote host over ssh.
+fn start_resume(
+    host: &ccs::remote::Host,
+    session_id: &str,
+    file_path: &str,
+    source: ccs::session::SessionSource,
+    uuid: Option<&str>,
+    child: bool,
+) -> Result<(), String> {
+    match host {
+        ccs::remote::Host::Local => launch_resume(session_id, file_path, source, uuid, child),
+        ccs::remote::Host::Remote(name) => find_host(name)
+            .and_then(|h| launch_remote_resume(&h, Some(session_id), file_path, source, uuid)),
     }
 }
 
@@ -564,10 +672,15 @@ fn launch_resume(
 }
 
 /// Whether the picker launches this session as a child: always under
-/// `--overlay`, otherwise for every session that runs in the terminal, so a
-/// quick exit can come back to the picker.
-fn picker_launch_runs_as_child(source: ccs::session::SessionSource, overlay: bool) -> bool {
-    overlay || ccs::resume::runs_in_terminal(source)
+/// `--overlay` and for remote sessions (ssh runs here), otherwise for every
+/// session that runs in the terminal, so a quick exit can come back to the
+/// picker.
+fn picker_launch_runs_as_child(
+    source: ccs::session::SessionSource,
+    overlay: bool,
+    local: bool,
+) -> bool {
+    overlay || !local || ccs::resume::runs_in_terminal(source)
 }
 
 /// Whether a session closed soon enough to count as opened by mistake.
@@ -634,14 +747,55 @@ mod tests {
     }
 
     #[test]
+    fn resume_session_id_when_given_then_used_over_the_file_name() {
+        assert_eq!(
+            resume_session_id("/db/opencode.db#ses_x", Some("ses_x")),
+            "ses_x"
+        );
+    }
+
+    #[test]
+    fn resume_session_id_when_not_given_then_read_from_file() {
+        assert_eq!(resume_session_id("/nope/abc.jsonl", None), "abc");
+    }
+
+    #[test]
+    fn picker_launch_when_remote_then_child() {
+        assert!(picker_launch_runs_as_child(
+            SessionSource::ClaudeDesktop,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn remote_desktop_session_when_resumed_then_error() {
+        let host = ccs::remote::config::HostConfig {
+            name: "Z".into(),
+            ccs_path: "ccs".into(),
+        };
+        let err = launch_remote_resume(
+            &host,
+            None,
+            "/x/local-agent-mode-sessions/a.jsonl",
+            SessionSource::ClaudeDesktop,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("Claude Desktop"), "{err}");
+    }
+
+    #[test]
     fn picker_resume_when_choosing_launch_mode_then_child_unless_desktop_without_overlay() {
-        assert!(picker_launch_runs_as_child(SessionSource::CLI, false));
+        assert!(picker_launch_runs_as_child(SessionSource::CLI, false, true));
         assert!(!picker_launch_runs_as_child(
             SessionSource::ClaudeDesktop,
-            false
+            false,
+            true
         ));
         assert!(picker_launch_runs_as_child(
             SessionSource::ClaudeDesktop,
+            true,
             true
         ));
     }

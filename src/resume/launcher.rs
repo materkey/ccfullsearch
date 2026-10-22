@@ -409,6 +409,36 @@ fn run_child(command: &mut Command, name: &str) -> Result<(), String> {
     child_exit_result(name, status.code(), started.elapsed())
 }
 
+/// Resume a session on a remote host: `ssh -t <host> ccs resume ...` as a
+/// child on this terminal. The remote ccs finds the project, forks when the
+/// uuid asks for it, and runs the agent there.
+pub fn resume_remote_child(
+    host: &crate::remote::config::HostConfig,
+    session_id: Option<&str>,
+    file_path: &str,
+    uuid: Option<&str>,
+) -> Result<(), String> {
+    use crate::remote::ssh::{ssh_command, SshMode};
+    let mode = SshMode::Resume {
+        session_id,
+        file_path,
+        uuid,
+    };
+    let mut command = ssh_command(host, &mode);
+    let started = Instant::now();
+    let status = wait_child(&mut command).map_err(|e| format!("Failed to spawn ssh: {e}"))?;
+    ssh_exit_result(&host.name, status.code(), started.elapsed())
+}
+
+/// 255 is ssh itself failing (no route, auth), whenever it happens; any
+/// other code is the remote agent's, judged like a local one.
+fn ssh_exit_result(host: &str, code: Option<i32>, ran_for: Duration) -> Result<(), String> {
+    if code == Some(255) {
+        return Err(format!("{host}: не удалось подключиться"));
+    }
+    child_exit_result(host, code, ran_for)
+}
+
 /// Only an error exit this soon after launch counts as a failed resume. A later
 /// one ends a session that did start, and 130 or a signal (no exit code) means
 /// someone stopped the agent on purpose.
@@ -627,6 +657,28 @@ fn exec_command(cmd: &mut Command) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_exit_result_when_255_then_connection_error_with_host() {
+        assert_eq!(
+            ssh_exit_result("Z270XX", Some(255), Duration::from_secs(30)),
+            Err("Z270XX: не удалось подключиться".to_string())
+        );
+    }
+
+    #[test]
+    fn ssh_exit_result_when_agent_fails_fast_then_agent_error() {
+        let err = ssh_exit_result("Z270XX", Some(1), Duration::from_millis(500)).unwrap_err();
+        assert!(err.contains("exited with status 1"), "{err}");
+    }
+
+    #[test]
+    fn ssh_exit_result_when_session_ends_normally_then_ok() {
+        assert_eq!(
+            ssh_exit_result("Z270XX", Some(0), Duration::from_secs(5)),
+            Ok(())
+        );
+    }
     use std::io::Write;
     use std::sync::{Mutex, PoisonError};
     use tempfile::TempDir;
