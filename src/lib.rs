@@ -10,7 +10,6 @@ macro_rules! ccs_debug {
 }
 
 pub mod agent_search;
-pub mod ai;
 pub mod cli;
 pub mod config;
 pub mod dag;

@@ -39,6 +39,7 @@ pub enum KeyAction {
     // -- Search mode: AI --
     EnterAiMode,
     ExitAiMode,
+    CancelAiSearch,
 
     // -- Search mode: tree entry --
     EnterTreeMode,
@@ -68,6 +69,11 @@ pub struct KeyContext {
     pub has_groups: bool,
     pub ai_mode: bool,
     pub ai_input_empty: bool,
+    /// The Ctrl+G agent is running: Esc cancels it instead of leaving AI mode.
+    pub ai_searching: bool,
+    /// The Ctrl+G agent's hits are on screen; list keys act on them, not on
+    /// the recent/search list behind them.
+    pub ai_has_hits: bool,
 }
 
 /// Returns true if the key event is Ctrl+H (sent as Ctrl+Backspace on some terminals).
@@ -158,6 +164,11 @@ fn classify_ctrl_c(ctx: &KeyContext) -> KeyAction {
 }
 
 fn classify_ctrl_b(ctx: &KeyContext) -> KeyAction {
+    // The AI handler decides (tree for the hit, or nothing while searching),
+    // whatever the hidden list holds.
+    if ctx.ai_mode && (ctx.ai_has_hits || ctx.ai_searching) {
+        return KeyAction::EnterTreeMode;
+    }
     if ctx.in_recent_sessions_mode {
         if ctx.has_recent_sessions {
             KeyAction::EnterTreeModeRecent
@@ -248,7 +259,9 @@ fn classify_search_toggle(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> 
 }
 
 fn classify_search_esc(ctx: &KeyContext) -> KeyAction {
-    if ctx.ai_mode {
+    if ctx.ai_mode && ctx.ai_searching {
+        KeyAction::CancelAiSearch
+    } else if ctx.ai_mode {
         KeyAction::ExitAiMode
     } else if ctx.preview_mode {
         KeyAction::ExitPreview
@@ -315,6 +328,8 @@ mod tests {
             has_groups: false,
             ai_mode: false,
             ai_input_empty: true,
+            ai_searching: false,
+            ai_has_hits: false,
         }
     }
 
@@ -871,5 +886,56 @@ mod tests {
             classify_key(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL), &ctx),
             KeyAction::ExitAiMode,
         );
+    }
+
+    #[test]
+    fn ai_searching_esc_classify_key_returns_cancel_ai_search() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_searching: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key(KeyCode::Esc), &ctx),
+            KeyAction::CancelAiSearch
+        );
+    }
+
+    #[test]
+    fn ai_searching_ctrl_g_classify_key_returns_exit_ai_mode() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_searching: true,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('g'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::ExitAiMode,
+        );
+    }
+
+    #[test]
+    fn ai_hits_empty_lists_ctrl_b_classify_key_returns_enter_tree_mode() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_has_hits: true,
+            in_recent_sessions_mode: true,
+            has_recent_sessions: false,
+            ..search_ctx()
+        };
+        assert_eq!(
+            classify_key(key_mod(KeyCode::Char('b'), KeyModifiers::CONTROL), &ctx),
+            KeyAction::EnterTreeMode
+        );
+    }
+
+    #[test]
+    fn ai_not_searching_esc_classify_key_returns_exit_ai_mode() {
+        let ctx = KeyContext {
+            ai_mode: true,
+            ai_searching: false,
+            ..search_ctx()
+        };
+        assert_eq!(classify_key(key(KeyCode::Esc), &ctx), KeyAction::ExitAiMode);
     }
 }

@@ -64,6 +64,20 @@ impl AgentSearchHandle {
     }
 }
 
+#[cfg(test)]
+impl AgentSearchHandle {
+    /// A handle with no process behind it, fed by the test through `rx`.
+    pub(crate) fn for_test(rx: Receiver<AgentEvent>) -> (Self, Arc<AtomicBool>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = Self {
+            rx,
+            cancel: Arc::clone(&cancel),
+            child: None,
+        };
+        (handle, cancel)
+    }
+}
+
 impl Drop for AgentSearchHandle {
     fn drop(&mut self) {
         self.cancel();

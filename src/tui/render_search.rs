@@ -1,9 +1,11 @@
+use crate::recent::RecentSession;
 use crate::search::{
     extract_context, extract_project_from_path, sanitize_content, Message, RipgrepMatch,
     SessionGroup,
 };
 use crate::session::record::MessageRole;
 use crate::session::SessionProvider;
+use crate::tui::render_ai::{ai_status_span, build_ai_hints, render_ai_hits};
 use crate::tui::render_tree::render_tree_mode;
 use crate::tui::view::AppView;
 use chrono::Local;
@@ -33,7 +35,7 @@ pub(crate) const DIM_FG: Color = Color::Rgb(107, 113, 128);
 
 /// Preview content foreground. Brighter than `DIM_FG` so summaries stay
 /// readable while preserving a lower hierarchy than headers.
-const PREVIEW_CONTENT_FG: Color = Color::Rgb(156, 163, 175);
+pub(crate) const PREVIEW_CONTENT_FG: Color = Color::Rgb(156, 163, 175);
 /// Preview content foreground on the selected purple row.
 const SELECTED_PREVIEW_CONTENT_FG: Color = Color::Rgb(229, 231, 235);
 
@@ -76,7 +78,6 @@ fn assistant_prefix_for(file_path: &str) -> &'static str {
         _ => PREVIEW_PREFIX_CLAUDE,
     }
 }
-const AI_UNRANKED_SEPARATOR_LABEL: &str = "── Unranked below ──";
 
 #[derive(Clone)]
 pub(crate) struct HintItem<'a> {
@@ -132,40 +133,6 @@ pub(crate) fn build_help_line<'a>(hints: &[HintItem<'a>], available_width: u16) 
         first = false;
     }
     Line::from(result_spans)
-}
-
-pub(crate) fn build_ai_hints(ranked_count: Option<usize>) -> Vec<HintItem<'static>> {
-    let dim = Style::default().fg(DIM_FG);
-    let enter_label = if ranked_count.is_some() {
-        "[Enter] Resume"
-    } else {
-        "[Enter] AI Rank"
-    };
-    vec![
-        HintItem {
-            spans: vec![Span::styled(enter_label, dim)],
-            min_width: 0,
-        },
-        HintItem {
-            spans: vec![Span::styled("[↑↓] Navigate", dim)],
-            min_width: 0,
-        },
-        HintItem {
-            spans: vec![Span::styled("[Esc/Ctrl+G] Cancel", dim)],
-            min_width: 0,
-        },
-    ]
-}
-
-fn ai_unranked_separator_at(ranked_count: Option<usize>, total_items: usize) -> Option<usize> {
-    ranked_count.filter(|&n| n > 0 && n < total_items)
-}
-
-fn build_ai_unranked_separator() -> ListItem<'static> {
-    ListItem::new(Line::from(Span::styled(
-        AI_UNRANKED_SEPARATOR_LABEL,
-        Style::default().fg(DIM_FG),
-    )))
 }
 
 fn kept_line_width(keep: &[bool], widths: &[usize], sep_len: usize) -> usize {
@@ -310,6 +277,9 @@ pub fn render(frame: &mut Frame, view: &AppView) {
     // List of results (grouped view)
     if app.preview_mode {
         render_preview(frame, app, list_area);
+    } else if app.ai.active && app.ai.hits.is_some() {
+        clear_area(frame, list_area);
+        render_ai_hits(frame, app, list_area);
     } else {
         render_groups(frame, app, list_area);
     }
@@ -420,32 +390,6 @@ fn status_span(app: &AppView) -> Span<'static> {
     Span::raw("")
 }
 
-fn ai_status_span(app: &AppView) -> Span<'static> {
-    if app.ai.thinking {
-        return Span::styled(
-            "AI thinking...",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::ITALIC),
-        );
-    }
-    if let Some(ref err) = app.ai.error {
-        Span::styled(format!("AI: {}", err), Style::default().fg(Color::Red))
-    } else if let Some(n) = app.ai.ranked_count {
-        Span::styled(
-            format!("AI: {} sessions ranked", n),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::styled(
-            "Type query, Enter to rank",
-            Style::default().fg(Color::Magenta),
-        )
-    }
-}
-
 /// `[Ctrl+H] <All|Manual|Auto>` hint — shows the current filter mode inline
 /// with color.
 fn automation_filter_hint(app: &AppView) -> HintItem<'static> {
@@ -472,7 +416,7 @@ fn automation_filter_hint(app: &AppView) -> HintItem<'static> {
 
 fn build_search_hints(app: &AppView) -> Vec<HintItem<'static>> {
     if app.ai.active {
-        return build_ai_hints(app.ai.ranked_count);
+        return build_ai_hints(app);
     }
 
     let dim = Style::default().fg(DIM_FG);
@@ -782,10 +726,6 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         .min(total_groups.saturating_sub(window_cap));
     let window_end = (window_start + max_visible).min(total_groups);
 
-    // `sort_by_key` in `handle_ai_result` puts ranked IDs first, so
-    // `ranked_count` is the boundary between ranked and untouched results.
-    let ai_separator_at = ai_unranked_separator_at(app.ai.ranked_count, total_groups);
-
     for (i, group) in app
         .search
         .groups
@@ -794,10 +734,6 @@ fn render_groups(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) 
         .skip(window_start)
         .take(window_end - window_start)
     {
-        if ai_separator_at == Some(i) {
-            items.push(build_ai_unranked_separator());
-        }
-
         let is_selected = i == cursor_group;
         let is_expanded = is_selected && app.search.expanded;
 
@@ -1099,6 +1035,54 @@ pub(crate) fn build_recent_session_header_text(session: &crate::recent::RecentSe
     })
 }
 
+/// Header row of a whole session — the recent list and the Ctrl+G results
+/// share it, `[opened]` mark included.
+pub(crate) fn recent_session_header_item(
+    app: &AppView,
+    session: &RecentSession,
+    prefix: &str,
+    is_selected: bool,
+    available_width: usize,
+) -> ListItem<'static> {
+    // Selected style intentionally omits `Modifier::BOLD`: in some
+    // monospace fonts (e.g. Iosevka) the bold variant of the `▶` glyph
+    // is narrower than the regular one, which makes the selected row's
+    // caret look visually clipped next to the solid purple background.
+    let header_style = if is_selected {
+        Style::default().fg(Color::Yellow).bg(SELECTION_BG)
+    } else {
+        Style::default().fg(DIM_FG)
+    };
+    let count_str = match session.message_count {
+        Some(n) => format!("{} msgs", n),
+        None => "-".to_string(),
+    };
+    let date = session
+        .timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    let header = render_session_header_line(
+        prefix,
+        SessionHeaderParts {
+            caret: "▶",
+            provider: SessionProvider::from_path(&session.file_path),
+            source: session.source.display_name(),
+            date: &date,
+            project: &session.project,
+            branch: session.branch.as_deref().unwrap_or("-"),
+            session_id: &session.session_id,
+            count: &count_str,
+            has_automation: session.automation.is_some(),
+            opened: app.opened_sessions.contains(&session.session_id),
+        },
+        header_style,
+        is_selected,
+        available_width,
+    );
+    ListItem::new(header).style(header_style)
+}
+
 fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
     // Loading and empty states are shown in the status bar only
     if app.recent.loading || app.recent.filtered.is_empty() {
@@ -1114,60 +1098,25 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
     let scroll_offset = app.recent.scroll_offset;
     let visible_items = (visible_height / RECENT_LINES_PER_SESSION).max(1);
     let end = (scroll_offset + visible_items).min(app.recent.filtered.len());
-    let ai_separator_at = ai_unranked_separator_at(app.ai.ranked_count, app.recent.filtered.len());
 
     let mut selected_item_idx: Option<usize> = None;
 
     for i in scroll_offset..end {
-        if ai_separator_at == Some(i) {
-            items.push(build_ai_unranked_separator());
-        }
-
         let session = &app.recent.filtered[i];
         let is_selected = i == app.recent.cursor;
 
         let prefix = if is_selected { "> " } else { "  " };
-        // Selected style intentionally omits `Modifier::BOLD`: in some
-        // monospace fonts (e.g. Iosevka) the bold variant of the `▶` glyph
-        // is narrower than the regular one, which makes the selected row's
-        // caret look visually clipped next to the solid purple background.
-        let header_style = if is_selected {
-            Style::default().fg(Color::Yellow).bg(SELECTION_BG)
-        } else {
-            Style::default().fg(DIM_FG)
-        };
 
         if is_selected {
             selected_item_idx = Some(items.len());
         }
-        let count_str = match session.message_count {
-            Some(n) => format!("{} msgs", n),
-            None => "-".to_string(),
-        };
-        let date = session
-            .timestamp
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
-        let header = render_session_header_line(
+        items.push(recent_session_header_item(
+            app,
+            session,
             prefix,
-            SessionHeaderParts {
-                caret: "▶",
-                provider: SessionProvider::from_path(&session.file_path),
-                source: session.source.display_name(),
-                date: &date,
-                project: &session.project,
-                branch: session.branch.as_deref().unwrap_or("-"),
-                session_id: &session.session_id,
-                count: &count_str,
-                has_automation: session.automation.is_some(),
-                opened: app.opened_sessions.contains(&session.session_id),
-            },
-            header_style,
             is_selected,
             available_width,
-        );
-        items.push(ListItem::new(header).style(header_style));
+        ));
 
         // Preview line — same `     User:/Claude: <text>` grammar as the
         // collapsed search preview. Purple selection bg comes from the outer
@@ -1779,68 +1728,6 @@ mod tests {
             })
             .collect();
         app
-    }
-
-    #[test]
-    fn render_groups_shows_unranked_separator_only_on_partial_rank() {
-        for (ranked, expect) in [
-            (None, false),
-            (Some(0), false),
-            (Some(3), false), // Some(total_groups)
-            (Some(1), true),
-            (Some(2), true),
-        ] {
-            let mut app = make_test_app_with_n_groups(3);
-            app.ai.ranked_count = ranked;
-
-            let backend = TestBackend::new(120, 24);
-            let mut terminal = Terminal::new(backend).unwrap();
-            terminal
-                .draw(|frame| render(frame, &app.view()))
-                .expect("render must not panic");
-
-            assert_eq!(
-                buffer_contains(
-                    terminal.backend().buffer(),
-                    120,
-                    24,
-                    AI_UNRANKED_SEPARATOR_LABEL
-                ),
-                expect,
-                "ranked_count = {ranked:?}: separator presence mismatch",
-            );
-        }
-    }
-
-    #[test]
-    fn render_recent_sessions_shows_unranked_separator_only_on_partial_rank() {
-        for (ranked, expect) in [
-            (None, false),
-            (Some(0), false),
-            (Some(3), false), // Some(total_sessions)
-            (Some(1), true),
-            (Some(2), true),
-        ] {
-            let mut app = make_test_app_with_n_recent_sessions(3);
-            app.ai.ranked_count = ranked;
-
-            let backend = TestBackend::new(120, 24);
-            let mut terminal = Terminal::new(backend).unwrap();
-            terminal
-                .draw(|frame| render(frame, &app.view()))
-                .expect("render must not panic");
-
-            assert_eq!(
-                buffer_contains(
-                    terminal.backend().buffer(),
-                    120,
-                    24,
-                    AI_UNRANKED_SEPARATOR_LABEL
-                ),
-                expect,
-                "recent ranked_count = {ranked:?}: separator presence mismatch",
-            );
-        }
     }
 
     /// Number of times `needle` appears across the rendered rows.
@@ -4168,17 +4055,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_ai_mode_thinking_status() {
-        let mut app = make_test_app_with_groups();
-        app.ai.active = true;
-        app.ai.thinking = true;
-
-        let buffer = render_to_buffer(&app);
-        assert!(buffer_contains(&buffer, 120, 24, "AI thinking..."));
-        assert!(buffer_contains(&buffer, 120, 24, "AI"));
-    }
-
-    #[test]
     fn test_render_ai_mode_error_status() {
         let mut app = make_test_app_with_groups();
         app.ai.active = true;
@@ -4186,17 +4062,6 @@ mod tests {
 
         let buffer = render_to_buffer(&app);
         assert!(buffer_contains(&buffer, 120, 24, "AI: boom"));
-    }
-
-    #[test]
-    fn test_render_ai_mode_ranked_status() {
-        let mut app = make_test_app_with_groups();
-        app.ai.active = true;
-        app.ai.ranked_count = Some(2);
-
-        let buffer = render_to_buffer(&app);
-        assert!(buffer_contains(&buffer, 120, 24, "AI: 2 sessions ranked"));
-        assert!(buffer_contains(&buffer, 120, 24, "[Enter] Resume"));
     }
 
     #[test]
@@ -4209,9 +4074,9 @@ mod tests {
             &buffer,
             120,
             24,
-            "Type query, Enter to rank"
+            "Describe a session, Enter to search"
         ));
-        assert!(buffer_contains(&buffer, 120, 24, "[Enter] AI Rank"));
+        assert!(buffer_contains(&buffer, 120, 24, "[Enter] Search"));
     }
 
     #[test]
@@ -4443,66 +4308,5 @@ mod tests {
         let text = line_to_string(&line);
         assert!(text.contains("[A] X"));
         assert!(text.contains("[B] Y"));
-    }
-
-    fn hint_texts(hints: &[HintItem<'_>]) -> Vec<String> {
-        hints
-            .iter()
-            .map(|h| {
-                h.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn render_ai_hints_shows_rank_when_no_ranked_count() {
-        let texts = hint_texts(&build_ai_hints(None));
-        assert!(
-            texts.iter().any(|t| t == "[Enter] AI Rank"),
-            "expected [Enter] AI Rank when ranked_count is None, got {:?}",
-            texts
-        );
-        assert!(
-            !texts.iter().any(|t| t == "[Enter] Resume"),
-            "must not show [Enter] Resume when ranked_count is None, got {:?}",
-            texts
-        );
-    }
-
-    #[test]
-    fn render_ai_hints_shows_resume_when_ranked_count_set() {
-        let texts = hint_texts(&build_ai_hints(Some(3)));
-        assert!(
-            texts.iter().any(|t| t == "[Enter] Resume"),
-            "expected [Enter] Resume when ranked_count is Some, got {:?}",
-            texts
-        );
-        assert!(
-            !texts.iter().any(|t| t == "[Enter] AI Rank"),
-            "must not show [Enter] AI Rank when ranked_count is Some, got {:?}",
-            texts
-        );
-    }
-
-    #[test]
-    fn render_ai_hints_keeps_navigation_and_cancel_labels() {
-        for ranked in [None, Some(1), Some(42)] {
-            let texts = hint_texts(&build_ai_hints(ranked));
-            assert!(
-                texts.iter().any(|t| t == "[↑↓] Navigate"),
-                "navigation hint must be present for ranked={:?}, got {:?}",
-                ranked,
-                texts
-            );
-            assert!(
-                texts.iter().any(|t| t == "[Esc/Ctrl+G] Cancel"),
-                "cancel hint must be present for ranked={:?}, got {:?}",
-                ranked,
-                texts
-            );
-        }
     }
 }

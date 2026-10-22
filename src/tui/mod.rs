@@ -1,4 +1,5 @@
 pub mod dispatch;
+mod render_ai;
 mod render_search;
 pub(crate) mod render_tree;
 mod search_mode;

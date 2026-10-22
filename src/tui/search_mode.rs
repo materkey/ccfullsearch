@@ -1,7 +1,28 @@
+use crate::recent::RecentSession;
 use crate::search::{extract_project_from_path, RipgrepMatch, SessionGroup};
 use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use crate::tui::App;
 use std::time::Instant;
+
+/// Open (or pick) a whole session at its latest point.
+pub(crate) fn session_outcome(session: &RecentSession, picker_mode: bool) -> AppOutcome {
+    if picker_mode {
+        AppOutcome::Pick(PickedSession {
+            session_id: session.session_id.clone(),
+            file_path: session.file_path.clone(),
+            source: session.source,
+            project: session.project.clone(),
+            message_uuid: None,
+        })
+    } else {
+        AppOutcome::Resume(ResumeTarget {
+            session_id: session.session_id.clone(),
+            file_path: session.file_path.clone(),
+            source: session.source,
+            uuid: None,
+        })
+    }
+}
 
 impl App {
     /// Whether the app is currently showing the recent sessions list
@@ -145,9 +166,6 @@ impl App {
     }
 
     pub fn on_toggle_regex(&mut self) {
-        if self.ai.active {
-            self.invalidate_ai_rank();
-        }
         self.regex_mode = !self.regex_mode;
         // Trigger re-search if we have a query
         if !self.input.is_empty() {
@@ -157,9 +175,6 @@ impl App {
     }
 
     pub fn toggle_automation_filter(&mut self) {
-        if self.ai.active {
-            self.invalidate_ai_rank();
-        }
         use crate::tui::state::AutomationFilter;
         self.automation_filter = match self.automation_filter {
             AutomationFilter::All => AutomationFilter::Manual,
@@ -180,9 +195,6 @@ impl App {
         if !self.project_filter && self.current_project_paths.is_empty() && !can_filter_by_codex_cwd
         {
             return;
-        }
-        if self.ai.active {
-            self.invalidate_ai_rank();
         }
         self.project_filter = !self.project_filter;
         self.search_paths = if self.project_filter {
@@ -218,22 +230,7 @@ impl App {
         // Recent sessions: resume/pick selected session
         if self.in_recent_sessions_mode() {
             if let Some(session) = self.recent.filtered.get(self.recent.cursor) {
-                if self.picker_mode {
-                    self.outcome = Some(AppOutcome::Pick(PickedSession {
-                        session_id: session.session_id.clone(),
-                        file_path: session.file_path.clone(),
-                        source: session.source,
-                        project: session.project.clone(),
-                        message_uuid: None,
-                    }));
-                } else {
-                    self.outcome = Some(AppOutcome::Resume(ResumeTarget {
-                        session_id: session.session_id.clone(),
-                        file_path: session.file_path.clone(),
-                        source: session.source,
-                        uuid: None,
-                    }));
-                }
+                self.outcome = Some(session_outcome(session, self.picker_mode));
                 self.should_quit = true;
             }
             return;
@@ -903,8 +900,8 @@ mod tests {
     // AI-mode guard tests
     // =========================================================================
 
-    // Regression guard for the `on_enter` wrapper: while AI mode is active and no
-    // ranking result has arrived yet, a direct call to `on_enter()` must be a no-op.
+    // Regression guard for the `on_enter` wrapper: while AI mode is active,
+    // a direct call to `on_enter()` must not open the recent list's session.
     // If a future refactor drops the guard, this test catches it.
     #[test]
     fn on_enter_guard_respected_in_ai_mode() {
@@ -912,7 +909,6 @@ mod tests {
         app.recent.loading = false;
         app.recent.filtered = vec![make_recent_session("s1", "proj-a", "first")];
         app.ai.active = true;
-        app.ai.ranked_count = None;
 
         app.on_enter();
 

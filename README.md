@@ -39,7 +39,7 @@ cargo binstall ccfullsearch
 Requirements:
 
 - `rg` from [ripgrep](https://github.com/BurntSushi/ripgrep) must be available in `PATH`. The Homebrew formula installs it automatically.
-- `claude` must be available in `PATH` to resume Claude Code sessions and to use AI ranking.
+- `claude` must be available in `PATH` to resume Claude Code sessions and to use AI search.
 - `codex` must be available in `PATH` to resume Codex sessions.
 - `opencode` must be available in `PATH` to resume Opencode sessions.
 
@@ -182,7 +182,7 @@ Main keys:
 - `Ctrl+A`: toggle current-project filtering.
 - `Ctrl+H`: switch between manual, automated, and all sessions.
 - `Ctrl+R`: toggle regex search.
-- `Ctrl+G`: rank visible sessions with the `claude` CLI.
+- `Ctrl+G`: find a session across the whole history by describing it (AI search).
 - `Ctrl+C`: clear the current query, or quit when the query is empty.
 - `Esc`: close preview or quit.
 
@@ -202,11 +202,13 @@ Useful keys in tree view:
 - `Ctrl+C`, `b`, or `Esc`: return to search.
 - `q`: quit.
 
-### AI ranking
+### AI search
 
-Press `Ctrl+G` to enter AI ranking mode. Type a natural-language query, then press `Enter`.
+Press `Ctrl+G`, describe the session in your own words (any language), then press `Enter`. `ccs` starts `claude -p` as a search agent over your whole history, not only the sessions on screen. The agent may only run `ccs search` and `ccs show`; it tries several phrasings and returns up to five sessions, each with a short reason.
 
-`ccs` sends the visible session candidates to `claude -p` with compact context: session ID, project, summary, and up to three early user messages from each session. The response is parsed as a ranked list of session IDs.
+A search takes about half a minute. While it runs, the status bar shows the queries the agent is trying, and `Esc` stops it. In the results, `Enter` opens a session at its latest point, `→` or `Ctrl+B` opens its tree, typing edits the query, and `Esc` returns to the list you came from.
+
+The agent runs with lean flags (haiku by default, no MCP servers, plugins or settings, `--no-session-persistence`), so searches do not add sessions to your history.
 
 ### Configuration
 
