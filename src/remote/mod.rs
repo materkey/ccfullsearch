@@ -1,5 +1,7 @@
 //! Remote hosts: where a session lives, and how ccs reaches other machines.
 
+pub mod config;
+
 /// The machine a session file lives on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum Host {

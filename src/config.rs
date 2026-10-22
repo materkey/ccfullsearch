@@ -47,12 +47,24 @@ impl Default for AgentSearchConfig {
     }
 }
 
+/// One `[[hosts]]` entry: a remote machine searched over ssh.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostEntry {
+    /// ssh alias, also the label shown in results.
+    pub name: String,
+    /// `ccs` on that machine when it is not on the PATH of non-interactive ssh.
+    pub ccs_path: Option<String>,
+}
+
 /// Whole config file. Unknown top-level tables are ignored, so a section
 /// added by a newer ccs does not break an older one reading the same file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub agent_search: AgentSearchConfig,
+    /// Remote hosts (`[[hosts]]`).
+    pub hosts: Vec<HostEntry>,
 }
 
 /// Config file location. Env values are passed in so tests don't touch the
@@ -166,6 +178,33 @@ mod tests {
     #[test]
     fn unknown_key_load_config_errors() {
         let (_dir, path) = write_config("[agent_search]\nmodle = \"x\"\n");
+        assert!(load_config(&path).is_err());
+    }
+
+    #[test]
+    fn hosts_tables_load_config_reads_names_and_ccs_path() {
+        let (_dir, path) = write_config(
+            "[[hosts]]\nname = \"Z270XX\"\n\n[[hosts]]\nname = \"devbox\"\nccs_path = \"/opt/ccs\"\n",
+        );
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(
+            cfg.hosts,
+            vec![
+                HostEntry {
+                    name: "Z270XX".into(),
+                    ccs_path: None
+                },
+                HostEntry {
+                    name: "devbox".into(),
+                    ccs_path: Some("/opt/ccs".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn host_without_name_load_config_errors() {
+        let (_dir, path) = write_config("[[hosts]]\nccs_path = \"/opt/ccs\"\n");
         assert!(load_config(&path).is_err());
     }
 
