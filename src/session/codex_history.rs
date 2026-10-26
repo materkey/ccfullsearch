@@ -144,15 +144,47 @@ impl RolloutIndex {
         self.by_rollout.get(rollout_id).map(PathBuf::as_path)
     }
 
-    /// The non-empty file of `thread_id` with the highest [`RolloutName::order_key`].
+    /// The current file of `thread_id` (see [`pick_current`]).
     pub fn current_rollout_for_thread(&self, thread_id: &str) -> Option<PathBuf> {
-        self.by_thread
-            .get(thread_id)?
-            .iter()
-            .filter(|(_, _, len)| *len > 0)
-            .max_by(|(a, _, _), (b, _, _)| a.order_key().cmp(&b.order_key()))
-            .map(|(_, path, _)| path.clone())
+        pick_current(
+            self.by_thread
+                .get(thread_id)?
+                .iter()
+                .map(|(name, path, len)| (name, path.as_path(), *len)),
+        )
     }
+}
+
+/// The rule for which rollout of a thread is current: the non-empty file with
+/// the highest [`RolloutName::order_key`]. Every lookup goes through it.
+fn pick_current<'a>(
+    candidates: impl Iterator<Item = (&'a RolloutName, &'a Path, u64)>,
+) -> Option<PathBuf> {
+    candidates
+        .filter(|(_, _, len)| *len > 0)
+        .max_by(|(a, _, _), (b, _, _)| a.order_key().cmp(&b.order_key()))
+        .map(|(_, path, _)| path.to_path_buf())
+}
+
+/// The current rollout of `thread_id` among the given files, for lookups that
+/// already hold a list of files instead of a Codex home to index.
+pub fn current_rollout_among(
+    paths: impl IntoIterator<Item = PathBuf>,
+    thread_id: &str,
+) -> Option<PathBuf> {
+    let candidates: Vec<(RolloutName, PathBuf, u64)> = paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = RolloutName::parse(&path).filter(|n| n.thread_id == thread_id)?;
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Some((name, path, len))
+        })
+        .collect();
+    pick_current(
+        candidates
+            .iter()
+            .map(|(name, path, len)| (name, path.as_path(), *len)),
+    )
 }
 
 /// Rollout indexes for one operation, one per Codex home, built on first use.

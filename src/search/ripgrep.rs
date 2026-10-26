@@ -1,6 +1,6 @@
 use super::Message;
 use crate::session::opencode::{self, OpencodeSession};
-use crate::session::resolve_parent_session;
+use crate::session::resolve_parent_session_with;
 use crate::session::{self, SessionProvider, SessionSource};
 use regex::RegexBuilder;
 use std::collections::HashMap;
@@ -564,7 +564,8 @@ fn check_ripgrep_status(
 
 /// Streaming post-processor for ripgrep JSON match lines: tracks per-file
 /// `--max-count` truncation, resolves agent/subagent files to their parent
-/// session (with caches), and applies the content post-filter.
+/// session (with caches), points Codex hits at their thread's current rollout,
+/// and applies the content post-filter.
 struct MatchProcessor<'a> {
     query_lower: String,
     regex_matcher: Option<&'a regex::Regex>,
@@ -573,6 +574,8 @@ struct MatchProcessor<'a> {
     file_match_counts: HashMap<String, usize>,
     resolve_cache: HashMap<String, (String, String)>,
     codex_subagent_cache: HashMap<String, bool>,
+    rollouts: session::codex_history::Rollouts,
+    current_rollout_cache: HashMap<String, Option<String>>,
 }
 
 impl<'a> MatchProcessor<'a> {
@@ -585,6 +588,8 @@ impl<'a> MatchProcessor<'a> {
             file_match_counts: HashMap::new(),
             resolve_cache: HashMap::new(),
             codex_subagent_cache: HashMap::new(),
+            rollouts: Default::default(),
+            current_rollout_cache: HashMap::new(),
         }
     }
 
@@ -600,8 +605,27 @@ impl<'a> MatchProcessor<'a> {
         // This filters out false positives where query matched file path or metadata
         if let Some(ref msg) = m.message {
             if self.content_matches(&msg.content) {
+                self.point_at_current_rollout(&mut m);
                 self.results.push(m);
             }
+        }
+    }
+
+    /// A hit in a Codex rollout belongs to its thread's current rollout (a
+    /// revert starts a new file). Only the session file changes: the message
+    /// keeps its physical `file_path` and `line_number`.
+    fn point_at_current_rollout(&mut self, m: &mut RipgrepMatch) {
+        let rollouts = &mut self.rollouts;
+        let current = self
+            .current_rollout_cache
+            .entry(m.file_path.clone())
+            .or_insert_with(|| {
+                rollouts
+                    .current_rollout(Path::new(&m.file_path))
+                    .map(|p| p.to_string_lossy().into_owned())
+            });
+        if let Some(current) = current {
+            m.file_path = current.clone();
         }
     }
 
@@ -640,10 +664,11 @@ impl<'a> MatchProcessor<'a> {
         let Some(ref msg) = m.message else {
             return false;
         };
+        let rollouts = &mut self.rollouts;
         let (resolved_sid, resolved_path) = self
             .resolve_cache
             .entry(m.file_path.clone())
-            .or_insert_with(|| resolve_parent_session(&msg.session_id, &m.file_path))
+            .or_insert_with(|| resolve_parent_session_with(rollouts, &msg.session_id, &m.file_path))
             .clone();
         m.file_path = resolved_path;
         if let Some(msg) = m.message.as_mut() {
@@ -1998,6 +2023,59 @@ mod tests {
                 Some(parent_id)
             );
         }
+    }
+
+    #[test]
+    fn search_when_codex_thread_reverted_then_hits_point_at_current_rollout() {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        let temp_dir = TempDir::new().unwrap();
+        let thread = "01a00000-0000-7000-8000-000000000001";
+        let revert = "01a00000-0000-7000-8000-000000000002";
+        let (base, end) = write_rollout(
+            temp_dir.path(),
+            "sessions",
+            "2026-10-26T10-00-00",
+            thread,
+            None,
+            &[meta(thread, None), msg("user", "needle in base")],
+            2,
+        );
+        let (cont, _) = write_rollout(
+            temp_dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            thread,
+            Some(revert),
+            &[
+                meta(thread, Some((thread, 2, end))),
+                msg("user", "needle after revert"),
+            ],
+            2,
+        );
+
+        let results = search(
+            "needle",
+            temp_dir.path().join(".codex/sessions").to_str().unwrap(),
+        )
+        .expect("Search should succeed");
+
+        assert_eq!(results.len(), 2);
+        let base_str = base.to_string_lossy().to_string();
+        let cont_str = cont.to_string_lossy().to_string();
+        for r in &results {
+            let msg = r.message.as_ref().unwrap();
+            assert_eq!(msg.session_id, thread);
+            assert_eq!(r.file_path, cont_str, "session file is the current rollout");
+        }
+        let physical: std::collections::HashSet<_> = results
+            .iter()
+            .filter_map(|r| r.message.as_ref()?.file_path.clone())
+            .collect();
+        assert_eq!(physical, [base_str, cont_str.clone()].into_iter().collect());
+
+        let groups = crate::search::group_by_session(results);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].file_path, cont_str);
     }
 
     #[test]

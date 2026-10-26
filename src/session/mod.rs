@@ -116,15 +116,9 @@ pub fn is_codex_session_path(path: &str) -> bool {
 ///
 /// Codex response-item lines do not repeat the session id; it is stored in the
 /// initial `session_meta` record and in filenames shaped as
-/// `rollout-YYYY-MM-DDTHH-MM-SS-<thread-id>.jsonl`.
+/// `rollout-YYYY-MM-DDTHH-MM-SS-<thread-id>[_<rollout-id>].jsonl`.
 pub fn extract_codex_session_id_from_path(path: &str) -> Option<String> {
-    let file_stem = Path::new(path).file_stem()?.to_str()?;
-    let rest = file_stem.strip_prefix("rollout-")?;
-    if rest.len() <= 20 || rest.as_bytes().get(19) != Some(&b'-') {
-        return None;
-    }
-    let id = &rest[20..];
-    (!id.is_empty()).then(|| id.to_string())
+    codex_history::RolloutName::parse(Path::new(path)).map(|name| name.thread_id)
 }
 
 /// Extract session ID from a JSON record.
@@ -189,68 +183,36 @@ pub fn codex_parent_thread_id_from_file(path: &Path) -> Option<String> {
     None
 }
 
-fn codex_rollout_matches_session_id(path: &Path, session_id: &str) -> bool {
-    path.to_str()
-        .and_then(extract_codex_session_id_from_path)
-        .as_deref()
-        == Some(session_id)
-}
-
-fn codex_session_root(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find_map(|ancestor| {
-        let name = ancestor.file_name()?.to_str()?;
-        matches!(name, "sessions" | "archived_sessions").then(|| ancestor.to_path_buf())
-    })
-}
-
-fn find_codex_rollout_in_tree(root: &Path, session_id: &str) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let path = entry.path();
-        if file_type.is_dir() {
-            if let Some(found) = find_codex_rollout_in_tree(&path, session_id) {
-                return Some(found);
-            }
-        } else if file_type.is_file() && codex_rollout_matches_session_id(&path, session_id) {
-            return Some(path);
-        }
+/// The current rollout of Codex thread `session_id`, looked up from the
+/// rollout at `path`: across its Codex home (`sessions` + `archived_sessions`,
+/// indexed once per `rollouts`), or only in its own directory when it has none.
+fn find_codex_rollout_near(
+    rollouts: &mut codex_history::Rollouts,
+    path: &Path,
+    session_id: &str,
+) -> Option<PathBuf> {
+    if let Some(home) = codex_history::codex_home(path) {
+        return rollouts.index(&home).current_rollout_for_thread(session_id);
     }
-    None
-}
-
-fn find_codex_rollout_near(path: &Path, session_id: &str) -> Option<PathBuf> {
-    if let Some(parent) = path.parent() {
-        if let Some(found) = find_codex_rollout_in_tree(parent, session_id) {
-            return Some(found);
-        }
-    }
-
-    let root = codex_session_root(path)?;
-    if let Some(found) = find_codex_rollout_in_tree(&root, session_id) {
-        return Some(found);
-    }
-
-    let sibling_root = root.parent().and_then(|codex_home| {
-        let root_name = root.file_name()?.to_str()?;
-        match root_name {
-            "sessions" => Some(codex_home.join("archived_sessions")),
-            "archived_sessions" => Some(codex_home.join("sessions")),
-            _ => None,
-        }
-    });
-    sibling_root
-        .filter(|p| p.is_dir())
-        .and_then(|p| find_codex_rollout_in_tree(&p, session_id))
+    let siblings = std::fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path());
+    codex_history::current_rollout_among(siblings, session_id)
 }
 
 /// Resolve a Codex spawned-subagent rollout to its parent rollout.
 pub fn resolve_codex_subagent_session(path: &Path) -> Option<(String, String)> {
+    resolve_codex_subagent_session_with(&mut codex_history::Rollouts::default(), path)
+}
+
+fn resolve_codex_subagent_session_with(
+    rollouts: &mut codex_history::Rollouts,
+    path: &Path,
+) -> Option<(String, String)> {
     let parent_id = codex_parent_thread_id_from_file(path)?;
     let parent_path =
-        find_codex_rollout_near(path, &parent_id).unwrap_or_else(|| path.to_path_buf());
+        find_codex_rollout_near(rollouts, path, &parent_id).unwrap_or_else(|| path.to_path_buf());
     Some((parent_id, parent_path.to_string_lossy().to_string()))
 }
 
@@ -481,17 +443,22 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
 
     let target_filename = format!("{}.jsonl", session_id);
     let mut audit_match: Option<String> = None;
+    // A Codex thread may have several rollouts (one per revert); the current one wins.
+    let mut codex_matches: Vec<PathBuf> = Vec::new();
 
     for path in collect_session_jsonl_files(search_paths) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
 
-        if name == target_filename
-            || (is_codex_session_path(&path.to_string_lossy())
-                && codex_rollout_matches_session_id(&path, session_id))
-        {
+        if name == target_filename {
             return Some(path.to_string_lossy().to_string());
+        }
+        if is_codex_session_path(&path.to_string_lossy())
+            && codex_history::RolloutName::parse(&path).is_some_and(|r| r.thread_id == session_id)
+        {
+            codex_matches.push(path);
+            continue;
         }
 
         if name != "audit.jsonl" {
@@ -513,7 +480,9 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
         }
     }
 
-    audit_match
+    codex_history::current_rollout_among(codex_matches, session_id)
+        .map(|path| path.to_string_lossy().to_string())
+        .or(audit_match)
 }
 
 /// Resolve the correct session ID and file path for `claude --resume`.
@@ -532,11 +501,25 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
 ///    looks for `<session_id>.jsonl` in the same directory
 /// 4. **Normal file**: returns as-is
 pub fn resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {
+    resolve_parent_session_with(
+        &mut codex_history::Rollouts::default(),
+        session_id,
+        file_path,
+    )
+}
+
+/// [`resolve_parent_session`] with the Codex rollout indexes of the caller's
+/// operation, so one search indexes each Codex home once, not once per file.
+pub fn resolve_parent_session_with(
+    rollouts: &mut codex_history::Rollouts,
+    session_id: &str,
+    file_path: &str,
+) -> (String, String) {
     let path = std::path::Path::new(file_path);
 
     // Case 1: Codex spawned-subagent rollout. Codex stores child sessions as
     // normal rollout files and records the parent in session_meta.payload.source.
-    if let Some((parent_id, parent_path)) = resolve_codex_subagent_session(path) {
+    if let Some((parent_id, parent_path)) = resolve_codex_subagent_session_with(rollouts, path) {
         return (parent_id, parent_path);
     }
 
@@ -1021,6 +1004,127 @@ mod tests {
         path
     }
 
+    const THREAD: &str = "01a00000-0000-7000-8000-000000000001";
+    const REVERT: &str = "01a00000-0000-7000-8000-000000000002";
+
+    /// A thread whose first rollout was reverted: `(base, continuation)`.
+    fn write_codex_revert_pair(root: &Path) -> (PathBuf, PathBuf) {
+        use codex_history::test_support::{meta, msg, write_rollout};
+        let (base, end) = write_rollout(
+            root,
+            "sessions",
+            "2026-10-26T10-00-00",
+            THREAD,
+            None,
+            &[meta(THREAD, None), msg("user", "base prompt")],
+            2,
+        );
+        let (cont, _) = write_rollout(
+            root,
+            "sessions",
+            "2026-10-26T11-00-00",
+            THREAD,
+            Some(REVERT),
+            &[meta(THREAD, Some((THREAD, 2, end))), msg("user", "own")],
+            2,
+        );
+        (base, cont)
+    }
+
+    #[test]
+    fn codex_session_id_when_revert_file_then_thread_id() {
+        let path =
+            format!("/h/.codex/sessions/rollout-2026-10-26T11-00-00-{THREAD}_{REVERT}.jsonl");
+        assert_eq!(
+            extract_codex_session_id_from_path(&path).as_deref(),
+            Some(THREAD)
+        );
+    }
+
+    #[test]
+    fn find_session_file_when_thread_reverted_then_current_rollout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_, cont) = write_codex_revert_pair(dir.path());
+        let paths = vec![dir
+            .path()
+            .join(".codex/sessions")
+            .to_string_lossy()
+            .to_string()];
+        assert_eq!(
+            find_session_file_in_paths(THREAD, &paths),
+            Some(cont.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_parent_session_with_when_rollouts_given_then_reuses_their_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (base, _) = write_codex_revert_pair(dir.path());
+        let day = base.parent().unwrap();
+        let child = day.join("rollout-2026-10-26T12-00-00-child-id.jsonl");
+        std::fs::write(
+            &child,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"child-id","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{THREAD}"}}}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let mut rollouts = codex_history::Rollouts::default();
+        let before = rollouts.current_rollout(&base).unwrap();
+        // A newer rollout of the thread appears after the operation's index was built.
+        std::fs::write(
+            day.join(format!(
+                "rollout-2026-10-26T13-00-00-{THREAD}_01a00000-0000-7000-8000-000000000009.jsonl"
+            )),
+            "{}",
+        )
+        .unwrap();
+
+        let (_, parent) =
+            resolve_parent_session_with(&mut rollouts, "child-id", child.to_str().unwrap());
+
+        assert_eq!(parent, before.to_string_lossy(), "one index per operation");
+    }
+
+    #[test]
+    fn find_session_file_when_same_second_reverts_then_larger_rollout_id_and_no_empty_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (base, _) = write_codex_revert_pair(dir.path());
+        let day = base.parent().unwrap();
+        let later = day.join(format!(
+            "rollout-2026-10-26T11-00-00-{THREAD}_01a00000-0000-7000-8000-000000000003.jsonl"
+        ));
+        std::fs::write(&later, codex_history::test_support::meta(THREAD, None)).unwrap();
+        std::fs::write(
+            day.join(format!(
+                "rollout-2026-10-26T12-00-00-{THREAD}_01a00000-0000-7000-8000-000000000004.jsonl"
+            )),
+            "",
+        )
+        .unwrap();
+        let paths = vec![dir
+            .path()
+            .join(".codex/sessions")
+            .to_string_lossy()
+            .to_string()];
+
+        assert_eq!(
+            find_session_file_in_paths(THREAD, &paths),
+            Some(later.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn find_codex_rollout_near_when_parent_reverted_then_current_rollout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (base, cont) = write_codex_revert_pair(dir.path());
+        let child = write_codex_rollout(base.parent().unwrap(), "2026-10-26T12-00-00", "child-id");
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, THREAD),
+            Some(cont)
+        );
+    }
+
     #[test]
     fn test_find_codex_rollout_near_same_directory() {
         use tempfile::TempDir;
@@ -1030,7 +1134,10 @@ mod tests {
         let parent = write_codex_rollout(&day, "2026-05-03T10-00-00", "parent-id");
         let child = write_codex_rollout(&day, "2026-05-03T10-01-00", "child-id");
 
-        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, "parent-id"),
+            Some(parent)
+        );
     }
 
     #[test]
@@ -1052,7 +1159,10 @@ mod tests {
             "child-id",
         );
 
-        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, "parent-id"),
+            Some(parent)
+        );
     }
 
     #[test]
@@ -1075,7 +1185,10 @@ mod tests {
             "child-id",
         );
 
-        assert_eq!(find_codex_rollout_near(&child, "parent-id"), Some(parent));
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, "parent-id"),
+            Some(parent)
+        );
     }
 
     #[test]
@@ -1086,7 +1199,10 @@ mod tests {
         let day = dir.path().join(".codex/sessions/2026/05/03");
         let child = write_codex_rollout(&day, "2026-05-03T10-01-00", "child-id");
 
-        assert_eq!(find_codex_rollout_near(&child, "missing-id"), None);
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, "missing-id"),
+            None
+        );
     }
 
     #[test]
@@ -1098,7 +1214,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let child = write_codex_rollout(dir.path(), "2026-05-03T10-01-00", "child-id");
 
-        assert_eq!(find_codex_rollout_near(&child, "parent-id"), None);
+        assert_eq!(
+            find_codex_rollout_near(&mut Default::default(), &child, "parent-id"),
+            None
+        );
     }
 
     #[test]
