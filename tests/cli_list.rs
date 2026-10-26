@@ -4,6 +4,8 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
+mod common;
+
 fn setup_list_dir() -> TempDir {
     let dir = TempDir::new().unwrap();
 
@@ -289,4 +291,48 @@ fn list_includes_codex_sessions() {
     );
     assert_eq!(rows[0]["project"], "codex-demo");
     assert_eq!(rows[0]["message_count"], 2);
+}
+
+fn list_rows(search_path: &std::path::Path) -> Vec<serde_json::Value> {
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["list"])
+        .env("CCFS_SEARCH_PATH", search_path.to_str().unwrap())
+        .env("CCS_HOSTS", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_when_codex_thread_reverted_then_one_row_with_full_history() {
+    let dir = TempDir::new().unwrap();
+    let (_, cont) = common::codex::revert_pair(dir.path());
+
+    let rows = list_rows(&dir.path().join(".codex/sessions"));
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["session_id"], common::codex::ROOT);
+    assert_eq!(rows[0]["file_path"], cont.to_str().unwrap());
+    assert_eq!(rows[0]["message_count"], 4, "2 kept from the base + 2 own");
+}
+
+#[test]
+fn list_when_codex_fork_then_own_session_id_and_inherited_count() {
+    let dir = TempDir::new().unwrap();
+    let (_, _, fork2) = common::codex::fork_chain(dir.path());
+
+    let rows = list_rows(&dir.path().join(".codex/sessions"));
+
+    let row = rows
+        .iter()
+        .find(|r| r["file_path"] == fork2.to_str().unwrap())
+        .expect("fork row");
+    assert_eq!(row["session_id"], common::codex::FORK2);
+    assert_eq!(row["message_count"], 3);
 }

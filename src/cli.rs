@@ -791,10 +791,12 @@ fn collect_opencode_list_entries(search_paths: &[String], limit: usize) -> Vec<L
     out
 }
 
-/// Extract metadata from a single .jsonl file by reading first and last messages
+/// Extract metadata from a session's history. The session id comes from the
+/// file's own records: a Codex fork's history starts with its parent's.
 fn extract_session_metadata(path: &Path) -> Option<ListResult> {
-    let file = fs::File::open(path).ok()?;
-    let reader = BufReader::new(file);
+    if !path.is_file() {
+        return None;
+    }
 
     let path_str = path.to_str()?;
     let project = extract_project_from_path(path_str);
@@ -804,13 +806,13 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
     let mut session_id: Option<String> = None;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
 
-    for line in reader.lines().map_while(Result::ok) {
-        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
+    for line in crate::session::codex_history::history_lines(path) {
+        let json: serde_json::Value = match serde_json::from_str(line.raw.trim()) {
             Ok(v) => v,
             Err(_) => continue,
         };
 
-        if session_id.is_none() {
+        if session_id.is_none() && &*line.path == path {
             session_id = crate::session::extract_session_id(&json)
                 .or_else(|| crate::session::extract_codex_session_id_from_path(path_str));
         }

@@ -113,12 +113,11 @@ pub fn group_by_session(results: Vec<RipgrepMatch>) -> Vec<SessionGroup> {
     groups
 }
 
-/// Count user + assistant messages in a JSONL session file.
+/// Count user + assistant messages in a JSONL session's history (for Codex,
+/// including what it inherits through `history_base`).
 /// Returns (count, compacted) — compacted=true if summary/compact_boundary records found.
 /// For compacted sessions, count reflects only post-compaction messages.
 pub fn count_session_messages(file_path: &str) -> (usize, bool) {
-    use std::io::{BufRead, BufReader};
-
     // Opencode session paths are synthetic (`<db>#<session_id>`) — there's
     // no JSONL file to open. Count via SQLite instead so search headers
     // don't show "N/0 matches" for Opencode sessions.
@@ -126,15 +125,12 @@ pub fn count_session_messages(file_path: &str) -> (usize, bool) {
         return (count, false);
     }
 
-    let file = match std::fs::File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return (0, false),
-    };
-    let reader = BufReader::new(file);
     let mut count = 0usize;
     let mut compacted = false;
 
-    for line in reader.lines().map_while(Result::ok) {
+    for line in
+        crate::session::codex_history::history_lines(std::path::Path::new(file_path)).map(|l| l.raw)
+    {
         let json: serde_json::Value = match serde_json::from_str(line.trim()) {
             Ok(v) => v,
             Err(_) => continue,
@@ -578,6 +574,76 @@ mod tests {
         let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
         assert_eq!(count, 4);
         assert!(compacted);
+    }
+
+    #[test]
+    fn count_session_messages_when_codex_revert_then_kept_prefix_and_own() {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        let dir = tempfile::TempDir::new().unwrap();
+        let thread = "01a00000-0000-7000-8000-000000000001";
+        let (_, end) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T10-00-00",
+            thread,
+            None,
+            &[
+                meta(thread, None),
+                msg("user", "q1"),
+                msg("assistant", "a1"),
+                msg("user", "discarded"),
+            ],
+            3,
+        );
+        let (cont, _) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            thread,
+            Some("01a00000-0000-7000-8000-000000000002"),
+            &[meta(thread, Some((thread, 3, end))), msg("user", "own")],
+            2,
+        );
+        assert_eq!(count_session_messages(cont.to_str().unwrap()), (3, false));
+    }
+
+    #[test]
+    fn count_session_messages_when_fork_of_fork_then_both_inherited_parts() {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        let dir = tempfile::TempDir::new().unwrap();
+        let ids = [
+            "01a00000-0000-7000-8000-000000000001",
+            "01a00000-0000-7000-8000-000000000003",
+            "01a00000-0000-7000-8000-000000000004",
+        ];
+        let (_, root_end) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T10-00-00",
+            ids[0],
+            None,
+            &[meta(ids[0], None), msg("user", "r")],
+            2,
+        );
+        let (_, f1_end) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            ids[1],
+            None,
+            &[meta(ids[1], Some((ids[0], 2, root_end))), msg("user", "f1")],
+            2,
+        );
+        let (f2, _) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T12-00-00",
+            ids[2],
+            None,
+            &[meta(ids[2], Some((ids[1], 4, f1_end))), msg("user", "f2")],
+            2,
+        );
+        assert_eq!(count_session_messages(f2.to_str().unwrap()).0, 3);
     }
 
     #[test]
