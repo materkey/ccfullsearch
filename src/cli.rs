@@ -415,9 +415,12 @@ pub fn cli_show(
     host: Option<&crate::remote::config::HostConfig>,
     search_paths: &[String],
 ) {
+    let tail = (line.is_none() && uuid.is_none()).then(|| tail.unwrap_or(DEFAULT_TAIL));
     if let Some(host) = host {
         // The host resolves a session id against its own files.
-        std::process::exit(show_remote(host, target, line, uuid, context, max_chars));
+        std::process::exit(show_remote(
+            host, target, line, uuid, tail, context, max_chars,
+        ));
     }
     let file_path = match resolve_show_target(target, search_paths) {
         Ok(path) => path,
@@ -427,7 +430,6 @@ pub fn cli_show(
         }
     };
     let file_path = file_path.as_str();
-    let tail = (line.is_none() && uuid.is_none()).then(|| tail.unwrap_or(DEFAULT_TAIL));
     let opencode = crate::session::opencode::parse_session_path(file_path);
     let result = match (opencode, tail) {
         (Some((db, session_id)), Some(n)) => {
@@ -467,22 +469,28 @@ pub fn resolve_show_target(target: &str, search_paths: &[String]) -> Result<Stri
 
 /// `ccs show` on the host that has the file: the window of messages is
 /// exactly what that ccs prints, so its output passes straight through.
+/// Tail mode sends `--tail` explicitly and no `--context`: the remote ccs
+/// rejects the two together.
 fn show_remote(
     host: &crate::remote::config::HostConfig,
-    file_path: &str,
+    target: &str,
     line: Option<usize>,
     uuid: Option<&str>,
+    tail: Option<usize>,
     context: usize,
     max_chars: usize,
 ) -> i32 {
-    let mut args = vec!["show".to_string(), file_path.to_string()];
+    let mut args = vec!["show".to_string(), target.to_string()];
     if let Some(line) = line {
         args.extend(["--line".to_string(), line.to_string()]);
     }
     if let Some(uuid) = uuid {
         args.extend(["--uuid".to_string(), uuid.to_string()]);
     }
-    args.extend(["--context".to_string(), context.to_string()]);
+    match tail {
+        Some(n) => args.extend(["--tail".to_string(), n.to_string()]),
+        None => args.extend(["--context".to_string(), context.to_string()]),
+    }
     args.extend(["--max-chars".to_string(), max_chars.to_string()]);
     let mut command =
         crate::remote::ssh::ssh_command(host, &crate::remote::ssh::SshMode::Command(&args));

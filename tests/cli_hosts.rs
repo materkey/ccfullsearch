@@ -135,3 +135,69 @@ fn show_when_host_given_then_reads_through_remote() {
     let args: Vec<&str> = args.lines().collect();
     assert_eq!(&args[..4], ["show", file.as_str(), "--uuid", "u2"]);
 }
+
+/// Run `ccs <args>` against a "remote" ccs script and return the full argv
+/// the remote received.
+fn remote_show_argv(args: &[&str]) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::TempDir::new().unwrap();
+    let argv = dir.path().join("argv");
+    let script = dir.path().join("remote-ccs");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho '{{\"type\":\"summary\"}}'\n",
+            argv.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    config(&dir, &script.to_string_lossy());
+    let out = ccs(&dir, args);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::read_to_string(argv)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn show_when_host_and_tail_then_forwards_tail_without_context() {
+    let argv = remote_show_argv(&["show", "sess-1", "--tail", "3", "--host", "fake"]);
+    assert_eq!(
+        argv,
+        ["show", "sess-1", "--tail", "3", "--max-chars", "2000"]
+    );
+}
+
+#[test]
+fn show_when_host_and_no_anchor_then_forwards_default_tail() {
+    let argv = remote_show_argv(&["show", "sess-1", "--host", "fake"]);
+    assert_eq!(
+        argv,
+        ["show", "sess-1", "--tail", "10", "--max-chars", "2000"]
+    );
+}
+
+#[test]
+fn show_when_host_and_line_then_forwards_line_and_context_without_tail() {
+    let argv = remote_show_argv(&["show", "/x/s.jsonl", "--line", "3", "--host", "fake"]);
+    assert_eq!(
+        argv,
+        [
+            "show",
+            "/x/s.jsonl",
+            "--line",
+            "3",
+            "--context",
+            "3",
+            "--max-chars",
+            "2000"
+        ]
+    );
+}
