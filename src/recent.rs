@@ -869,7 +869,9 @@ fn resolve_summary(
             .or(first_user_message)
             .unwrap_or_default()
     } else {
-        first_user_message.unwrap_or_default()
+        first_user_message
+            .or_else(|| first_user_message_in_history(path))
+            .unwrap_or_default()
     };
 
     if summary.is_empty() {
@@ -877,6 +879,22 @@ fn resolve_summary(
     }
 
     Some((session_id, summary, MessageRole::User))
+}
+
+/// First real user prompt of the session's whole history. A Codex revert or
+/// fork that has no prompt of its own yet is titled by what it inherits;
+/// for any other file the history is the file itself.
+fn first_user_message_in_history(path: &Path) -> Option<String> {
+    let mut scan = ScanResult::default();
+    for line in session::codex_history::history_lines(path) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line.raw) {
+            record_first_user_message(&mut scan, &json);
+            if scan.first_user_message.is_some() {
+                break;
+            }
+        }
+    }
+    scan.first_user_message
 }
 
 pub fn extract_summary(path: &Path) -> Option<RecentSession> {
@@ -1526,6 +1544,104 @@ mod tests {
 
         let db = Path::new("/definitely/does/not/exist/opencode.db");
         assert!(opencode_summary_to_recent(db, &summary).is_none());
+    }
+
+    const CX_ROOT: &str = "01a00000-0000-7000-8000-000000000001";
+    const CX_REVERT: &str = "01a00000-0000-7000-8000-000000000002";
+    const CX_FORK: &str = "01a00000-0000-7000-8000-000000000003";
+
+    /// Root rollout with one prompt and one discarded prompt; returns
+    /// `(root path, end_byte_offset of its first two lines)`.
+    fn write_codex_root(dir: &Path) -> (PathBuf, u64) {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        write_rollout(
+            dir,
+            "sessions",
+            "2026-10-26T10-00-00",
+            CX_ROOT,
+            None,
+            &[
+                meta(CX_ROOT, None),
+                msg("user", "root prompt"),
+                msg("user", "discarded"),
+            ],
+            2,
+        )
+    }
+
+    #[test]
+    fn extract_summary_when_codex_fork_then_own_title_and_full_count() {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        let dir = TempDir::new().unwrap();
+        let (_, end) = write_codex_root(dir.path());
+        let (fork, _) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            CX_FORK,
+            None,
+            &[
+                meta(CX_FORK, Some((CX_ROOT, 2, end))),
+                msg("user", "fork prompt"),
+            ],
+            2,
+        );
+
+        let result = extract_summary(&fork).unwrap();
+        assert_eq!(result.session_id, CX_FORK);
+        assert_eq!(result.summary, "fork prompt");
+        assert_eq!(result.message_count, Some(2));
+    }
+
+    #[test]
+    fn collect_recent_when_codex_thread_reverted_then_one_row_for_continuation() {
+        use crate::session::codex_history::test_support::{meta, msg, write_rollout};
+        let dir = TempDir::new().unwrap();
+        let (_, end) = write_codex_root(dir.path());
+        let (cont, _) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            CX_ROOT,
+            Some(CX_REVERT),
+            &[
+                meta(CX_ROOT, Some((CX_ROOT, 2, end))),
+                msg("user", "after revert"),
+            ],
+            2,
+        );
+        // The continuation is written after the base.
+        filetime::set_file_mtime(&cont, filetime::FileTime::now()).unwrap();
+
+        let paths = vec![dir
+            .path()
+            .join(".codex/sessions")
+            .to_string_lossy()
+            .to_string()];
+        let sessions = collect_recent_sessions(&paths, 10);
+        assert_eq!(sessions.len(), 1, "{sessions:?}");
+        assert_eq!(sessions[0].file_path, cont.to_string_lossy());
+        assert_eq!(sessions[0].message_count, Some(2));
+    }
+
+    #[test]
+    fn extract_summary_when_codex_continuation_has_no_own_prompt_then_history_title() {
+        use crate::session::codex_history::test_support::{meta, write_rollout};
+        let dir = TempDir::new().unwrap();
+        let (_, end) = write_codex_root(dir.path());
+        let (cont, _) = write_rollout(
+            dir.path(),
+            "sessions",
+            "2026-10-26T11-00-00",
+            CX_ROOT,
+            Some(CX_REVERT),
+            &[meta(CX_ROOT, Some((CX_ROOT, 2, end)))],
+            1,
+        );
+
+        let result = extract_summary(&cont).expect("continuation must not drop out of recent");
+        assert_eq!(result.session_id, CX_ROOT);
+        assert_eq!(result.summary, "root prompt");
     }
 
     #[test]
