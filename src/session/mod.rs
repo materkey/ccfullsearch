@@ -1,3 +1,4 @@
+pub mod codex_history;
 pub mod opencode;
 pub mod record;
 
