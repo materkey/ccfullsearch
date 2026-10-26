@@ -61,8 +61,8 @@ enum Commands {
     },
     /// Show messages around a search hit (drill-down for `ccs search` results)
     Show {
-        /// Session file path (file_path from search output)
-        file_path: String,
+        /// Session file path (file_path from search output) or session id
+        target: String,
         /// 1-based JSONL line of the target message (line_number from search output)
         #[arg(long)]
         line: Option<usize>,
@@ -133,10 +133,9 @@ fn read_session_id_from_file(file_path: &str) -> Option<String> {
     None
 }
 
-/// A `--tree` target is either a filesystem path or a bare session ID.
-fn is_path_like(target: &str) -> bool {
-    target.contains('/') || target.ends_with(".jsonl")
-}
+// A `--tree` target is either a filesystem path or a bare session ID, the
+// same rule as `ccs show`.
+use ccs::cli::is_path_like;
 
 /// Resolve a `--tree` target to a session file path: paths are used as-is
 /// (after an existence check), bare session IDs are searched for.
@@ -402,7 +401,7 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             Ok(())
         }
         Commands::Show {
-            file_path,
+            target,
             line,
             uuid,
             context,
@@ -416,12 +415,13 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
                 })
             });
             ccs::cli::cli_show(
-                &file_path,
+                &target,
                 line,
                 uuid.as_deref(),
                 context,
                 max_chars,
                 remote.as_ref(),
+                &ccs::get_search_paths(),
             );
             Ok(())
         }

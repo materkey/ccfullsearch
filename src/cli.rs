@@ -392,16 +392,26 @@ fn is_false(b: &bool) -> bool {
 /// (`file_path`, `line_number`, `message_uuid`). The window is `context`
 /// messages before and after the target, in file order.
 pub fn cli_show(
-    file_path: &str,
+    target: &str,
     line: Option<usize>,
     uuid: Option<&str>,
     context: usize,
     max_chars: usize,
     host: Option<&crate::remote::config::HostConfig>,
+    search_paths: &[String],
 ) {
     if let Some(host) = host {
-        std::process::exit(show_remote(host, file_path, line, uuid, context, max_chars));
+        // The host resolves a session id against its own files.
+        std::process::exit(show_remote(host, target, line, uuid, context, max_chars));
     }
+    let file_path = match resolve_show_target(target, search_paths) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let file_path = file_path.as_str();
     let result =
         if let Some((db, session_id)) = crate::session::opencode::parse_session_path(file_path) {
             show_opencode(&db, &session_id, file_path, uuid, context, max_chars)
@@ -412,6 +422,26 @@ pub fn cli_show(
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
+}
+
+/// A session target is a file path, the same rule as `--tree`, or a bare
+/// session id.
+pub fn is_path_like(target: &str) -> bool {
+    target.contains('/')
+        || target.ends_with(".jsonl")
+        // `opencode.db#ses_…`: the synthetic path a relative Opencode db gives
+        || crate::session::opencode::parse_session_path(target).is_some()
+}
+
+/// Resolve a `ccs show` target to a session file: paths (including Opencode's
+/// `<db>#<session_id>`) are used as given, a session id is looked up in
+/// `search_paths` (for a Codex thread, its current rollout).
+pub fn resolve_show_target(target: &str, search_paths: &[String]) -> Result<String, String> {
+    if is_path_like(target) {
+        return Ok(target.to_string());
+    }
+    crate::session::find_session_file_in_paths(target, search_paths)
+        .ok_or_else(|| format!("no session {} in search paths", target))
 }
 
 /// `ccs show` on the host that has the file: the window of messages is
@@ -856,6 +886,14 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_show_target_when_relative_opencode_path_then_used_as_given() {
+        assert_eq!(
+            resolve_show_target("opencode.db#ses_abc", &[]),
+            Ok("opencode.db#ses_abc".to_string())
+        );
+    }
     use crate::session::record::{MessageRole, SessionRecord};
 
     #[test]

@@ -81,6 +81,99 @@ fn show_when_codex_revert_continuation_then_window_includes_base_lines() {
     assert_eq!(summary["session_id"], common::codex::ROOT);
 }
 
+/// `ccs show <target> <args>` with the search scope set to `search_path`.
+fn show_target(search_path: &str, target: &str, args: &[&str]) -> std::process::Output {
+    Command::cargo_bin("ccs")
+        .unwrap()
+        .arg("show")
+        .arg(target)
+        .args(args)
+        .env("CCFS_SEARCH_PATH", search_path)
+        .env("CCS_HOSTS", "")
+        .output()
+        .unwrap()
+}
+
+fn summary_of(output: &std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "show should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    split_rows(&String::from_utf8(output.stdout.clone()).unwrap()).1
+}
+
+#[test]
+fn show_when_codex_thread_id_then_current_rollout() {
+    let dir = TempDir::new().unwrap();
+    let (_, cont) = common::codex::revert_pair(dir.path());
+    let scope = dir.path().join(".codex/sessions");
+
+    let output = show_target(
+        scope.to_str().unwrap(),
+        common::codex::ROOT,
+        &["--line", "2"],
+    );
+
+    assert_eq!(summary_of(&output)["file_path"], cont.to_str().unwrap());
+}
+
+#[test]
+fn show_when_claude_session_id_then_its_file() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path().join("-test-project");
+    fs::create_dir_all(&project).unwrap();
+    let file = project.join("sess-linear-001.jsonl");
+    fs::copy("tests/fixtures/linear_session.jsonl", &file).unwrap();
+
+    let output = show_target(
+        dir.path().to_str().unwrap(),
+        "sess-linear-001",
+        &["--line", "3"],
+    );
+
+    assert_eq!(summary_of(&output)["file_path"], file.to_str().unwrap());
+}
+
+#[test]
+fn show_when_desktop_session_id_then_audit_file() {
+    let dir = TempDir::new().unwrap();
+    let session = dir
+        .path()
+        .join("local-agent-mode-sessions/org/user/local_abc");
+    fs::create_dir_all(&session).unwrap();
+    let file = session.join("audit.jsonl");
+    fs::copy("tests/fixtures/desktop_audit_session.jsonl", &file).unwrap();
+
+    let output = show_target(
+        dir.path().to_str().unwrap(),
+        "sess-desktop-001",
+        &["--line", "1"],
+    );
+
+    assert_eq!(summary_of(&output)["file_path"], file.to_str().unwrap());
+}
+
+#[test]
+fn show_when_opencode_session_id_then_synthetic_path() {
+    let (_dir, synthetic_path) = setup_opencode_db_fixture();
+    let db = synthetic_path.split('#').next().unwrap();
+
+    let output = show_target(db, "ses_SHOW1", &["--uuid", "msg_asst1"]);
+
+    assert_eq!(summary_of(&output)["file_path"], synthetic_path);
+}
+
+#[test]
+fn show_when_session_id_unknown_then_error_names_it() {
+    let dir = TempDir::new().unwrap();
+
+    let output = show_target(dir.path().to_str().unwrap(), "nope-id", &["--line", "1"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no session nope-id in search paths"));
+}
+
 #[test]
 fn show_when_line_exists_in_base_too_then_anchor_is_in_requested_file() {
     let dir = TempDir::new().unwrap();
