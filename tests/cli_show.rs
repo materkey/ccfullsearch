@@ -443,16 +443,161 @@ fn show_short_content_has_no_truncated_flag() {
     assert!(messages[0].get("content_truncated").is_none());
 }
 
-#[test]
-fn show_requires_line_or_uuid() {
-    let (_dir, file_path) = setup_session_file("linear_session.jsonl");
+fn contents(rows: &[serde_json::Value]) -> Vec<&str> {
+    rows.iter()
+        .map(|r| r["content"].as_str().unwrap())
+        .collect()
+}
 
-    Command::cargo_bin("ccs")
-        .unwrap()
-        .args(["show", &file_path])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--line or --uuid"));
+#[test]
+fn show_when_no_anchor_then_tail_of_last_ten_messages() {
+    let dir = TempDir::new().unwrap();
+    let mut lines = vec![common::codex::meta(common::codex::ROOT, None)];
+    lines.extend((1..=12).map(|i| common::codex::msg("user", &format!("m{i}"))));
+    let (file, _) = common::codex::write_rollout(
+        dir.path(),
+        "2026-10-26T10-00-00",
+        common::codex::ROOT,
+        None,
+        &lines,
+        lines.len(),
+    );
+
+    let (rows, summary) = show_ok(&["show", file.to_str().unwrap()]);
+
+    let expected: Vec<String> = (3..=12).map(|i| format!("m{i}")).collect();
+    assert_eq!(contents(&rows), expected);
+    assert!(rows.iter().all(|r| r.get("is_target").is_none()));
+    assert_eq!(summary["mode"], "tail");
+    assert_eq!(summary["total_messages"], 12);
+    assert_eq!(summary["shown"], 10);
+    assert!(summary.get("target_line").is_none());
+}
+
+#[test]
+fn show_tail_when_claude_branches_then_latest_chain_only() {
+    let (_dir, file_path) = setup_session_file("branched_session.jsonl");
+
+    let (rows, summary) = show_ok(&["show", &file_path, "--tail", "10"]);
+
+    let uuids: Vec<&str> = rows
+        .iter()
+        .map(|r| r["message_uuid"].as_str().unwrap())
+        .collect();
+    assert_eq!(uuids, ["root", "a1", "b2", "b3"]);
+    assert_eq!(summary["session_id"], "sess-branched-001");
+    assert_eq!(summary["total_messages"], 4);
+}
+
+#[test]
+fn show_tail_when_codex_revert_then_reaches_into_base() {
+    let dir = TempDir::new().unwrap();
+    let (base, cont) = common::codex::revert_pair(dir.path());
+
+    let (rows, _) = show_ok(&["show", cont.to_str().unwrap(), "--tail", "3"]);
+
+    assert_eq!(
+        contents(&rows),
+        [
+            "root answer",
+            "after revert question",
+            "after revert answer"
+        ]
+    );
+    assert_eq!(rows[0]["file_path"], base.to_str().unwrap());
+}
+
+#[test]
+fn show_tail_when_fork_has_no_own_messages_then_summary_names_the_fork() {
+    let dir = TempDir::new().unwrap();
+    let (_, root_end) = common::codex::write_rollout(
+        dir.path(),
+        "2026-10-26T10-00-00",
+        common::codex::ROOT,
+        None,
+        &[
+            common::codex::meta(common::codex::ROOT, None),
+            common::codex::msg("user", "parent prompt"),
+        ],
+        2,
+    );
+    let (fork, _) = common::codex::write_rollout(
+        dir.path(),
+        "2026-10-26T11-00-00",
+        common::codex::FORK1,
+        None,
+        &[common::codex::meta(
+            common::codex::FORK1,
+            Some((common::codex::ROOT, 2, root_end)),
+        )],
+        1,
+    );
+
+    let (rows, summary) = show_ok(&["show", fork.to_str().unwrap(), "--tail", "5"]);
+
+    assert_eq!(contents(&rows), ["parent prompt"]);
+    assert_eq!(summary["session_id"], common::codex::FORK1);
+    assert_eq!(summary["file_path"], fork.to_str().unwrap());
+}
+
+#[test]
+fn show_tail_when_a_line_is_not_utf8_then_messages_after_it_still_shown() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("-test-project").join("broken.jsonl");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let line = |uuid: &str, parent: &str, text: &[u8]| {
+        let mut l = br#"{"type":"user","message":{"role":"user","content":"#.to_vec();
+        l.push(b'"');
+        l.extend_from_slice(text);
+        l.extend_from_slice(
+            format!(
+                r#""}},"uuid":"{uuid}","parentUuid":{parent},"sessionId":"sess-broken","timestamp":"2025-06-01T10:00:00Z"}}"#
+            )
+            .as_bytes(),
+        );
+        l.push(b'\n');
+        l
+    };
+    let mut bytes = line("u1", "null", b"first");
+    bytes.extend(line("u2", "\"u1\"", b"bad \xff byte"));
+    bytes.extend(line("u3", "\"u2\"", b"after the bad line"));
+    fs::write(&file, bytes).unwrap();
+
+    let (rows, summary) = show_ok(&["show", file.to_str().unwrap()]);
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2]["content"], "after the bad line");
+    assert_eq!(summary["total_messages"], 3);
+}
+
+#[test]
+fn show_tail_when_opencode_then_last_messages() {
+    let (_dir, synthetic_path) = setup_opencode_db_fixture();
+
+    let (rows, summary) = show_ok(&["show", &synthetic_path, "--tail", "2"]);
+
+    let uuids: Vec<&str> = rows
+        .iter()
+        .map(|r| r["message_uuid"].as_str().unwrap())
+        .collect();
+    assert_eq!(uuids, ["msg_asst1", "msg_user2"]);
+    assert_eq!(summary["session_id"], "ses_SHOW1");
+    assert_eq!(summary["total_messages"], 3);
+}
+
+#[test]
+fn show_tail_when_combined_with_anchor_or_context_then_usage_error() {
+    let (_dir, file_path) = setup_session_file("linear_session.jsonl");
+    for extra in [["--line", "3"], ["--uuid", "u1"], ["--context", "2"]] {
+        Command::cargo_bin("ccs")
+            .unwrap()
+            .args(["show", &file_path, "--tail", "2"])
+            .args(extra)
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
 }
 
 /// Build a minimal Opencode SQLite database with one session and three

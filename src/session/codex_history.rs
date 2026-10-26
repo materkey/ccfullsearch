@@ -260,6 +260,15 @@ pub fn history_lines(path: &Path) -> impl Iterator<Item = HistoryLine> {
     lines_of_segments(resolve_segments(path))
 }
 
+/// Lines of one whole file, read the same way as a history: a line that is not
+/// valid UTF-8 is kept lossily.
+pub fn file_lines(path: &Path) -> impl Iterator<Item = HistoryLine> {
+    lines_of_segments(vec![Segment {
+        path: path.to_path_buf(),
+        end_byte: None,
+    }])
+}
+
 /// Lines of the given segments, in order.
 pub fn lines_of_segments(segments: Vec<Segment>) -> impl Iterator<Item = HistoryLine> {
     segments.into_iter().flat_map(|segment| {
@@ -273,14 +282,21 @@ pub fn lines_of_segments(segments: Vec<Segment>) -> impl Iterator<Item = History
                 });
         reader.into_iter().flat_map(move |reader| {
             let path = path.clone();
+            // Bytes, not `lines()`: a line that is not valid UTF-8 (a writer
+            // crashed mid-character) is kept lossily instead of ending the read.
             reader
-                .lines()
+                .split(b'\n')
                 .map_while(Result::ok)
                 .enumerate()
-                .map(move |(i, raw)| HistoryLine {
-                    path: path.clone(),
-                    line_number: i + 1,
-                    raw,
+                .map(move |(i, mut bytes)| {
+                    if bytes.last() == Some(&b'\r') {
+                        bytes.pop();
+                    }
+                    HistoryLine {
+                        path: path.clone(),
+                        line_number: i + 1,
+                        raw: String::from_utf8_lossy(&bytes).into_owned(),
+                    }
                 })
         })
     })
@@ -726,5 +742,28 @@ mod tests {
             .join(format!("rollout-2026-10-26T10-00-00-{ROOT}.jsonl"));
         std::fs::write(&path, meta(ROOT, None)).unwrap();
         assert_eq!(Rollouts::default().current_rollout(&path), None);
+    }
+
+    #[test]
+    fn history_lines_when_line_is_not_utf8_then_kept_lossy_and_rest_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut bytes = b"{\"n\":1}\r\n".to_vec();
+        bytes.extend_from_slice(b"{\"n\":\"\xff\"}\n");
+        bytes.extend_from_slice(b"{\"n\":3}");
+        std::fs::write(&path, bytes).unwrap();
+
+        let lines: Vec<(usize, String)> = history_lines(&path)
+            .map(|l| (l.line_number, l.raw))
+            .collect();
+
+        assert_eq!(
+            lines,
+            vec![
+                (1, "{\"n\":1}".to_string()),
+                (2, "{\"n\":\"\u{fffd}\"}".to_string()),
+                (3, "{\"n\":3}".to_string()),
+            ]
+        );
     }
 }

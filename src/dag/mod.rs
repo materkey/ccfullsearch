@@ -2,7 +2,6 @@ use crate::session::{self, record::SessionRecord};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 /// Strategy for selecting the tip (terminal node) of the conversation DAG.
@@ -55,19 +54,17 @@ impl SessionDag {
     /// Build a DAG from a JSONL session file.
     /// Skips sidechain records. Uses session:: extractors for field access.
     pub fn from_file(path: &Path, filter: DisplayFilter) -> Result<Self, String> {
-        let file =
-            File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-        let reader = BufReader::new(file);
+        File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
 
         let mut entries = HashMap::new();
         let mut displayable_order = Vec::new();
         let mut last_uuid = None;
 
-        for (line_index, line_result) in reader.lines().enumerate() {
-            let line = match line_result {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
+        // A line that is not valid UTF-8 is read lossily rather than dropped:
+        // dropping it would cut the chain at that record.
+        for file_line in session::codex_history::file_lines(path) {
+            let line_index = file_line.line_number - 1;
+            let line = file_line.raw;
 
             // Fast pre-filter: skip lines without "uuid" to avoid JSON parsing overhead
             if !line.contains("\"uuid\"") {

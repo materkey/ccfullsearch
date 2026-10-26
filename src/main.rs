@@ -59,7 +59,8 @@ enum Commands {
         #[arg(long, default_values_t = [ccs::cli::CLI_DEFAULT_HOSTS.to_string()])]
         host: Vec<String>,
     },
-    /// Show messages around a search hit (drill-down for `ccs search` results)
+    /// Show messages around a search hit (drill-down for `ccs search` results),
+    /// or the end of a session when no --line or --uuid is given
     Show {
         /// Session file path (file_path from search output) or session id
         target: String,
@@ -69,6 +70,9 @@ enum Commands {
         /// Target message UUID (message_uuid from search output)
         #[arg(long)]
         uuid: Option<String>,
+        /// Last N messages of the session's current line (default 10 when no --line/--uuid)
+        #[arg(long, conflicts_with_all = ["line", "uuid", "context"])]
+        tail: Option<usize>,
         /// Messages of context before and after the target
         #[arg(long, default_value = "3")]
         context: usize,
@@ -404,6 +408,7 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             target,
             line,
             uuid,
+            tail,
             context,
             max_chars,
             host,
@@ -418,6 +423,7 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
                 &target,
                 line,
                 uuid.as_deref(),
+                tail,
                 context,
                 max_chars,
                 remote.as_ref(),

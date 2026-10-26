@@ -380,21 +380,36 @@ struct ShowSummary {
     target_line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_uuid: Option<String>,
+    /// `"tail"` when the window is the end of the session instead of a
+    /// window around a target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
+    /// Messages on the session's current line, in tail mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_messages: Option<usize>,
 }
+
+/// Messages `ccs show` prints when neither `--line` nor `--uuid` is given.
+pub const DEFAULT_TAIL: usize = 10;
 
 fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Run CLI show command — print a window of messages around a search hit.
+/// Run CLI show command — print a window of messages around a search hit,
+/// or the end of the session.
 ///
 /// `file_path`, `--line` and `--uuid` come straight from `ccs search` output
 /// (`file_path`, `line_number`, `message_uuid`). The window is `context`
-/// messages before and after the target, in file order.
+/// messages before and after the target, in file order. Without `--line` and
+/// `--uuid` it is the last `tail` messages (default [`DEFAULT_TAIL`]) of the
+/// session's current line.
+#[allow(clippy::too_many_arguments)]
 pub fn cli_show(
     target: &str,
     line: Option<usize>,
     uuid: Option<&str>,
+    tail: Option<usize>,
     context: usize,
     max_chars: usize,
     host: Option<&crate::remote::config::HostConfig>,
@@ -412,12 +427,18 @@ pub fn cli_show(
         }
     };
     let file_path = file_path.as_str();
-    let result =
-        if let Some((db, session_id)) = crate::session::opencode::parse_session_path(file_path) {
+    let tail = (line.is_none() && uuid.is_none()).then(|| tail.unwrap_or(DEFAULT_TAIL));
+    let opencode = crate::session::opencode::parse_session_path(file_path);
+    let result = match (opencode, tail) {
+        (Some((db, session_id)), Some(n)) => {
+            show_opencode_tail(&db, &session_id, file_path, n, max_chars)
+        }
+        (Some((db, session_id)), None) => {
             show_opencode(&db, &session_id, file_path, uuid, context, max_chars)
-        } else {
-            show_jsonl(file_path, line, uuid, context, max_chars)
-        };
+        }
+        (None, Some(n)) => show_jsonl_tail(file_path, n, max_chars),
+        (None, None) => show_jsonl(file_path, line, uuid, context, max_chars),
+    };
     if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -494,31 +515,81 @@ fn show_jsonl(
         .min(messages.len());
 
     for (i, msg) in messages[start..end].iter().enumerate() {
-        let (content, content_truncated) = truncate_chars(&msg.content, max_chars);
-        let row = ShowMessageRow {
-            record_type: "message",
-            file_path: msg
-                .file_path
-                .clone()
-                .unwrap_or_else(|| file_path.to_string()),
-            line_number: Some(msg.line_number),
-            message_uuid: msg.uuid.clone(),
-            parent_uuid: msg.parent_uuid.clone(),
-            role: msg.role.clone(),
-            timestamp: msg.timestamp.to_rfc3339(),
-            content,
-            is_target: start + i == target_idx,
-            content_truncated,
-        };
-        if let Ok(json) = serde_json::to_string(&row) {
-            println!("{}", json);
-        }
+        print_json_line(&jsonl_row(
+            msg,
+            file_path,
+            start + i == target_idx,
+            max_chars,
+        ));
     }
 
     let target = &messages[target_idx];
     let summary = ShowSummary {
-        record_type: "summary",
         session_id: target.session_id.clone(),
+        shown: end - start,
+        target_line: Some(target.line_number),
+        ..show_summary(file_path)
+    };
+    print_json_line(&summary);
+    Ok(())
+}
+
+/// The last `n` messages of a JSONL session's current line: the latest
+/// branch of a Claude session, the whole stitched history of a Codex one.
+fn show_jsonl_tail(file_path: &str, n: usize, max_chars: usize) -> Result<(), String> {
+    fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
+    let messages = jsonl_history_messages(file_path, |_| {});
+    let latest_chain = crate::dag::SessionDag::from_file(
+        Path::new(file_path),
+        crate::dag::DisplayFilter::Standard,
+    )
+    .ok()
+    .and_then(|dag| {
+        let tip = dag.tip(crate::dag::TipStrategy::LastAppended)?;
+        Some(dag.chain_from(tip))
+    });
+    // Records without a DAG uuid (Codex) are a linear history: all on the line.
+    let current: Vec<&Message> = messages
+        .iter()
+        .filter(|m| match (&latest_chain, &m.uuid) {
+            (Some(chain), Some(uuid)) => chain.contains(uuid),
+            _ => true,
+        })
+        .collect();
+
+    let start = current.len().saturating_sub(n);
+    for msg in &current[start..] {
+        print_json_line(&jsonl_row(msg, file_path, false, max_chars));
+    }
+
+    let summary = ShowSummary {
+        session_id: own_session_id(file_path).unwrap_or_default(),
+        shown: current.len() - start,
+        mode: Some("tail"),
+        total_messages: Some(current.len()),
+        ..show_summary(file_path)
+    };
+    print_json_line(&summary);
+    Ok(())
+}
+
+/// The session id from the file's own records. Not from its messages: a
+/// Codex fork's history, and so its tail, may lie wholly in its parent's file.
+fn own_session_id(file_path: &str) -> Option<String> {
+    crate::session::codex_history::file_lines(Path::new(file_path))
+        .take(50)
+        .find_map(|line| {
+            let json: serde_json::Value = serde_json::from_str(&line.raw).ok()?;
+            crate::session::extract_session_id(&json)
+        })
+        .or_else(|| crate::session::extract_codex_session_id_from_path(file_path))
+}
+
+/// Summary fields that depend only on the file; callers fill in the window.
+fn show_summary(file_path: &str) -> ShowSummary {
+    ShowSummary {
+        record_type: "summary",
+        session_id: String::new(),
         file_path: file_path.to_string(),
         provider: SessionProvider::from_path(file_path)
             .display_name()
@@ -527,14 +598,53 @@ fn show_jsonl(
             .display_name()
             .to_string(),
         project: extract_project_from_path(file_path),
-        shown: end - start,
-        target_line: Some(target.line_number),
+        shown: 0,
+        target_line: None,
         target_uuid: None,
-    };
-    if let Ok(json) = serde_json::to_string(&summary) {
-        println!("{}", json);
+        mode: None,
+        total_messages: None,
     }
-    Ok(())
+}
+
+fn jsonl_row(msg: &Message, file_path: &str, is_target: bool, max_chars: usize) -> ShowMessageRow {
+    let (content, content_truncated) = truncate_chars(&msg.content, max_chars);
+    ShowMessageRow {
+        record_type: "message",
+        file_path: msg
+            .file_path
+            .clone()
+            .unwrap_or_else(|| file_path.to_string()),
+        line_number: Some(msg.line_number),
+        message_uuid: msg.uuid.clone(),
+        parent_uuid: msg.parent_uuid.clone(),
+        role: msg.role.clone(),
+        timestamp: msg.timestamp.to_rfc3339(),
+        content,
+        is_target,
+        content_truncated,
+    }
+}
+
+/// Messages of a JSONL session's history in order: for a Codex rollout,
+/// what it inherits through `history_base` first. Each message keeps its own
+/// file and line number; `on_other_line` sees every line that is not one.
+fn jsonl_history_messages(
+    file_path: &str,
+    mut on_other_line: impl FnMut(&crate::session::codex_history::HistoryLine),
+) -> Vec<Message> {
+    let mut messages = Vec::new();
+    for history_line in crate::session::codex_history::history_lines(Path::new(file_path)) {
+        let line_file = history_line.path.to_string_lossy();
+        match Message::from_jsonl_with_path(
+            &history_line.raw,
+            history_line.line_number,
+            Some(&line_file),
+        ) {
+            Some(msg) => messages.push(msg),
+            None => on_other_line(&history_line),
+        }
+    }
+    messages
 }
 
 /// Parse every message of a JSONL session and find the one `line` or `uuid`
@@ -553,29 +663,25 @@ pub(crate) fn locate_jsonl_message(
     fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
     let own_path = Path::new(file_path);
 
-    let mut messages: Vec<Message> = Vec::new();
     // If --line points at a record that isn't a message, remember what it is
     // so the error names the record type instead of a bare "not found".
     let mut anchor_line_kind: Option<String> = None;
-    let mut total_lines = 0usize;
-
-    // A Codex rollout's history starts with what it inherits through
-    // `history_base`; each message keeps its own file and line number.
-    for history_line in crate::session::codex_history::history_lines(own_path) {
-        let own = &*history_line.path == own_path;
-        let line_no = history_line.line_number;
-        if own {
-            total_lines = line_no;
+    let mut last_other_line = 0usize;
+    let messages = jsonl_history_messages(file_path, |other| {
+        if &*other.path == own_path {
+            last_other_line = other.line_number;
+            if line == Some(other.line_number) {
+                anchor_line_kind = Some(classify_non_message_line(&other.raw));
+            }
         }
-        let line_file = history_line.path.to_string_lossy();
-        if let Some(msg) =
-            Message::from_jsonl_with_path(&history_line.raw, line_no, Some(&line_file))
-        {
-            messages.push(msg);
-        } else if own && line == Some(line_no) {
-            anchor_line_kind = Some(classify_non_message_line(&history_line.raw));
-        }
-    }
+    });
+    let total_lines = messages
+        .iter()
+        .filter(|m| m.file_path.as_deref() == Some(file_path))
+        .map(|m| m.line_number)
+        .chain([last_other_line])
+        .max()
+        .unwrap_or(0);
 
     let target_idx = if let Some(n) = line {
         messages
@@ -634,8 +740,6 @@ fn show_opencode(
     context: usize,
     max_chars: usize,
 ) -> Result<(), String> {
-    use crate::session::record::{ContentMode, MessageRole, SessionRecord};
-
     let (messages, target_idx) = locate_opencode_message(db_path, session_id, uuid)?;
 
     let start = target_idx.saturating_sub(context);
@@ -645,48 +749,82 @@ fn show_opencode(
         .min(messages.len());
 
     for (i, msg) in messages[start..end].iter().enumerate() {
-        let rendered = SessionRecord::render_content(&msg.content_blocks, &ContentMode::Full);
-        let (content, content_truncated) = truncate_chars(&rendered, max_chars);
-        let role = match msg.role {
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-        };
-        let row = ShowMessageRow {
-            record_type: "message",
-            file_path: file_path.to_string(),
-            line_number: None,
-            message_uuid: Some(msg.id.clone()),
-            parent_uuid: msg.parent_id.clone(),
-            role: role.to_string(),
-            timestamp: msg.created_at.to_rfc3339(),
-            content,
-            is_target: start + i == target_idx,
-            content_truncated,
-        };
-        if let Ok(json) = serde_json::to_string(&row) {
-            println!("{}", json);
-        }
+        print_json_line(&opencode_row(
+            msg,
+            file_path,
+            start + i == target_idx,
+            max_chars,
+        ));
     }
 
     let summary = ShowSummary {
-        record_type: "summary",
         session_id: session_id.to_string(),
-        file_path: file_path.to_string(),
-        provider: SessionProvider::from_path(file_path)
-            .display_name()
-            .to_string(),
-        source: SessionSource::from_path(file_path)
-            .display_name()
-            .to_string(),
-        project: extract_project_from_path(file_path),
         shown: end - start,
-        target_line: None,
         target_uuid: Some(messages[target_idx].id.clone()),
+        ..show_summary(file_path)
     };
-    if let Ok(json) = serde_json::to_string(&summary) {
-        println!("{}", json);
-    }
+    print_json_line(&summary);
     Ok(())
+}
+
+/// The last `n` messages of an Opencode session.
+fn show_opencode_tail(
+    db_path: &Path,
+    session_id: &str,
+    file_path: &str,
+    n: usize,
+    max_chars: usize,
+) -> Result<(), String> {
+    let messages = crate::session::opencode::load_messages(db_path, session_id);
+    if messages.is_empty() {
+        return Err(format!(
+            "no messages found for session {} in {}",
+            session_id,
+            db_path.display()
+        ));
+    }
+    let start = messages.len().saturating_sub(n);
+    for msg in &messages[start..] {
+        print_json_line(&opencode_row(msg, file_path, false, max_chars));
+    }
+
+    let summary = ShowSummary {
+        session_id: session_id.to_string(),
+        shown: messages.len() - start,
+        mode: Some("tail"),
+        total_messages: Some(messages.len()),
+        ..show_summary(file_path)
+    };
+    print_json_line(&summary);
+    Ok(())
+}
+
+fn opencode_row(
+    msg: &crate::session::opencode::OpencodeMessage,
+    file_path: &str,
+    is_target: bool,
+    max_chars: usize,
+) -> ShowMessageRow {
+    use crate::session::record::{ContentMode, MessageRole, SessionRecord};
+
+    let rendered = SessionRecord::render_content(&msg.content_blocks, &ContentMode::Full);
+    let (content, content_truncated) = truncate_chars(&rendered, max_chars);
+    let role = match msg.role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+    };
+    ShowMessageRow {
+        record_type: "message",
+        file_path: file_path.to_string(),
+        line_number: None,
+        message_uuid: Some(msg.id.clone()),
+        parent_uuid: msg.parent_id.clone(),
+        role: role.to_string(),
+        timestamp: msg.created_at.to_rfc3339(),
+        content,
+        is_target,
+        content_truncated,
+    }
 }
 
 /// Name the record type on a line that didn't parse as a message, for error text.
