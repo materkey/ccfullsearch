@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.17.2 - 2026-10-27
+
+### New Features
+- `ccs show <target>` without `--line`/`--uuid` prints the last messages of a session (`--tail N`, default 10). The target can be a session id as well as a file path; `--host` forwards `--tail`.
+
+### Fixed
+- Codex sessions continued after an undo or a fork include the history they inherit: `ccs list` counts, titles, search results and `ccs show` cover the whole conversation, and a search hit opens the thread's latest file.
+- A line that is not valid UTF-8 no longer cuts off the rest of a session in the tree view and `ccs show`.
+
 ## v0.17.1 - 2026-10-22
 
 ### Fixed
