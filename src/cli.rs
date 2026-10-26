@@ -10,7 +10,6 @@ use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -351,6 +350,9 @@ fn print_json_line<T: Serialize>(value: &T) -> bool {
 struct ShowMessageRow {
     #[serde(rename = "type")]
     record_type: &'static str,
+    /// The file the message is in: for a Codex rollout, inherited history
+    /// comes from its base files.
+    file_path: String,
     line_number: Option<usize>,
     message_uuid: Option<String>,
     parent_uuid: Option<String>,
@@ -465,6 +467,10 @@ fn show_jsonl(
         let (content, content_truncated) = truncate_chars(&msg.content, max_chars);
         let row = ShowMessageRow {
             record_type: "message",
+            file_path: msg
+                .file_path
+                .clone()
+                .unwrap_or_else(|| file_path.to_string()),
             line_number: Some(msg.line_number),
             message_uuid: msg.uuid.clone(),
             parent_uuid: msg.parent_uuid.clone(),
@@ -514,9 +520,8 @@ pub(crate) fn locate_jsonl_message(
         );
     }
 
-    let file =
-        fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
-    let reader = BufReader::new(file);
+    fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
+    let own_path = Path::new(file_path);
 
     let mut messages: Vec<Message> = Vec::new();
     // If --line points at a record that isn't a message, remember what it is
@@ -524,21 +529,28 @@ pub(crate) fn locate_jsonl_message(
     let mut anchor_line_kind: Option<String> = None;
     let mut total_lines = 0usize;
 
-    for (idx, raw) in reader.lines().enumerate() {
-        let line_no = idx + 1;
-        total_lines = line_no;
-        let raw = raw.map_err(|e| format!("cannot read {}: {}", file_path, e))?;
-        if let Some(msg) = Message::from_jsonl_with_path(&raw, line_no, Some(file_path)) {
+    // A Codex rollout's history starts with what it inherits through
+    // `history_base`; each message keeps its own file and line number.
+    for history_line in crate::session::codex_history::history_lines(own_path) {
+        let own = &*history_line.path == own_path;
+        let line_no = history_line.line_number;
+        if own {
+            total_lines = line_no;
+        }
+        let line_file = history_line.path.to_string_lossy();
+        if let Some(msg) =
+            Message::from_jsonl_with_path(&history_line.raw, line_no, Some(&line_file))
+        {
             messages.push(msg);
-        } else if line == Some(line_no) {
-            anchor_line_kind = Some(classify_non_message_line(&raw));
+        } else if own && line == Some(line_no) {
+            anchor_line_kind = Some(classify_non_message_line(&history_line.raw));
         }
     }
 
     let target_idx = if let Some(n) = line {
         messages
             .iter()
-            .position(|m| m.line_number == n)
+            .position(|m| m.line_number == n && m.file_path.as_deref() == Some(file_path))
             .ok_or_else(|| match &anchor_line_kind {
                 Some(kind) => format!("line {} is not a message record ({})", n, kind),
                 None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
@@ -611,6 +623,7 @@ fn show_opencode(
         };
         let row = ShowMessageRow {
             record_type: "message",
+            file_path: file_path.to_string(),
             line_number: None,
             message_uuid: Some(msg.id.clone()),
             parent_uuid: msg.parent_id.clone(),

@@ -4,6 +4,8 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
+mod common;
+
 fn setup_session_file(fixture: &str) -> (TempDir, String) {
     let dir = TempDir::new().unwrap();
     let session_dir = dir.path().join("-test-project");
@@ -31,6 +33,91 @@ fn split_rows(stdout: &str) -> (Vec<serde_json::Value>, serde_json::Value) {
         );
     }
     (messages, summary)
+}
+
+fn show_ok(args: &[&str]) -> (Vec<serde_json::Value>, serde_json::Value) {
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(args)
+        .env("CCS_HOSTS", "")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "show should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    split_rows(&String::from_utf8(output.stdout).unwrap())
+}
+
+#[test]
+fn show_when_codex_revert_continuation_then_window_includes_base_lines() {
+    let dir = TempDir::new().unwrap();
+    let (base, cont) = common::codex::revert_pair(dir.path());
+    let cont = cont.to_str().unwrap();
+
+    let (rows, summary) = show_ok(&["show", cont, "--line", "2", "--context", "3"]);
+
+    let contents: Vec<&str> = rows
+        .iter()
+        .map(|r| r["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        contents,
+        [
+            "root question",
+            "root answer",
+            "after revert question",
+            "after revert answer"
+        ]
+    );
+    let files: Vec<&str> = rows
+        .iter()
+        .map(|r| r["file_path"].as_str().unwrap())
+        .collect();
+    let base = base.to_str().unwrap();
+    assert_eq!(files, [base, base, cont, cont]);
+    assert_eq!(summary["file_path"], cont);
+    assert_eq!(summary["session_id"], common::codex::ROOT);
+}
+
+#[test]
+fn show_when_line_exists_in_base_too_then_anchor_is_in_requested_file() {
+    let dir = TempDir::new().unwrap();
+    let (_, cont) = common::codex::revert_pair(dir.path());
+
+    let (rows, _) = show_ok(&[
+        "show",
+        cont.to_str().unwrap(),
+        "--line",
+        "3",
+        "--context",
+        "0",
+    ]);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["content"], "after revert answer");
+}
+
+#[test]
+fn show_when_codex_base_file_then_reads_it_alone() {
+    let dir = TempDir::new().unwrap();
+    let (base, _) = common::codex::revert_pair(dir.path());
+
+    let (rows, _) = show_ok(&[
+        "show",
+        base.to_str().unwrap(),
+        "--line",
+        "4",
+        "--context",
+        "1",
+    ]);
+
+    let contents: Vec<&str> = rows
+        .iter()
+        .map(|r| r["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, ["root answer", "discarded by revert"]);
 }
 
 #[test]
