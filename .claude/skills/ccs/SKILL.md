@@ -56,16 +56,12 @@ Empty output (exit 1) means user cancelled.
 
 If output is non-empty, parse the key-value pairs. Use AskUserQuestion to offer the user a choice:
 
-**Option 1: "Read here"** — read the session JSONL file in the current conversation context:
+**Option 1: "Read here"** — read the session in the current conversation context through `ccs show`, not by parsing the JSONL yourself (a Codex session may continue an earlier file, and `ccs show` stitches that history in):
 ```bash
-# Read the session file and summarize the conversation
+ccs show <file_path> --tail 40 [--host <host>]                          # how the session ended
+ccs show <file_path> --uuid <message_uuid> --context 20 [--host <host>]  # around the picked message
 ```
-Use the Read tool on `file_path` from the picker output. Parse the JSONL and present a summary of the conversation (participants, topics, key decisions). The user can then ask follow-up questions about the session content without leaving the current conversation.
-
-If `host` is not `local`, the file is on another machine and the Read tool cannot open it. Read it through that host instead:
-```bash
-ccs show <file_path> --host <host> --uuid <message_uuid> --context 20
-```
+Present a summary of the conversation (participants, topics, key decisions). The user can then ask follow-up questions about the session content without leaving the current conversation. Pass `--host` when `host` is not `local`: the file is on that machine.
 
 **Option 2: "Enter session (overlay)"** — resume the session in a terminal overlay:
 ```bash
@@ -131,7 +127,19 @@ ccs show <file_path> --uuid <message_uuid>
 
 Output is JSONL: `{"type":"message",...}` rows in file order (the target carries `is_target: true`, truncated rows carry `content_truncated: true`), then a final `{"type":"summary",...}` with `session_id`, `provider`, `project`. Defaults: 3 messages before/after, 2000 chars per message — a few KB total.
 
+Every row carries the `file_path` it comes from. A Codex thread that was reverted or forked continues an earlier rollout file; its history includes that file's prefix, and rows whose `file_path` differs from the summary's are that inherited part.
+
 Note: near a fork of a branched session the window can mix branches; `parent_uuid` on each row shows the actual chain.
+
+#### Where a session stopped
+
+Without `--line`/`--uuid`, `ccs show` prints the end of the session: the last `--tail` messages (default 10) of its current line. The target can be a session id instead of a path:
+
+```bash
+ccs show <session_id> --tail 10 [--host <host>]
+```
+
+For a Codex thread the id resolves to its newest rollout file; for a branched Claude session the tail follows the latest branch. The summary has `"mode": "tail"` and `total_messages`. A host running an older ccs rejects `--tail`; say that ccs needs updating there.
 
 #### Step 3 — answer
 
@@ -141,7 +149,7 @@ Cite `project` and `timestamp` from the match. Say if the result set was truncat
 
 - `shown: 0` — try 2-3 query variants: a shorter phrase, a synonym, or `--regex` for patterns like `"OOM|OutOfMemory"`.
 - `truncated: true` — narrow the query (more specific phrase) before raising `--limit`.
-- Window too small — raise `--context` / `--max-chars`, or use the Read tool on `file_path` with `offset` near `line_number`.
+- Window too small — raise `--context` / `--tail` / `--max-chars`.
 - `--full-content` on search is a last resort: tool outputs can make single results hundreds of KB.
 
 #### List all sessions
@@ -177,6 +185,14 @@ ccs search "configuration cache" --limit 20
 # pick the most relevant match, then:
 ccs show /path/to/session.jsonl --line 381 --context 3
 ```
+
+### Answer "where did session X stop?"
+
+```bash
+ccs show 01a178da-2e05-7720-b6ba-6b4edd17fc27 --tail 10
+```
+
+No search needed when the user gives the session id. Raise `--tail` to see more of the ending.
 
 ### Resume a found session
 

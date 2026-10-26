@@ -303,16 +303,16 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/session/mod.rs` (подключить модуль)
 - Create: тестовый хелпер фикстур (место — см. Testing Strategy)
 
-- [ ] тестовый хелпер: пишет root-сессию, revert-продолжение (`<thread>_<rollout>`), форк и форк от форка, считает `end_byte_offset`
-- [ ] тесты `RolloutName::parse`: обычное имя, имя с `_<rollout>`, `.jsonl` не Codex, мусор
-- [ ] тесты `resolve_segments`: нет `history_base` → один сегмент; revert → 2 сегмента; цепочка из 3 форков → 4 сегмента от корня; базовый файл в `archived_sessions`
-- [ ] тесты на отказ: базового файла нет, файл короче `end_byte_offset`, цикл ссылок → история без ошибки, обрезана до собранного
-- [ ] тесты `history_lines`: строки базового файла после `end_byte` не попадают; `line_number` физический в своём файле; не-Codex файл = его строки
-- [ ] тест `RolloutIndex::current_rollout_for_thread`: из двух файлов треда выбирается более новый по времени в имени; два revert за одну секунду → больший rollout id; файл со старым именем и свежим mtime не выбирается; треда нет в индексе → None
-- [ ] тест `codex_home`: путь под `sessions` и под `archived_sessions` → общий корень; путь без этих компонентов → None
-- [ ] тест: индекс, построенный после появления нового revert-файла того же треда в том же процессе, возвращает новый файл (глобального кеша нет)
-- [ ] реализовать `RolloutName`, `codex_home`, `RolloutIndex`, `resolve_segments`, `history_lines`
-- [ ] run tests - must pass before next task
+- [x] тестовый хелпер: пишет root-сессию, revert-продолжение (`<thread>_<rollout>`), форк и форк от форка, считает `end_byte_offset`
+- [x] тесты `RolloutName::parse`: обычное имя, имя с `_<rollout>`, `.jsonl` не Codex, мусор
+- [x] тесты `resolve_segments`: нет `history_base` → один сегмент; revert → 2 сегмента; цепочка из 3 форков → 4 сегмента от корня; базовый файл в `archived_sessions`
+- [x] тесты на отказ: базового файла нет, файл короче `end_byte_offset`, цикл ссылок → история без ошибки, обрезана до собранного
+- [x] тесты `history_lines`: строки базового файла после `end_byte` не попадают; `line_number` физический в своём файле; не-Codex файл = его строки
+- [x] тест `RolloutIndex::current_rollout_for_thread`: из двух файлов треда выбирается более новый по времени в имени; два revert за одну секунду → больший rollout id; файл со старым именем и свежим mtime не выбирается; треда нет в индексе → None
+- [x] тест `codex_home`: путь под `sessions` и под `archived_sessions` → общий корень; путь без этих компонентов → None
+- [x] тест: индекс, построенный после появления нового revert-файла того же треда в том же процессе, возвращает новый файл (глобального кеша нет)
+- [x] реализовать `RolloutName`, `codex_home`, `RolloutIndex`, `resolve_segments`, `history_lines`
+- [x] run tests - must pass before next task
 
 ### Task 2: Идентичность Codex-сессии в поиске и resume
 
@@ -322,15 +322,15 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/search/group.rs` (`group_by_session`)
 - Modify: `tests/cli_search.rs`
 
-- [ ] тест: `extract_codex_session_id_from_path` для `…-<thread>_<rollout>.jsonl` возвращает `<thread>`
-- [ ] тест `MatchProcessor`: хит в базовом файле revert получает `session_file` = продолжение; путь без `codex_home` → `session_file` = свой файл
-- [ ] тест `group_by_session` (без файлов на диске): хиты одного `session_id` → одна группа, `file_path` группы = `session_file`; хиты без `session_file` → `file_path` первого хита, как раньше
-- [ ] тест CLI: хит только в базовом файле → `file_path` группы всё равно продолжение (resume и превью открывают текущий файл)
-- [ ] тест: `file_path` и `line_number` отдельных хитов остаются физическими
-- [ ] тест `find_session_file_in_paths`: thread id с базовым файлом и продолжением → продолжение
-- [ ] тест `find_codex_rollout_near`: у родителя сабагента есть revert → продолжение; существующие тесты `find_codex_rollout_near` зелёные
-- [ ] реализовать: `RolloutName` в `extract_codex_session_id_from_path`; `session_file` в `MatchProcessor` (один `RolloutIndex` на `codex_home` за поиск, кеш по файлу хита); Codex-ветки `find_session_file_in_paths` и `find_codex_rollout_near` через `codex_history`. Аргумент `codex resume` становится thread id без отдельной правки
-- [ ] run tests - must pass before next task
+- [x] тест: `extract_codex_session_id_from_path` для `…-<thread>_<rollout>.jsonl` возвращает `<thread>`
+- [x] тест `MatchProcessor`: хит в базовом файле revert получает `session_file` = продолжение; путь без `codex_home` → `session_file` = свой файл
+- [x] тест `group_by_session` (без файлов на диске): хиты одного `session_id` → одна группа, `file_path` группы = `session_file`; хиты без `session_file` → `file_path` первого хита, как раньше
+- [x] тест CLI: хит только в базовом файле → `file_path` группы всё равно продолжение (resume и превью открывают текущий файл)
+- [x] тест: `file_path` и `line_number` отдельных хитов остаются физическими
+- [x] тест `find_session_file_in_paths`: thread id с базовым файлом и продолжением → продолжение
+- [x] тест `find_codex_rollout_near`: у родителя сабагента есть revert → продолжение; существующие тесты `find_codex_rollout_near` зелёные
+- [x] реализовать: `RolloutName` в `extract_codex_session_id_from_path`; `session_file` в `MatchProcessor` (один `RolloutIndex` на `codex_home` за поиск, кеш по файлу хита); Codex-ветки `find_session_file_in_paths` и `find_codex_rollout_near` через `codex_history`. Аргумент `codex resume` становится thread id без отдельной правки
+- [x] run tests - must pass before next task
 
 ### Task 3: Подсчёт сообщений и `ccs list` по полной истории
 
@@ -339,23 +339,23 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/cli.rs` (`extract_session_metadata`)
 - Modify: `tests/cli_list.rs`
 
-- [ ] тест: `count_session_messages` для revert-продолжения = сообщения префикса + свои; хвост базового файла после `end_byte` не считается
-- [ ] тест: для форка от форка счёт включает обе унаследованные части
-- [ ] тест `ccs list`: revert-пара даёт одну строку с полным счётом и `file_path` продолжения; у форка `session_id` свой, а не корня
-- [ ] тест: Claude-сессии и Codex без `history_base` — счёт как раньше
-- [ ] перевести оба читателя на `history_lines`; `session_id` брать из `session_meta` своего файла
-- [ ] run tests - must pass before next task
+- [x] тест: `count_session_messages` для revert-продолжения = сообщения префикса + свои; хвост базового файла после `end_byte` не считается
+- [x] тест: для форка от форка счёт включает обе унаследованные части
+- [x] тест `ccs list`: revert-пара даёт одну строку с полным счётом и `file_path` продолжения; у форка `session_id` свой, а не корня
+- [x] тест: Claude-сессии и Codex без `history_base` — счёт как раньше
+- [x] перевести оба читателя на `history_lines`; `session_id` брать из `session_meta` своего файла
+- [x] run tests - must pass before next task
 
 ### Task 4: Недавние сессии: заголовок свой, счёт полный
 
 **Files:**
 - Modify: `src/recent.rs` (`resolve_summary` и сканер начала файла)
 
-- [ ] тест: у форка заголовок — первый промпт самого форка, `message_count` — по полной истории
-- [ ] тест: revert-пара в недавних — одна строка, путь продолжения
-- [ ] тест: продолжение и форк без своего промпта не пропадают из недавних, заголовок — первый промпт полной истории
-- [ ] реализовать запасной заголовок: если у файла нет своего промпта, взять первый промпт из `history_lines` (без проверки на Codex: у файла без `history_base` история = сам файл)
-- [ ] run tests - must pass before next task
+- [x] тест: у форка заголовок — первый промпт самого форка, `message_count` — по полной истории
+- [x] тест: revert-пара в недавних — одна строка, путь продолжения
+- [x] тест: продолжение и форк без своего промпта не пропадают из недавних, заголовок — первый промпт полной истории
+- [x] реализовать запасной заголовок: если у файла нет своего промпта, взять первый промпт из `history_lines` (без проверки на Codex: у файла без `history_base` история = сам файл)
+- [x] run tests - must pass before next task
 
 ### Task 5: `ccs show` по полной истории
 
@@ -363,11 +363,11 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/cli.rs` (`locate_jsonl_message`, вывод строк)
 - Modify: `tests/cli_show.rs`
 
-- [ ] тест: `ccs show <продолжение> --line <первая своя строка> --context 3` показывает и строки из базового файла, у них `file_path` базового файла
-- [ ] тест: `--line` ищется только среди строк запрошенного файла (номер строки базового файла не совпадает случайно)
-- [ ] тест: `ccs show <базовый файл> --line N` работает как раньше
-- [ ] перевести `locate_jsonl_message` на `history_lines`, добавить `file_path` в каждую строку вывода
-- [ ] run tests - must pass before next task
+- [x] тест: `ccs show <продолжение> --line <первая своя строка> --context 3` показывает и строки из базового файла, у них `file_path` базового файла
+- [x] тест: `--line` ищется только среди строк запрошенного файла (номер строки базового файла не совпадает случайно)
+- [x] тест: `ccs show <базовый файл> --line N` работает как раньше
+- [x] перевести `locate_jsonl_message` на `history_lines`, добавить `file_path` в каждую строку вывода
+- [x] run tests - must pass before next task
 
 ### Task 6: Цель `ccs show` по `session_id`
 
@@ -376,10 +376,10 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/cli.rs` (`resolve_show_target`)
 - Modify: `tests/cli_show.rs`
 
-- [ ] тесты `resolve_show_target`: путь как есть; Claude id; Desktop id → `audit.jsonl`; Codex thread id → текущий rollout, а не базовый файл; Opencode id; не найдено → ошибка с id
-- [ ] тест CLI: `ccs show <codex thread id> --line N` находит файл продолжения
-- [ ] реализовать `resolve_show_target` поверх `session::find_session_file_in_paths` (текущий rollout он уже возвращает после Task 2)
-- [ ] run tests - must pass before next task
+- [x] тесты `resolve_show_target`: путь как есть; Claude id; Desktop id → `audit.jsonl`; Codex thread id → текущий rollout, а не базовый файл; Opencode id; не найдено → ошибка с id
+- [x] тест CLI: `ccs show <codex thread id> --line N` находит файл продолжения
+- [x] реализовать `resolve_show_target` поверх `session::find_session_file_in_paths` (текущий rollout он уже возвращает после Task 2)
+- [x] run tests - must pass before next task
 
 ### Task 7: `ccs show --tail N`
 
@@ -388,15 +388,15 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/cli.rs`
 - Modify: `tests/cli_show.rs`
 
-- [ ] тест: без якоря выводятся последние 10 сообщений, summary с `mode: "tail"` и `total_messages`
-- [ ] тест: Claude-сессия с ветками — хвост последней цепочки, сообщения отброшенной ветки не попадают
-- [ ] тест: Codex revert-продолжение с 2 своими сообщениями и `--tail 5` — 3 сообщения берутся из базового файла
-- [ ] тест: форк без своих сообщений, `--tail` → в summary `session_id` = thread id форка и `file_path` = файл форка, хотя все сообщения хвоста из файла родителя
-- [ ] тест: Opencode `--tail`
-- [ ] тест: `--tail` вместе с `--line`/`--uuid`/`--context` — ошибка clap
-- [ ] заменить тест `show_requires_line_or_uuid` (`tests/cli_show.rs`): без якоря теперь режим tail
-- [ ] убрать ошибку `pass --line or --uuid` и реализовать tail; `session_id` и `file_path` summary — от файла цели
-- [ ] run tests - must pass before next task
+- [x] тест: без якоря выводятся последние 10 сообщений, summary с `mode: "tail"` и `total_messages`
+- [x] тест: Claude-сессия с ветками — хвост последней цепочки, сообщения отброшенной ветки не попадают
+- [x] тест: Codex revert-продолжение с 2 своими сообщениями и `--tail 5` — 3 сообщения берутся из базового файла
+- [x] тест: форк без своих сообщений, `--tail` → в summary `session_id` = thread id форка и `file_path` = файл форка, хотя все сообщения хвоста из файла родителя
+- [x] тест: Opencode `--tail`
+- [x] тест: `--tail` вместе с `--line`/`--uuid`/`--context` — ошибка clap
+- [x] заменить тест `show_requires_line_or_uuid` (`tests/cli_show.rs`): без якоря теперь режим tail
+- [x] убрать ошибку `pass --line or --uuid` и реализовать tail; `session_id` и `file_path` summary — от файла цели
+- [x] run tests - must pass before next task
 
 ### Task 8: Remote: `ccs show --tail --host`
 
@@ -404,25 +404,25 @@ ccs show <TARGET> [--line N | --uuid U | --tail N] [--context K] [--max-chars M]
 - Modify: `src/cli.rs` (`show_remote`)
 - Modify: тест удалённого `show` с `CCS_SSH=tests/fixtures/fake-ssh.sh` (в том файле `tests/`, где уже проверяется `show --host`)
 
-- [ ] тест: `ccs show <id> --tail 3 --host <h>` вызывает на хосте `ccs show <id> --tail 3 --max-chars …` без `--context`; сравнивается весь argv, не префикс
-- [ ] тест: `ccs show <id> --host <h>` без якоря передаёт `--tail 10` явно (иначе удалённый ccs ответит `pass --line or --uuid`)
-- [ ] тест: `ccs show <file> --line N --host <h>` передаёт `--line N --context K` как раньше, без `--tail`; весь argv
-- [ ] реализовать передачу флагов по режиму; `remote/wire.rs`, `remote/server.rs`, `remote/serve.rs` не трогать
-- [ ] run tests - must pass before next task
+- [x] тест: `ccs show <id> --tail 3 --host <h>` вызывает на хосте `ccs show <id> --tail 3 --max-chars …` без `--context`; сравнивается весь argv, не префикс
+- [x] тест: `ccs show <id> --host <h>` без якоря передаёт `--tail 10` явно (иначе удалённый ccs ответит `pass --line or --uuid`)
+- [x] тест: `ccs show <file> --line N --host <h>` передаёт `--line N --context K` как раньше, без `--tail`; весь argv
+- [x] реализовать передачу флагов по режиму; `remote/wire.rs`, `remote/server.rs`, `remote/serve.rs` не трогать
+- [x] run tests - must pass before next task
 
 ### Task 9: Verify acceptance criteria
 
-- [ ] на копии реальной пары `01a178da…` (во временном корне): `ccs list` — одна строка с полным счётом; `ccs search` — одна группа; `ccs show 01a178da-2e05-7720-b6ba-6b4edd17fc27 --tail 10` — конец сессии
-- [ ] на копии цепочки форков: счёт у каждого форка включает предков, заголовки разные
-- [ ] Claude, Desktop, Opencode: вывод `list`/`show` не изменился (существующие тесты зелёные)
-- [ ] run full test suite: `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+- [x] на копии реальной пары `01a178da…` (во временном корне): `ccs list` — одна строка с полным счётом; `ccs search` — одна группа; `ccs show 01a178da-2e05-7720-b6ba-6b4edd17fc27 --tail 10` — конец сессии
+- [x] на копии цепочки форков: счёт у каждого форка включает предков, заголовки разные
+- [x] Claude, Desktop, Opencode: вывод `list`/`show` не изменился (существующие тесты зелёные)
+- [x] run full test suite: `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 
 ### Task 10: [Final] Update documentation
 
-- [ ] `.claude/skills/ccs/SKILL.md` и `.agents/skills/ccs/SKILL.md`: сценарий «на чём остановилась сессия» — `ccs show <session_id> --tail 10`; `show` принимает `session_id`; строки с чужим `file_path` — унаследованная история; убрать совет читать JSONL через Read там, где теперь хватает `show`
-- [ ] README: `ccs show --tail`, цель по `session_id`
-- [ ] CLAUDE.md: `session/codex_history.rs` в Architecture, абзац в Key data flow про сегменты истории Codex
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `.claude/skills/ccs/SKILL.md` и `.agents/skills/ccs/SKILL.md`: сценарий «на чём остановилась сессия» — `ccs show <session_id> --tail 10`; `show` принимает `session_id`; строки с чужим `file_path` — унаследованная история; убрать совет читать JSONL через Read там, где теперь хватает `show`
+- [x] README: `ccs show --tail`, цель по `session_id`
+- [x] CLAUDE.md: `session/codex_history.rs` в Architecture, абзац в Key data flow про сегменты истории Codex
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

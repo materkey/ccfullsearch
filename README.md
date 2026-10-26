@@ -266,7 +266,15 @@ ccs show /path/to/session.jsonl --line 381 --context 3 --max-chars 2000
 ccs show "/path/to/opencode.db#ses_abc" --uuid msg_123
 ```
 
-Output is JSONL: `{"type":"message",...}` rows in file order, then a final `{"type":"summary",...}`. Message fields: `line_number`, `message_uuid`, `parent_uuid`, `role`, `timestamp`, `content`, plus `is_target: true` on the anchor row and `content_truncated: true` when `--max-chars` (default 2000) cut the content. `--context` (default 3) counts messages on each side; interleaved non-message records do not shrink the window. Near a fork of a branched session the window follows file order, not the chain — use `parent_uuid` to see the actual structure.
+Without `--line` and `--uuid` it prints the end of the session: the last `--tail` messages (default 10) of its current line — the latest branch of a Claude session. The target can also be a session id instead of a path; for a Codex thread that is its current rollout file:
+
+```bash
+ccs show 01a178da-2e05-7720-b6ba-6b4edd17fc27 --tail 10
+```
+
+Output is JSONL: `{"type":"message",...}` rows in file order, then a final `{"type":"summary",...}`. Message fields: `file_path`, `line_number`, `message_uuid`, `parent_uuid`, `role`, `timestamp`, `content`, plus `is_target: true` on the anchor row and `content_truncated: true` when `--max-chars` (default 2000) cut the content. `--context` (default 3) counts messages on each side; interleaved non-message records do not shrink the window. Near a fork of a branched session the window follows file order, not the chain — use `parent_uuid` to see the actual structure. In tail mode the summary has `"mode": "tail"` and `total_messages`.
+
+Codex keeps a reverted or forked thread in a new rollout file that points at a prefix of an earlier one (`session_meta.history_base`) instead of copying it. `ccs` reads such a session as that prefix plus the file's own records: `list`, message counts, `show` and `--tail` cover the whole history, and a `show` row whose `file_path` differs from the summary's comes from the inherited part. A reverted thread shows up once, as its newest rollout.
 
 `ccs list` writes JSONL, one object per recent session.
 
