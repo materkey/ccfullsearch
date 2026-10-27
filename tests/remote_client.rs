@@ -2,7 +2,7 @@ use ccs::remote::client::{
     ClientEvent, ClientTimeouts, HostClient, HostLink, HostState, Reply, Request,
 };
 use ccs::remote::config::HostConfig;
-use ccs::remote::wire::{SearchParams, ShowParams};
+use ccs::remote::wire::{SearchParams, ShowParams, TreeParams};
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
@@ -225,4 +225,64 @@ fn client_when_cancelled_then_late_reply_dropped() {
     c.cancel(id);
     let events = poll_until(&mut c, Duration::from_millis(800), |_, _| false);
     assert!(reply_for(&events, id).is_none());
+}
+
+fn linear_session() -> String {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/linear_session.jsonl"
+    )
+    .to_string()
+}
+
+#[test]
+fn client_when_show_and_tree_sent_then_each_reply_has_its_kind() {
+    let mut c = client(env!("CARGO_BIN_EXE_ccs"), fast());
+    ready(&mut c);
+    let show = c
+        .send(Request::Show(ShowParams {
+            file_path: linear_session(),
+            line: Some(1),
+            uuid: None,
+        }))
+        .unwrap();
+    let tree = c
+        .send(Request::Tree(TreeParams {
+            file_path: linear_session(),
+        }))
+        .unwrap();
+    let events = poll_until(&mut c, Duration::from_secs(5), |_, ev| {
+        reply_for(ev, show).is_some() && reply_for(ev, tree).is_some()
+    });
+    match reply_for(&events, show) {
+        Some(Ok(Reply::Show(shown))) => assert!(shown.text_content.contains("sort a list")),
+        other => panic!("unexpected show reply {other:?}"),
+    }
+    match reply_for(&events, tree) {
+        Some(Ok(Reply::Tree(found))) => assert_eq!(found.session_id, "sess-linear-001"),
+        other => panic!("unexpected tree reply {other:?}"),
+    }
+}
+
+#[test]
+fn client_when_reply_has_wrong_shape_then_bad_reply_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = script(
+        &dir,
+        r#"echo '{"type":"hello","protocol":1,"ccs_version":"x"}'; read a; echo '{"id":1,"result":{"rows":7}}'; sleep 2"#,
+    );
+    let mut c = client(&path, fast());
+    ready(&mut c);
+    let id = c
+        .send(Request::Tree(TreeParams {
+            file_path: "/f".into(),
+        }))
+        .unwrap();
+    let events = poll_until(&mut c, Duration::from_secs(3), |_, ev| {
+        reply_for(ev, id).is_some()
+    });
+    match reply_for(&events, id) {
+        Some(Err(e)) => assert!(e.starts_with("bad reply: "), "{e}"),
+        other => panic!("unexpected reply {other:?}"),
+    }
 }
