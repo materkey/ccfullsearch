@@ -5,9 +5,9 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -345,15 +345,7 @@ fn spawn_with_timeout(
     let stderr_text = Arc::new(Mutex::new(String::new()));
     let stderr_thread = {
         let stderr_text = Arc::clone(&stderr_text);
-        thread::spawn(move || {
-            if let Some(mut stderr) = stderr {
-                let mut buf = String::new();
-                let _ = stderr.read_to_string(&mut buf);
-                if let Ok(mut text) = stderr_text.lock() {
-                    *text = buf;
-                }
-            }
-        })
+        thread::spawn(move || drain_stderr(stderr, &stderr_text))
     };
 
     // The agent is silent for many seconds between lines, so cancel and
@@ -365,22 +357,7 @@ fn spawn_with_timeout(
         let cancel = Arc::clone(&cancel);
         let reader_done = Arc::clone(&reader_done);
         let timed_out = Arc::clone(&timed_out);
-        thread::spawn(move || {
-            let started = Instant::now();
-            while !reader_done.load(Ordering::SeqCst) {
-                let expired = started.elapsed() > timeout;
-                if expired {
-                    timed_out.store(true, Ordering::SeqCst);
-                }
-                if expired || cancel.load(Ordering::SeqCst) {
-                    if let Ok(mut child) = child.lock() {
-                        let _ = child.kill();
-                    }
-                    return;
-                }
-                thread::sleep(WATCHDOG_TICK);
-            }
-        });
+        thread::spawn(move || watchdog(&child, &cancel, &reader_done, &timed_out, timeout));
     }
 
     {
@@ -388,57 +365,13 @@ fn spawn_with_timeout(
         let child = Arc::clone(&child);
         thread::spawn(move || {
             let _done = SetOnDrop(reader_done);
-            let mut queries: Vec<String> = Vec::new();
-            let mut last_lines: VecDeque<String> = VecDeque::new();
-            let mut outcome: Option<Result<String, String>> = None;
-
-            if let Some(stdout) = stdout {
-                for line in BufReader::new(stdout).lines() {
-                    let Ok(line) = line else { break };
-                    match parse_stream_line(&line) {
-                        Some(StreamEvent::Searches(found)) => {
-                            let before = queries.len();
-                            for query in found {
-                                if !queries.contains(&query) {
-                                    queries.push(query);
-                                }
-                            }
-                            if queries.len() > before && !cancel.load(Ordering::SeqCst) {
-                                let _ = tx.send(AgentEvent::Progress(queries.clone()));
-                            }
-                        }
-                        Some(StreamEvent::Final(result)) => outcome = Some(result),
-                        None => {}
-                    }
-                    if last_lines.len() == LAST_LINES {
-                        last_lines.pop_front();
-                    }
-                    last_lines.push_back(line);
-                }
-            }
-
+            let stream = read_stream(stdout, &cancel, &tx);
             let status = wait_for_exit(&child);
             if cancel.load(Ordering::SeqCst) {
                 return;
             }
-            let done = finish(outcome, timed_out.load(Ordering::SeqCst), || {
-                // Give the drain a moment: a grandchild may still hold stderr.
-                let deadline = Instant::now() + STDERR_GRACE;
-                while !stderr_thread.is_finished() && Instant::now() < deadline {
-                    thread::sleep(WAIT_POLL);
-                }
-                let stderr = stderr_text
-                    .lock()
-                    .map(|text| text.trim().to_string())
-                    .unwrap_or_default();
-                let status = status
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "unknown status".to_string());
-                let last: Vec<String> = last_lines.into_iter().collect();
-                format!(
-                    "claude exited with {status}: {stderr}; last output: {}",
-                    last.join(" | ")
-                )
+            let done = finish(stream.outcome, timed_out.load(Ordering::SeqCst), || {
+                exit_report(status, &stderr_thread, &stderr_text, stream.last_lines)
             });
             let _ = tx.send(AgentEvent::Done(done));
         });
@@ -449,6 +382,121 @@ fn spawn_with_timeout(
         cancel,
         child: Some(child),
     }
+}
+
+fn drain_stderr(stderr: Option<ChildStderr>, into: &Mutex<String>) {
+    if let Some(mut stderr) = stderr {
+        let mut buf = String::new();
+        let _ = stderr.read_to_string(&mut buf);
+        if let Ok(mut text) = into.lock() {
+            *text = buf;
+        }
+    }
+}
+
+/// Kill the child on cancel or once `timeout` passes; stop when the reader
+/// is done.
+fn watchdog(
+    child: &Mutex<Child>,
+    cancel: &AtomicBool,
+    reader_done: &AtomicBool,
+    timed_out: &AtomicBool,
+    timeout: Duration,
+) {
+    let started = Instant::now();
+    while !reader_done.load(Ordering::SeqCst) {
+        let expired = started.elapsed() > timeout;
+        if expired {
+            timed_out.store(true, Ordering::SeqCst);
+        }
+        if expired || cancel.load(Ordering::SeqCst) {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+            return;
+        }
+        thread::sleep(WATCHDOG_TICK);
+    }
+}
+
+/// What the reader kept from the agent's stdout.
+struct StreamRead {
+    outcome: Option<Result<String, String>>,
+    /// The last [`LAST_LINES`] lines, for an agent that ends without a result.
+    last_lines: VecDeque<String>,
+}
+
+/// Read stream-json lines to EOF, reporting each new search query as progress.
+fn read_stream(
+    stdout: Option<ChildStdout>,
+    cancel: &AtomicBool,
+    tx: &Sender<AgentEvent>,
+) -> StreamRead {
+    let mut queries: Vec<String> = Vec::new();
+    let mut read = StreamRead {
+        outcome: None,
+        last_lines: VecDeque::new(),
+    };
+    let Some(stdout) = stdout else {
+        return read;
+    };
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        match parse_stream_line(&line) {
+            Some(StreamEvent::Searches(found)) => record_searches(&mut queries, found, cancel, tx),
+            Some(StreamEvent::Final(result)) => read.outcome = Some(result),
+            None => {}
+        }
+        if read.last_lines.len() == LAST_LINES {
+            read.last_lines.pop_front();
+        }
+        read.last_lines.push_back(line);
+    }
+    read
+}
+
+/// Add the queries not seen yet; when any was new, send the whole list.
+fn record_searches(
+    queries: &mut Vec<String>,
+    found: Vec<String>,
+    cancel: &AtomicBool,
+    tx: &Sender<AgentEvent>,
+) {
+    let before = queries.len();
+    for query in found {
+        if !queries.contains(&query) {
+            queries.push(query);
+        }
+    }
+    if queries.len() > before && !cancel.load(Ordering::SeqCst) {
+        let _ = tx.send(AgentEvent::Progress(queries.clone()));
+    }
+}
+
+/// Why the agent ended without a result: exit status, stderr, last stdout lines.
+fn exit_report(
+    status: Option<ExitStatus>,
+    stderr_thread: &thread::JoinHandle<()>,
+    stderr_text: &Mutex<String>,
+    last_lines: VecDeque<String>,
+) -> String {
+    // Give the drain a moment: a grandchild may still hold stderr.
+    let deadline = Instant::now() + STDERR_GRACE;
+    while !stderr_thread.is_finished() && Instant::now() < deadline {
+        thread::sleep(WAIT_POLL);
+    }
+    let stderr = stderr_text
+        .lock()
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default();
+    let status = status
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unknown status".to_string());
+    let last: Vec<String> = last_lines.into_iter().collect();
+    format!(
+        "claude exited with {status}: {stderr}; last output: {}",
+        last.join(" | ")
+    )
 }
 
 /// The agent's final answer. A received `result` wins over a timeout that
