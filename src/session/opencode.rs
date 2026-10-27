@@ -283,28 +283,31 @@ pub fn list_sessions_for_recent(db_path: &Path, limit: usize) -> Vec<OpencodeSes
         "list_sessions_for_recent",
         SQL_LIST_RECENT,
         [limit_i64],
-        |row| {
-            let id: String = row.get("id")?;
-            let project_id: String = row.get("project_id")?;
-            let project_name: Option<String> = row.get("project_name")?;
-            let worktree: Option<String> = row.get("worktree")?;
-            let title: String = row.get("title")?;
-            let directory: Option<String> = row.get("directory")?;
-            let time_updated: i64 = row.get("time_updated")?;
-            let msg_count: i64 = row.get("msg_count")?;
-            let session_file = PathBuf::from(synthetic_session_path(db_path, &id));
-            Ok(OpencodeSessionSummary {
-                id,
-                project_id,
-                project_label: derive_project_label(project_name, worktree),
-                title,
-                directory: directory.filter(|s| !s.is_empty()),
-                updated_at: millis_to_datetime(time_updated).unwrap_or_else(Utc::now),
-                message_count: msg_count.max(0) as usize,
-                session_file,
-            })
-        },
+        |row| summary_from_row(db_path, row),
     )
+}
+
+/// One `SQL_LIST_RECENT` row as a summary.
+fn summary_from_row(db_path: &Path, row: &Row<'_>) -> rusqlite::Result<OpencodeSessionSummary> {
+    let id: String = row.get("id")?;
+    let project_id: String = row.get("project_id")?;
+    let project_name: Option<String> = row.get("project_name")?;
+    let worktree: Option<String> = row.get("worktree")?;
+    let title: String = row.get("title")?;
+    let directory: Option<String> = row.get("directory")?;
+    let time_updated: i64 = row.get("time_updated")?;
+    let msg_count: i64 = row.get("msg_count")?;
+    let session_file = PathBuf::from(synthetic_session_path(db_path, &id));
+    Ok(OpencodeSessionSummary {
+        id,
+        project_id,
+        project_label: derive_project_label(project_name, worktree),
+        title,
+        directory: directory.filter(|s| !s.is_empty()),
+        updated_at: millis_to_datetime(time_updated).unwrap_or_else(Utc::now),
+        message_count: msg_count.max(0) as usize,
+        session_file,
+    })
 }
 
 /// Run `sql` and map each row. A failed prepare or query gives no rows and a
