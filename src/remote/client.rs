@@ -425,13 +425,16 @@ fn encode(req: Request) -> (Kind, &'static str, serde_json::Value) {
 }
 
 fn decode(kind: Kind, value: serde_json::Value) -> Result<Reply, String> {
-    let bad = |e: serde_json::Error| format!("bad reply: {e}");
-    Ok(match kind {
-        Kind::Search => Reply::Search(serde_json::from_value(value).map_err(bad)?),
-        Kind::Recent => Reply::Recent(serde_json::from_value(value).map_err(bad)?),
-        Kind::Show => Reply::Show(serde_json::from_value(value).map_err(bad)?),
-        Kind::Tree => Reply::Tree(serde_json::from_value(value).map_err(bad)?),
-    })
+    match kind {
+        Kind::Search => parse_reply(value).map(Reply::Search),
+        Kind::Recent => parse_reply(value).map(Reply::Recent),
+        Kind::Show => parse_reply(value).map(Reply::Show),
+        Kind::Tree => parse_reply(value).map(Reply::Tree),
+    }
+}
+
+fn parse_reply<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|e| format!("bad reply: {e}"))
 }
 
 /// ssh exited before the server said hello: 255 is ssh itself (no route,
