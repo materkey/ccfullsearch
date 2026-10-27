@@ -525,25 +525,21 @@ fn push_blocks_from_part(json: &Value, blocks: &mut Vec<ContentBlock>) {
         return;
     };
     match part_type {
-        "text" => {
-            if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
-                if !text.trim().is_empty() {
-                    blocks.push(ContentBlock::Text(text.to_string()));
-                }
-            }
-        }
-        "reasoning" => {
-            if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
-                if !text.trim().is_empty() {
-                    blocks.push(ContentBlock::Thinking(text.to_string()));
-                }
-            }
-        }
+        "text" => blocks.extend(visible_text(json).map(ContentBlock::Text)),
+        "reasoning" => blocks.extend(visible_text(json).map(ContentBlock::Thinking)),
         "tool" => push_tool_blocks(json, blocks),
         // step-start / step-finish / patch / snapshot are structural,
         // not user-visible content.
         _ => {}
     }
+}
+
+/// The part's `text`, unless it is missing or only whitespace.
+fn visible_text(json: &Value) -> Option<String> {
+    json.get("text")
+        .and_then(|v| v.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn push_tool_blocks(json: &Value, blocks: &mut Vec<ContentBlock>) {
