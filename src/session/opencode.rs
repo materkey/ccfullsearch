@@ -1502,6 +1502,56 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_rows_list_and_load_skip_them_and_keep_the_rest() {
+        let (_dir, db) = build_db_fixture();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "INSERT INTO session VALUES ('ses_BROKEN', 'projAAA', '', '/tmp/myproj', 't', 1, 'soon');
+             INSERT INTO message VALUES ('msg_broken', 'ses_TEST', 'soon', 1, '{\"role\":\"user\"}');
+             INSERT INTO part VALUES ('prt_blob', 'msg_user1', 'ses_TEST', 9, 9, X'00');",
+        )
+        .unwrap();
+
+        let ids: Vec<String> = list_sessions_for_recent(&db, 10)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["ses_TEST"]);
+
+        let messages = load_messages(&db, "ses_TEST");
+        let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["msg_user1", "msg_asst1"]);
+        assert_eq!(
+            messages[0].content_blocks,
+            vec![ContentBlock::Text("Hello opencode".to_string())]
+        );
+    }
+
+    #[test]
+    fn db_without_tables_list_and_load_return_nothing() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db");
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE other (x INTEGER);")
+            .unwrap();
+        assert!(list_sessions_for_recent(&db, 10).is_empty());
+        assert!(load_messages(&db, "ses_TEST").is_empty());
+    }
+
+    #[test]
+    fn db_without_part_table_load_messages_keeps_messages_without_content() {
+        let (_dir, db) = build_db_fixture();
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE part;")
+            .unwrap();
+        let messages = load_messages(&db, "ses_TEST");
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|m| m.content_blocks.is_empty()));
+    }
+
+    #[test]
     fn test_list_sessions_for_recent_honours_limit() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("opencode.db");
