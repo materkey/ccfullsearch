@@ -1215,6 +1215,46 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_and_blank_parts_load_messages_keeps_only_visible_text() {
+        let (_dir, db) = build_db_fixture();
+        let conn = Connection::open(&db).unwrap();
+        for (id, data) in [
+            (
+                "prt_r1",
+                r#"{"type":"reasoning","text":"weighing options"}"#,
+            ),
+            ("prt_r2", r#"{"type":"reasoning","text":"  \n"}"#),
+            ("prt_t2", r#"{"type":"text","text":"   "}"#),
+            ("prt_nt", r#"{"text":"typeless"}"#),
+        ] {
+            conn.execute(
+                "INSERT INTO part VALUES (?1, 'msg_asst1', 'ses_TEST', 9, 9, ?2)",
+                [id, data],
+            )
+            .unwrap();
+        }
+
+        let messages = load_messages(&db, "ses_TEST");
+        let blocks = &messages[1].content_blocks;
+        assert!(blocks.contains(&ContentBlock::Thinking("weighing options".to_string())));
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::Thinking(_)))
+                .count(),
+            1,
+            "{blocks:?}"
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::Text(_)))
+                .collect::<Vec<_>>(),
+            [&ContentBlock::Text("Sure thing".to_string())]
+        );
+    }
+
+    #[test]
     fn test_load_messages_missing_db_returns_empty() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("opencode.db"); // never created on disk
