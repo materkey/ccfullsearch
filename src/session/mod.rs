@@ -1331,6 +1331,27 @@ mod tests {
     }
 
     #[test]
+    fn symlinked_dir_and_subagents_dir_collect_session_jsonl_files_does_not_enter_them() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("projects");
+        let project = root.join("-Users-user-demo");
+        fs::create_dir_all(project.join("subagents")).unwrap();
+        fs::write(project.join("session.jsonl"), "{}").unwrap();
+        fs::write(project.join("notes.txt"), "{}").unwrap();
+        fs::write(project.join("subagents").join("child.jsonl"), "{}").unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("linked.jsonl"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let files = collect_session_jsonl_files(&[root.to_string_lossy().to_string()]);
+        assert_eq!(files, [project.join("session.jsonl")]);
+    }
+
+    #[test]
     fn test_collect_session_jsonl_files_skips_codex_subagent_rollouts() {
         use std::fs;
         use tempfile::TempDir;
