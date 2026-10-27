@@ -624,6 +624,19 @@ mod tests {
     }
 
     #[test]
+    fn each_config_effort_build_agent_args_passes_it_verbatim() {
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            let cfg: crate::config::Config =
+                toml::from_str(&format!("[agent_search]\neffort = \"{effort}\"\n")).unwrap();
+            let args = build_agent_args("q", Path::new("/bin/ccs"), &cfg.agent_search);
+            assert!(
+                args.windows(2).any(|w| w == ["--effort", effort]),
+                "{effort}"
+            );
+        }
+    }
+
+    #[test]
     fn query_with_quotes_and_newline_build_agent_args_keeps_it_verbatim() {
         let q = "it's \"kotlin\" $HOME\nline2";
         assert_eq!(
