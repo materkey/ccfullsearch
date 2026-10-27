@@ -378,47 +378,46 @@ fn matches_ccs_ai_ranker_marker(content: &str) -> bool {
 /// subagent rollout files because they are auxiliary child sessions that
 /// should not appear in recent-session and session-list views.
 pub fn collect_session_jsonl_files(search_paths: &[String]) -> Vec<PathBuf> {
-    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(_) => return,
-        };
-
-        for entry in entries.flatten() {
-            let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
-            let path = entry.path();
-
-            if path.is_dir() {
-                if is_symlink {
-                    continue;
-                }
-                if path.file_name().and_then(|n| n.to_str()) == Some("subagents") {
-                    continue;
-                }
-                walk(&path, files);
-                continue;
-            }
-
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name.ends_with(".jsonl") && !name.starts_with("agent-") {
-                if codex_parent_thread_id_from_file(&path).is_some() {
-                    continue;
-                }
-                files.push(path);
-            }
-        }
-    }
-
     let mut files = Vec::new();
     for search_path in search_paths {
         let root = Path::new(search_path);
         if root.is_dir() {
-            walk(root, &mut files);
+            walk_session_files(root, &mut files);
         }
     }
     files
+}
+
+fn walk_session_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if is_walkable_dir(&entry, &path) {
+                walk_session_files(&path, files);
+            }
+        } else if is_session_file(&path) {
+            files.push(path);
+        }
+    }
+}
+
+/// Not a symlink (no loops, no trees outside the roots) and not Claude's
+/// `subagents/`.
+fn is_walkable_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
+    let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
+    !is_symlink && path.file_name().and_then(|n| n.to_str()) != Some("subagents")
+}
+
+/// A `*.jsonl` that is neither a Claude `agent-*` file nor a Codex subagent
+/// rollout.
+fn is_session_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") && !name.starts_with("agent-"))
+        && codex_parent_thread_id_from_file(path).is_none()
 }
 
 /// Search for a JSONL file by session ID across the given search paths.
