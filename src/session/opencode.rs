@@ -277,48 +277,63 @@ pub fn list_sessions_for_recent(db_path: &Path, limit: usize) -> Vec<OpencodeSes
             return Vec::new();
         }
     };
-    let mut stmt = match conn.prepare(SQL_LIST_RECENT) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::ccs_debug!("opencode list_sessions_for_recent prepare failed: {e}");
-            return Vec::new();
-        }
-    };
     let limit_i64: i64 = limit.try_into().unwrap_or(i64::MAX);
-    let rows = stmt.query_map([limit_i64], |row| {
-        let id: String = row.get("id")?;
-        let project_id: String = row.get("project_id")?;
-        let project_name: Option<String> = row.get("project_name")?;
-        let worktree: Option<String> = row.get("worktree")?;
-        let title: String = row.get("title")?;
-        let directory: Option<String> = row.get("directory")?;
-        let time_updated: i64 = row.get("time_updated")?;
-        let msg_count: i64 = row.get("msg_count")?;
-        let session_file = PathBuf::from(synthetic_session_path(db_path, &id));
-        Ok(OpencodeSessionSummary {
-            id,
-            project_id,
-            project_label: derive_project_label(project_name, worktree),
-            title,
-            directory: directory.filter(|s| !s.is_empty()),
-            updated_at: millis_to_datetime(time_updated).unwrap_or_else(Utc::now),
-            message_count: msg_count.max(0) as usize,
-            session_file,
-        })
-    });
-    let iter = match rows {
-        Ok(iter) => iter,
+    query_rows(
+        &conn,
+        "list_sessions_for_recent",
+        SQL_LIST_RECENT,
+        [limit_i64],
+        |row| {
+            let id: String = row.get("id")?;
+            let project_id: String = row.get("project_id")?;
+            let project_name: Option<String> = row.get("project_name")?;
+            let worktree: Option<String> = row.get("worktree")?;
+            let title: String = row.get("title")?;
+            let directory: Option<String> = row.get("directory")?;
+            let time_updated: i64 = row.get("time_updated")?;
+            let msg_count: i64 = row.get("msg_count")?;
+            let session_file = PathBuf::from(synthetic_session_path(db_path, &id));
+            Ok(OpencodeSessionSummary {
+                id,
+                project_id,
+                project_label: derive_project_label(project_name, worktree),
+                title,
+                directory: directory.filter(|s| !s.is_empty()),
+                updated_at: millis_to_datetime(time_updated).unwrap_or_else(Utc::now),
+                message_count: msg_count.max(0) as usize,
+                session_file,
+            })
+        },
+    )
+}
+
+/// Run `sql` and map each row. A failed prepare or query gives no rows and a
+/// row that does not map is dropped, both logged under `what`: an unreadable
+/// Opencode DB shows fewer sessions, never an error.
+fn query_rows<T>(
+    conn: &Connection,
+    what: &str,
+    sql: &str,
+    params: impl rusqlite::Params,
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Vec<T> {
+    let mut stmt = match conn.prepare(sql) {
+        Ok(stmt) => stmt,
         Err(e) => {
-            crate::ccs_debug!("opencode list_sessions_for_recent query_map failed: {e}");
+            crate::ccs_debug!("opencode {what} prepare failed: {e}");
             return Vec::new();
         }
     };
-    iter.filter_map(|r| match r {
-        Ok(row) => Some(row),
+    let rows = match stmt.query_map(params, map) {
+        Ok(rows) => rows,
         Err(e) => {
-            crate::ccs_debug!("opencode list_sessions_for_recent row dropped: {e}");
-            None
+            crate::ccs_debug!("opencode {what} query_map failed: {e}");
+            return Vec::new();
         }
+    };
+    rows.filter_map(|row| {
+        row.map_err(|e| crate::ccs_debug!("opencode {what} row dropped: {e}"))
+            .ok()
     })
     .collect()
 }
@@ -381,80 +396,42 @@ pub fn load_messages(db_path: &Path, session_id: &str) -> Vec<OpencodeMessage> {
 
 /// Fetch all message rows for a session, ordered chronologically.
 fn fetch_message_rows(conn: &Connection, session_id: &str) -> Vec<MessageRow> {
-    let mut stmt = match conn.prepare(
+    query_rows(
+        conn,
+        "load_messages(message)",
         "SELECT id, session_id, data, time_created \
          FROM message WHERE session_id = ?1 \
          ORDER BY time_created ASC, id ASC",
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::ccs_debug!("opencode load_messages prepare(message) failed: {e}");
-            return Vec::new();
-        }
-    };
-
-    let rows = stmt.query_map([session_id], |row| {
-        Ok((
-            row.get::<_, String>("id")?,
-            row.get::<_, String>("session_id")?,
-            row.get::<_, i64>("time_created")?,
-            row.get::<_, String>("data")?,
-        ))
-    });
-    match rows {
-        Ok(iter) => iter
-            .filter_map(|r| match r {
-                Ok(row) => Some(row),
-                Err(e) => {
-                    crate::ccs_debug!("opencode load_messages message row dropped: {e}");
-                    None
-                }
-            })
-            .collect(),
-        Err(e) => {
-            crate::ccs_debug!("opencode load_messages query_map(message) failed: {e}");
-            Vec::new()
-        }
-    }
+        [session_id],
+        |row| {
+            Ok((
+                row.get::<_, String>("id")?,
+                row.get::<_, String>("session_id")?,
+                row.get::<_, i64>("time_created")?,
+                row.get::<_, String>("data")?,
+            ))
+        },
+    )
 }
 
 /// Fetch all `(message_id, data)` part rows for a session in one query,
 /// sorted by (message_id, time_created, id) so blocks within a message stay
 /// in creation order.
 fn fetch_part_rows(conn: &Connection, session_id: &str) -> Vec<(String, String)> {
-    let mut stmt = match conn.prepare(
+    query_rows(
+        conn,
+        "load_messages(part)",
         "SELECT message_id, data \
          FROM part WHERE session_id = ?1 \
          ORDER BY message_id ASC, time_created ASC, id ASC",
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::ccs_debug!("opencode load_messages prepare(part) failed: {e}");
-            return Vec::new();
-        }
-    };
-
-    let rows = stmt.query_map([session_id], |row| {
-        Ok((
-            row.get::<_, String>("message_id")?,
-            row.get::<_, String>("data")?,
-        ))
-    });
-    match rows {
-        Ok(iter) => iter
-            .filter_map(|r| match r {
-                Ok(row) => Some(row),
-                Err(e) => {
-                    crate::ccs_debug!("opencode load_messages part row dropped: {e}");
-                    None
-                }
-            })
-            .collect(),
-        Err(e) => {
-            crate::ccs_debug!("opencode load_messages query_map(part) failed: {e}");
-            Vec::new()
-        }
-    }
+        [session_id],
+        |row| {
+            Ok((
+                row.get::<_, String>("message_id")?,
+                row.get::<_, String>("data")?,
+            ))
+        },
+    )
 }
 
 /// Parse each part's JSON payload and bucket its content blocks by
