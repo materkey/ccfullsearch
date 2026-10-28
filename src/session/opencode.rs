@@ -35,7 +35,6 @@ use serde_json::Value;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use crate::session::record::{ContentBlock, MessageRole, SessionRecord};
 
@@ -640,7 +639,7 @@ pub fn search_parts_streaming<F>(
     db_path: &Path,
     query: &str,
     mode: SearchMode<'_>,
-    cancel: &Arc<AtomicBool>,
+    cancel: &AtomicBool,
     mut on_match: F,
 ) -> Result<(), String>
 where
@@ -705,7 +704,7 @@ fn stream_match_rows<F>(
     mut rows: rusqlite::Rows<'_>,
     mode: SearchMode<'_>,
     lower_query: Option<&str>,
-    cancel: &Arc<AtomicBool>,
+    cancel: &AtomicBool,
     db_path: &Path,
     on_match: &mut F,
 ) -> Result<(), String>
@@ -740,7 +739,7 @@ where
 
 /// Return `Err("cancelled")` when the cancel token is set on a poll boundary
 /// (every `CANCEL_POLL_INTERVAL` rows).
-fn poll_cancel(row_count: usize, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+fn poll_cancel(row_count: usize, cancel: &AtomicBool) -> Result<(), String> {
     if row_count.is_multiple_of(CANCEL_POLL_INTERVAL) && cancel.load(Ordering::Relaxed) {
         return Err(crate::search::CANCELLED_ERR.into());
     }
@@ -1321,7 +1320,7 @@ mod tests {
 
     /// Drain `search_parts_streaming` into a `Vec` for test assertions.
     fn collect_search(db: &Path, query: &str, mode: SearchMode<'_>) -> Vec<OpencodeMatchRow> {
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = AtomicBool::new(false);
         let mut out = Vec::new();
         search_parts_streaming(db, query, mode, &cancel, |row| {
             out.push(row);
@@ -1445,7 +1444,7 @@ mod tests {
             .unwrap();
         }
 
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = AtomicBool::new(false);
         let mut seen = 0usize;
         search_parts_streaming(&db_path, "findme", SearchMode::Fixed, &cancel, |_row| {
             seen += 1;
@@ -1617,7 +1616,7 @@ mod tests {
     #[test]
     fn test_search_parts_streaming_respects_cancel() {
         let (_dir, db) = build_db_fixture();
-        let cancel = Arc::new(AtomicBool::new(true));
+        let cancel = AtomicBool::new(true);
         let err = search_parts_streaming(&db, "Hello", SearchMode::Fixed, &cancel, |_row| {
             ControlFlow::Continue(())
         });
