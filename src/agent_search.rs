@@ -172,7 +172,8 @@ enum StreamEvent {
 /// `<ccs> search <query>`: the query is a double-quoted, single-quoted or
 /// bare token.
 static SEARCH_COMMAND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:^|/)ccs\s+search\s+("(?:[^"\\]|\\.)*"|'[^']*'|\S+)"#).unwrap()
+    Regex::new(r#"(?:^|/)ccs\s+search\s+("(?:[^"\\]|\\.)*"|'[^']*'|\S+)"#)
+        .expect("SEARCH_COMMAND is a valid regex")
 });
 
 fn search_query_from_command(command: &str) -> Option<String> {

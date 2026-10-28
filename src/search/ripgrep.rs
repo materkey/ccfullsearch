@@ -477,7 +477,9 @@ fn spawn_watchdog(
 /// completes (`done` flips) or the cancel flag is observed — then kill `rg`.
 fn watchdog_loop(cancel: &AtomicBool, done: &(Mutex<bool>, Condvar), child: &Mutex<Option<Child>>) {
     let (lock, cvar) = done;
-    let mut done_guard = lock.lock().unwrap();
+    let mut done_guard = lock
+        .lock()
+        .expect("the done flag is only set, never held across a panic");
     while !*done_guard {
         if cancel.load(Ordering::Relaxed) {
             kill_locked_child(child);
@@ -485,7 +487,7 @@ fn watchdog_loop(cancel: &AtomicBool, done: &(Mutex<bool>, Condvar), child: &Mut
         }
         let (new_guard, _timeout) = cvar
             .wait_timeout(done_guard, Duration::from_millis(50))
-            .unwrap();
+            .expect("the done flag is only set, never held across a panic");
         done_guard = new_guard;
     }
 }
