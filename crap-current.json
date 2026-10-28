@@ -1,0 +1,8844 @@
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "0.5.0",
+  "entries": [
+    {
+      "file": "./src/remote/oneshot.rs",
+      "function": "step",
+      "line": 77,
+      "cyclomatic": 12.0,
+      "coverage": 73.68421052631578,
+      "crap": 14.62428925499344,
+      "uncovered": [
+        {
+          "start": 83,
+          "end": 84
+        },
+        {
+          "start": 90,
+          "end": 92
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "parse_ripgrep_json",
+      "line": 826,
+      "cyclomatic": 14.0,
+      "coverage": 100.0,
+      "crap": 14.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_toggle",
+      "line": 231,
+      "cyclomatic": 14.0,
+      "coverage": 100.0,
+      "crap": 14.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "render_part_text",
+      "line": 858,
+      "cyclomatic": 13.0,
+      "coverage": 85.71428571428571,
+      "crap": 13.492711370262391,
+      "uncovered": [
+        {
+          "start": 870,
+          "end": 870
+        },
+        {
+          "start": 874,
+          "end": 874
+        },
+        {
+          "start": 878,
+          "end": 878
+        },
+        {
+          "start": 884,
+          "end": 884
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "create_fork",
+      "line": 69,
+      "cyclomatic": 13.0,
+      "coverage": 94.5945945945946,
+      "crap": 13.02669141018301,
+      "uncovered": [
+        {
+          "start": 85,
+          "end": 85
+        },
+        {
+          "start": 89,
+          "end": 89
+        }
+      ]
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "RolloutName::parse",
+      "line": 32,
+      "cyclomatic": 13.0,
+      "coverage": 95.0,
+      "crap": 13.021125,
+      "uncovered": [
+        {
+          "start": 44,
+          "end": 44
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_host_reply",
+      "line": 1909,
+      "cyclomatic": 13.0,
+      "coverage": 97.43589743589743,
+      "crap": 13.002849002849002,
+      "uncovered": [
+        {
+          "start": 1944,
+          "end": 1944
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "dispatch",
+      "line": 34,
+      "cyclomatic": 13.0,
+      "coverage": 100.0,
+      "crap": 13.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_tree_key",
+      "line": 99,
+      "cyclomatic": 13.0,
+      "coverage": 100.0,
+      "crap": 13.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::submit_ai_query",
+      "line": 2286,
+      "cyclomatic": 5.0,
+      "coverage": 33.33333333333333,
+      "crap": 12.40740740740741,
+      "uncovered": [
+        {
+          "start": 2289,
+          "end": 2297
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "find_session_file_in_paths",
+      "line": 427,
+      "cyclomatic": 12.0,
+      "coverage": 90.0,
+      "crap": 12.144,
+      "uncovered": [
+        {
+          "start": 439,
+          "end": 439
+        },
+        {
+          "start": 450,
+          "end": 450
+        },
+        {
+          "start": 464,
+          "end": 464
+        },
+        {
+          "start": 469,
+          "end": 469
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "extract_session_metadata",
+      "line": 1019,
+      "cyclomatic": 12.0,
+      "coverage": 91.8918918918919,
+      "crap": 12.076757546443448,
+      "uncovered": [
+        {
+          "start": 1021,
+          "end": 1021
+        },
+        {
+          "start": 1035,
+          "end": 1035
+        },
+        {
+          "start": 1046,
+          "end": 1046
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_session_header_line",
+      "line": 981,
+      "cyclomatic": 12.0,
+      "coverage": 93.54838709677419,
+      "crap": 12.03866939679769,
+      "uncovered": [
+        {
+          "start": 1057,
+          "end": 1064
+        }
+      ]
+    },
+    {
+      "file": "./src/config.rs",
+      "function": "load_default_config",
+      "line": 100,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 100,
+          "end": 105
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_tui",
+      "line": 184,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 184,
+          "end": 203
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_tui_inner",
+      "line": 206,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 206,
+          "end": 212
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "init_app_with_hosts",
+      "line": 234,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 234,
+          "end": 255
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "prefill_query",
+      "line": 267,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 267,
+          "end": 273
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_event_loop",
+      "line": 276,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 276,
+          "end": 284
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "tick_once",
+      "line": 287,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 287,
+          "end": 295
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "draw_frame",
+      "line": 298,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 298,
+          "end": 307
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "poll_event",
+      "line": 329,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 329,
+          "end": 334
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "poll_and_handle_key",
+      "line": 337,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 337,
+          "end": 342
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "handle_event",
+      "line": 346,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 346,
+          "end": 355
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_tui_loop",
+      "line": 623,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 623,
+          "end": 633
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "discard_pending_events",
+      "line": 639,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 639,
+          "end": 641
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "start_resume",
+      "line": 720,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 720,
+          "end": 733
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "opencode_resume_invocation",
+      "line": 488,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 488,
+          "end": 496
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "fetch_latest_version",
+      "line": 79,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 79,
+          "end": 104
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "download",
+      "line": 107,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 107,
+          "end": 134
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "extract_tar",
+      "line": 137,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 137,
+          "end": 150
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "download_release",
+      "line": 223,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 223,
+          "end": 235
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "extract_and_locate",
+      "line": 255,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 255,
+          "end": 264
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "fetch_and_verify",
+      "line": 267,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 267,
+          "end": 279
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "download_and_install",
+      "line": 282,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 282,
+          "end": 290
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "run",
+      "line": 382,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0,
+      "uncovered": [
+        {
+          "start": 382,
+          "end": 389
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "walk_fs_recursive",
+      "line": 25,
+      "cyclomatic": 11.0,
+      "coverage": 80.0,
+      "crap": 11.968,
+      "uncovered": [
+        {
+          "start": 32,
+          "end": 36
+        },
+        {
+          "start": 54,
+          "end": 54
+        },
+        {
+          "start": 64,
+          "end": 64
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "ensure_session_in_index",
+      "line": 132,
+      "cyclomatic": 11.0,
+      "coverage": 83.01886792452831,
+      "crap": 11.59249581869597,
+      "uncovered": [
+        {
+          "start": 135,
+          "end": 135
+        },
+        {
+          "start": 141,
+          "end": 141
+        },
+        {
+          "start": 148,
+          "end": 148
+        },
+        {
+          "start": 193,
+          "end": 194
+        },
+        {
+          "start": 197,
+          "end": 199
+        },
+        {
+          "start": 201,
+          "end": 201
+        }
+      ]
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "read_history_base",
+      "line": 307,
+      "cyclomatic": 11.0,
+      "coverage": 92.3076923076923,
+      "crap": 11.055075102412381,
+      "uncovered": [
+        {
+          "start": 314,
+          "end": 314
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::preview_request",
+      "line": 2049,
+      "cyclomatic": 11.0,
+      "coverage": 93.75,
+      "crap": 11.029541015625,
+      "uncovered": [
+        {
+          "start": 2053,
+          "end": 2053
+        },
+        {
+          "start": 2057,
+          "end": 2057
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_group_header",
+      "line": 1290,
+      "cyclomatic": 11.0,
+      "coverage": 94.23076923076923,
+      "crap": 11.023234808830223,
+      "uncovered": [
+        {
+          "start": 1320,
+          "end": 1323
+        },
+        {
+          "start": 1329,
+          "end": 1329
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::get_full_content",
+      "line": 256,
+      "cyclomatic": 11.0,
+      "coverage": 95.45454545454545,
+      "crap": 11.011363636363637,
+      "uncovered": [
+        {
+          "start": 279,
+          "end": 279
+        }
+      ]
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "count_session_messages",
+      "line": 120,
+      "cyclomatic": 11.0,
+      "coverage": 96.0,
+      "crap": 11.007744,
+      "uncovered": [
+        {
+          "start": 136,
+          "end": 136
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_help_line",
+      "line": 88,
+      "cyclomatic": 11.0,
+      "coverage": 97.2972972972973,
+      "crap": 11.00238880224271,
+      "uncovered": [
+        {
+          "start": 118,
+          "end": 118
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "apply_tail_record",
+      "line": 377,
+      "cyclomatic": 11.0,
+      "coverage": 100.0,
+      "crap": 11.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::apply_filter",
+      "line": 503,
+      "cyclomatic": 11.0,
+      "coverage": 100.0,
+      "crap": 11.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_ai_list_action",
+      "line": 1364,
+      "cyclomatic": 11.0,
+      "coverage": 100.0,
+      "crap": 11.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "status_word",
+      "line": 262,
+      "cyclomatic": 10.0,
+      "coverage": 83.33333333333334,
+      "crap": 10.462962962962962,
+      "uncovered": [
+        {
+          "start": 264,
+          "end": 264
+        },
+        {
+          "start": 268,
+          "end": 268
+        },
+        {
+          "start": 285,
+          "end": 286
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "detect_session_automation",
+      "line": 693,
+      "cyclomatic": 10.0,
+      "coverage": 85.0,
+      "crap": 10.3375,
+      "uncovered": [
+        {
+          "start": 697,
+          "end": 697
+        },
+        {
+          "start": 710,
+          "end": 710
+        },
+        {
+          "start": 715,
+          "end": 715
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "normalize_command_markup",
+      "line": 638,
+      "cyclomatic": 10.0,
+      "coverage": 85.18518518518519,
+      "crap": 10.325153685921862,
+      "uncovered": [
+        {
+          "start": 667,
+          "end": 667
+        },
+        {
+          "start": 682,
+          "end": 683
+        },
+        {
+          "start": 691,
+          "end": 693
+        },
+        {
+          "start": 710,
+          "end": 711
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_up",
+      "line": 42,
+      "cyclomatic": 10.0,
+      "coverage": 87.5,
+      "crap": 10.1953125,
+      "uncovered": [
+        {
+          "start": 54,
+          "end": 54
+        },
+        {
+          "start": 60,
+          "end": 60
+        },
+        {
+          "start": 69,
+          "end": 69
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_content_block_item",
+      "line": 460,
+      "cyclomatic": 10.0,
+      "coverage": 92.3076923076923,
+      "crap": 10.04551661356395,
+      "uncovered": [
+        {
+          "start": 472,
+          "end": 472
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_multiple_paths_inner",
+      "line": 204,
+      "cyclomatic": 10.0,
+      "coverage": 95.55555555555556,
+      "crap": 10.00877914951989,
+      "uncovered": [
+        {
+          "start": 225,
+          "end": 225
+        },
+        {
+          "start": 229,
+          "end": 229
+        }
+      ]
+    },
+    {
+      "file": "./src/search/message.rs",
+      "function": "Message::from_jsonl_with_path",
+      "line": 35,
+      "cyclomatic": 10.0,
+      "coverage": 97.43589743589743,
+      "crap": 10.001685800502369,
+      "uncovered": [
+        {
+          "start": 67,
+          "end": 67
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "cli_show",
+      "line": 408,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "classify_record_kind",
+      "line": 885,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "resolve_summary",
+      "line": 834,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_nav",
+      "line": 296,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_groups",
+      "line": 752,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_recent_sessions",
+      "line": 1174,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_action",
+      "line": 1328,
+      "cyclomatic": 10.0,
+      "coverage": 100.0,
+      "crap": 10.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_ai_query_edit",
+      "line": 1419,
+      "cyclomatic": 9.0,
+      "coverage": 77.77777777777779,
+      "crap": 9.888888888888888,
+      "uncovered": [
+        {
+          "start": 1425,
+          "end": 1426
+        },
+        {
+          "start": 1432,
+          "end": 1433
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "derive_project_label",
+      "line": 219,
+      "cyclomatic": 4.0,
+      "coverage": 30.76923076923077,
+      "crap": 9.309057806099226,
+      "uncovered": [
+        {
+          "start": 222,
+          "end": 231
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_right",
+      "line": 129,
+      "cyclomatic": 8.0,
+      "coverage": 73.68421052631578,
+      "crap": 9.166350779997085,
+      "uncovered": [
+        {
+          "start": 131,
+          "end": 131
+        },
+        {
+          "start": 145,
+          "end": 145
+        },
+        {
+          "start": 147,
+          "end": 149
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "codex_parent_thread_id_from_file",
+      "line": 161,
+      "cyclomatic": 9.0,
+      "coverage": 89.47368421052632,
+      "crap": 9.094474413179764,
+      "uncovered": [
+        {
+          "start": 173,
+          "end": 173
+        },
+        {
+          "start": 180,
+          "end": 180
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "resolve_parent_session_with",
+      "line": 512,
+      "cyclomatic": 9.0,
+      "coverage": 90.0,
+      "crap": 9.081,
+      "uncovered": [
+        {
+          "start": 539,
+          "end": 540
+        },
+        {
+          "start": 542,
+          "end": 542
+        },
+        {
+          "start": 555,
+          "end": 555
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "search_input_title",
+      "line": 322,
+      "cyclomatic": 9.0,
+      "coverage": 90.9090909090909,
+      "crap": 9.060856498873028,
+      "uncovered": [
+        {
+          "start": 339,
+          "end": 339
+        },
+        {
+          "start": 342,
+          "end": 342
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "parse_hit_array",
+      "line": 265,
+      "cyclomatic": 9.0,
+      "coverage": 94.73684210526315,
+      "crap": 9.011809301647471,
+      "uncovered": [
+        {
+          "start": 278,
+          "end": 278
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_collapsed_preview_item",
+      "line": 690,
+      "cyclomatic": 9.0,
+      "coverage": 97.61904761904762,
+      "crap": 9.001093294460642,
+      "uncovered": [
+        {
+          "start": 716,
+          "end": 716
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "read_tail_lines",
+      "line": 317,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_word_motion",
+      "line": 188,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_tree_action",
+      "line": 1524,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "parse_stream_line",
+      "line": 191,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "summary_from_row",
+      "line": 290,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::from_value",
+      "line": 85,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "read_desktop_session_title_uncached",
+      "line": 1053,
+      "cyclomatic": 7.0,
+      "coverage": 66.66666666666666,
+      "crap": 8.814814814814817,
+      "uncovered": [
+        {
+          "start": 1065,
+          "end": 1069
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_sub_match",
+      "line": 1362,
+      "cyclomatic": 7.0,
+      "coverage": 66.66666666666666,
+      "crap": 8.814814814814817,
+      "uncovered": [
+        {
+          "start": 1374,
+          "end": 1376
+        },
+        {
+          "start": 1381,
+          "end": 1381
+        },
+        {
+          "start": 1390,
+          "end": 1390
+        },
+        {
+          "start": 1396,
+          "end": 1401
+        },
+        {
+          "start": 1407,
+          "end": 1407
+        },
+        {
+          "start": 1415,
+          "end": 1418
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "search_results_status_text",
+      "line": 153,
+      "cyclomatic": 8.0,
+      "coverage": 76.92307692307693,
+      "crap": 8.786527082385069,
+      "uncovered": [
+        {
+          "start": 160,
+          "end": 166
+        },
+        {
+          "start": 188,
+          "end": 188
+        },
+        {
+          "start": 192,
+          "end": 192
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_remote",
+      "line": 474,
+      "cyclomatic": 8.0,
+      "coverage": 83.87096774193549,
+      "crap": 8.26853747776174,
+      "uncovered": [
+        {
+          "start": 499,
+          "end": 500
+        },
+        {
+          "start": 503,
+          "end": 505
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "wait_through_stops",
+      "line": 589,
+      "cyclomatic": 5.0,
+      "coverage": 50.0,
+      "crap": 8.125,
+      "uncovered": [
+        {
+          "start": 594,
+          "end": 598
+        },
+        {
+          "start": 602,
+          "end": 604
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_subcommand",
+      "line": 382,
+      "cyclomatic": 8.0,
+      "coverage": 87.93103448275862,
+      "crap": 8.112509737996637,
+      "uncovered": [
+        {
+          "start": 418,
+          "end": 419
+        },
+        {
+          "start": 435,
+          "end": 438
+        },
+        {
+          "start": 452,
+          "end": 452
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::flatten_to_rows",
+      "line": 292,
+      "cyclomatic": 8.0,
+      "coverage": 88.23529411764706,
+      "crap": 8.104213311622226,
+      "uncovered": [
+        {
+          "start": 308,
+          "end": 308
+        },
+        {
+          "start": 317,
+          "end": 317
+        },
+        {
+          "start": 346,
+          "end": 349
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_down",
+      "line": 73,
+      "cyclomatic": 8.0,
+      "coverage": 90.47619047619048,
+      "crap": 8.055285606306015,
+      "uncovered": [
+        {
+          "start": 81,
+          "end": 81
+        },
+        {
+          "start": 98,
+          "end": 98
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_remote_event",
+      "line": 1861,
+      "cyclomatic": 6.0,
+      "coverage": 61.53846153846154,
+      "crap": 8.048247610377787,
+      "uncovered": [
+        {
+          "start": 1864,
+          "end": 1868
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_toggle_action",
+      "line": 1498,
+      "cyclomatic": 8.0,
+      "coverage": 90.9090909090909,
+      "crap": 8.0480841472577,
+      "uncovered": [
+        {
+          "start": 1503,
+          "end": 1503
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_opencode_storage",
+      "line": 723,
+      "cyclomatic": 8.0,
+      "coverage": 91.37931034482759,
+      "crap": 8.041002091106646,
+      "uncovered": [
+        {
+          "start": 731,
+          "end": 731
+        },
+        {
+          "start": 743,
+          "end": 743
+        },
+        {
+          "start": 767,
+          "end": 767
+        },
+        {
+          "start": 789,
+          "end": 790
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "cli_search",
+      "line": 83,
+      "cyclomatic": 8.0,
+      "coverage": 91.66666666666666,
+      "crap": 8.037037037037038,
+      "uncovered": [
+        {
+          "start": 109,
+          "end": 115
+        },
+        {
+          "start": 119,
+          "end": 119
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "status_span",
+      "line": 409,
+      "cyclomatic": 8.0,
+      "coverage": 91.66666666666666,
+      "crap": 8.037037037037038,
+      "uncovered": [
+        {
+          "start": 432,
+          "end": 433
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "scan_head",
+      "line": 239,
+      "cyclomatic": 8.0,
+      "coverage": 92.85714285714286,
+      "crap": 8.02332361516035,
+      "uncovered": [
+        {
+          "start": 259,
+          "end": 259
+        },
+        {
+          "start": 263,
+          "end": 263
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "read_stdout",
+      "line": 508,
+      "cyclomatic": 8.0,
+      "coverage": 94.44444444444444,
+      "crap": 8.010973936899862,
+      "uncovered": [
+        {
+          "start": 527,
+          "end": 527
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "JsonlTreeBuilder::ingest_line",
+      "line": 509,
+      "cyclomatic": 8.0,
+      "coverage": 94.87179487179486,
+      "crap": 8.008631298572126,
+      "uncovered": [
+        {
+          "start": 511,
+          "end": 511
+        },
+        {
+          "start": 516,
+          "end": 516
+        }
+      ]
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::from_file",
+      "line": 56,
+      "cyclomatic": 8.0,
+      "coverage": 95.23809523809523,
+      "crap": 8.006910700788252,
+      "uncovered": [
+        {
+          "start": 76,
+          "end": 76
+        },
+        {
+          "start": 84,
+          "end": 84
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "stream_match_rows",
+      "line": 703,
+      "cyclomatic": 8.0,
+      "coverage": 96.15384615384616,
+      "crap": 8.003641329085116,
+      "uncovered": [
+        {
+          "start": 721,
+          "end": 721
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "recent_sessions_status_text",
+      "line": 205,
+      "cyclomatic": 8.0,
+      "coverage": 96.29629629629629,
+      "crap": 8.003251536859219,
+      "uncovered": [
+        {
+          "start": 207,
+          "end": 207
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_host_state",
+      "line": 1878,
+      "cyclomatic": 8.0,
+      "coverage": 96.29629629629629,
+      "crap": 8.003251536859219,
+      "uncovered": [
+        {
+          "start": 1891,
+          "end": 1891
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_codex_tool_call",
+      "line": 312,
+      "cyclomatic": 8.0,
+      "coverage": 96.55172413793103,
+      "crap": 8.002624133830825,
+      "uncovered": [
+        {
+          "start": 335,
+          "end": 335
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/oneshot.rs",
+      "function": "HostOutcome::status",
+      "line": 19,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/remote/ssh.rs",
+      "function": "ssh_args",
+      "line": 36,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "merge_middle_into",
+      "line": 808,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_single_path",
+      "line": 298,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "sanitize_content",
+      "line": 1074,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_ai_cursor_move",
+      "line": 1444,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_search_nav_action",
+      "line": 1458,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_input_edit_action",
+      "line": 1472,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::poll_ai_result",
+      "line": 1620,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_debounced_search",
+      "line": 1668,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::toggle_project_filter",
+      "line": 198,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "resolve_hits",
+      "line": 581,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_codex_response_item",
+      "line": 268,
+      "cyclomatic": 8.0,
+      "coverage": 100.0,
+      "crap": 8.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostFilter::allows",
+      "line": 21,
+      "cyclomatic": 6.0,
+      "coverage": 62.5,
+      "crap": 7.8984375,
+      "uncovered": [
+        {
+          "start": 25,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "find_case_insensitive_match",
+      "line": 1611,
+      "cyclomatic": 7.0,
+      "coverage": 78.26086956521739,
+      "crap": 7.5034108654557405,
+      "uncovered": [
+        {
+          "start": 1630,
+          "end": 1637
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_group_header_text",
+      "line": 1244,
+      "cyclomatic": 7.0,
+      "coverage": 78.78787878787878,
+      "crap": 7.467679550324179,
+      "uncovered": [
+        {
+          "start": 1257,
+          "end": 1260
+        },
+        {
+          "start": 1264,
+          "end": 1270
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_left_tree",
+      "line": 97,
+      "cyclomatic": 5.0,
+      "coverage": 53.84615384615385,
+      "crap": 7.457897132453346,
+      "uncovered": [
+        {
+          "start": 102,
+          "end": 107
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "cli_list",
+      "line": 910,
+      "cyclomatic": 7.0,
+      "coverage": 80.76923076923077,
+      "crap": 7.348486572598999,
+      "uncovered": [
+        {
+          "start": 922,
+          "end": 922
+        },
+        {
+          "start": 929,
+          "end": 932
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_remote_show",
+      "line": 1980,
+      "cyclomatic": 5.0,
+      "coverage": 55.55555555555556,
+      "crap": 7.194787379972565,
+      "uncovered": [
+        {
+          "start": 1989,
+          "end": 1997
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "opencode_storage_root",
+      "line": 58,
+      "cyclomatic": 7.0,
+      "coverage": 86.36363636363636,
+      "crap": 7.124248685199098,
+      "uncovered": [
+        {
+          "start": 63,
+          "end": 63
+        },
+        {
+          "start": 70,
+          "end": 71
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "extract_latest_user_message_on_chain",
+      "line": 659,
+      "cyclomatic": 7.0,
+      "coverage": 87.5,
+      "crap": 7.095703125,
+      "uncovered": [
+        {
+          "start": 670,
+          "end": 670
+        },
+        {
+          "start": 674,
+          "end": 674
+        },
+        {
+          "start": 684,
+          "end": 684
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "search_path_supports_codex_cwd_scope",
+      "line": 281,
+      "cyclomatic": 7.0,
+      "coverage": 88.46153846153845,
+      "crap": 7.075273099681384,
+      "uncovered": [
+        {
+          "start": 291,
+          "end": 291
+        },
+        {
+          "start": 293,
+          "end": 293
+        },
+        {
+          "start": 300,
+          "end": 300
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "run_with",
+      "line": 58,
+      "cyclomatic": 7.0,
+      "coverage": 90.0,
+      "crap": 7.049,
+      "uncovered": [
+        {
+          "start": 65,
+          "end": 65
+        },
+        {
+          "start": 83,
+          "end": 84
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "scan_middle",
+      "line": 612,
+      "cyclomatic": 7.0,
+      "coverage": 91.66666666666666,
+      "crap": 7.028356481481482,
+      "uncovered": [
+        {
+          "start": 622,
+          "end": 622
+        },
+        {
+          "start": 638,
+          "end": 638
+        },
+        {
+          "start": 642,
+          "end": 642
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "handle_outcome",
+      "line": 654,
+      "cyclomatic": 3.0,
+      "coverage": 23.52941176470588,
+      "crap": 7.024628536535722,
+      "uncovered": [
+        {
+          "start": 657,
+          "end": 671
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "apply_middle_record",
+      "line": 548,
+      "cyclomatic": 7.0,
+      "coverage": 92.3076923076923,
+      "crap": 7.022303140646336,
+      "uncovered": [
+        {
+          "start": 563,
+          "end": 563
+        },
+        {
+          "start": 565,
+          "end": 565
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_remote_tree",
+      "line": 2000,
+      "cyclomatic": 7.0,
+      "coverage": 92.3076923076923,
+      "crap": 7.022303140646336,
+      "uncovered": [
+        {
+          "start": 2007,
+          "end": 2007
+        },
+        {
+          "start": 2011,
+          "end": 2011
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "finish",
+      "line": 505,
+      "cyclomatic": 7.0,
+      "coverage": 93.33333333333333,
+      "crap": 7.014518518518519,
+      "uncovered": [
+        {
+          "start": 519,
+          "end": 519
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "apply_recent_automation_to_groups",
+      "line": 654,
+      "cyclomatic": 7.0,
+      "coverage": 94.73684210526315,
+      "crap": 7.007143898527482,
+      "uncovered": [
+        {
+          "start": 674,
+          "end": 675
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "find_case_insensitive_span",
+      "line": 1171,
+      "cyclomatic": 7.0,
+      "coverage": 96.875,
+      "crap": 7.001495361328125,
+      "uncovered": [
+        {
+          "start": 1173,
+          "end": 1173
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "print_group_matches",
+      "line": 275,
+      "cyclomatic": 7.0,
+      "coverage": 97.91666666666666,
+      "crap": 7.000443070023148,
+      "uncovered": [
+        {
+          "start": 329,
+          "end": 329
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "locate_jsonl_message",
+      "line": 679,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "select_hosts",
+      "line": 21,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "middle_line_hints",
+      "line": 521,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "extract_summary",
+      "line": 900,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "collect_from_unclassified_files",
+      "line": 1253,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "analyze_line",
+      "line": 50,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "build_resume_command",
+      "line": 280,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "find_project_dir_name",
+      "line": 75,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "extract_project_from_path",
+      "line": 883,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "skip_ansi_escape",
+      "line": 1109,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_ctrl_chord",
+      "line": 138,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_ctrl_b",
+      "line": 169,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_word_delete",
+      "line": 212,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::request_preview_if_needed",
+      "line": 2031,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::from_opencode_file",
+      "line": 123,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "OpencodeSession::from_row",
+      "line": 157,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_enter_inner",
+      "line": 232,
+      "cyclomatic": 6.0,
+      "coverage": 69.81132075471697,
+      "crap": 6.99045520799049,
+      "uncovered": [
+        {
+          "start": 234,
+          "end": 235
+        },
+        {
+          "start": 275,
+          "end": 287
+        },
+        {
+          "start": 289,
+          "end": 289
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostFilter::label",
+      "line": 43,
+      "cyclomatic": 5.0,
+      "coverage": 57.14285714285714,
+      "crap": 6.96793002915452,
+      "uncovered": [
+        {
+          "start": 46,
+          "end": 48
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_cli",
+      "line": 326,
+      "cyclomatic": 3.0,
+      "coverage": 27.27272727272727,
+      "crap": 6.462058602554471,
+      "uncovered": [
+        {
+          "start": 329,
+          "end": 342
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "classify_exit_before_hello",
+      "line": 444,
+      "cyclomatic": 6.0,
+      "coverage": 78.57142857142857,
+      "crap": 6.354227405247814,
+      "uncovered": [
+        {
+          "start": 454,
+          "end": 456
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "is_on_latest_chain",
+      "line": 17,
+      "cyclomatic": 6.0,
+      "coverage": 83.33333333333334,
+      "crap": 6.166666666666666,
+      "uncovered": [
+        {
+          "start": 20,
+          "end": 20
+        },
+        {
+          "start": 28,
+          "end": 28
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "spawn_claude",
+      "line": 543,
+      "cyclomatic": 6.0,
+      "coverage": 83.33333333333334,
+      "crap": 6.166666666666666,
+      "uncovered": [
+        {
+          "start": 557,
+          "end": 559
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "wait_for_exit",
+      "line": 567,
+      "cyclomatic": 6.0,
+      "coverage": 83.33333333333334,
+      "crap": 6.166666666666666,
+      "uncovered": [
+        {
+          "start": 572,
+          "end": 572
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "linux_target_triple",
+      "line": 19,
+      "cyclomatic": 6.0,
+      "coverage": 87.5,
+      "crap": 6.0703125,
+      "uncovered": [
+        {
+          "start": 25,
+          "end": 25
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "replace_binary",
+      "line": 293,
+      "cyclomatic": 6.0,
+      "coverage": 88.88888888888889,
+      "crap": 6.049382716049383,
+      "uncovered": [
+        {
+          "start": 316,
+          "end": 317
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/config.rs",
+      "function": "load_hosts",
+      "line": 58,
+      "cyclomatic": 6.0,
+      "coverage": 91.66666666666666,
+      "crap": 6.020833333333333,
+      "uncovered": [
+        {
+          "start": 69,
+          "end": 69
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "read_stream",
+      "line": 431,
+      "cyclomatic": 6.0,
+      "coverage": 91.66666666666666,
+      "crap": 6.020833333333333,
+      "uncovered": [
+        {
+          "start": 442,
+          "end": 442
+        },
+        {
+          "start": 452,
+          "end": 452
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "read_codex_session_cwd",
+      "line": 297,
+      "cyclomatic": 6.0,
+      "coverage": 91.66666666666666,
+      "crap": 6.020833333333333,
+      "uncovered": [
+        {
+          "start": 304,
+          "end": 304
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::find_displayable_parent",
+      "line": 431,
+      "cyclomatic": 6.0,
+      "coverage": 92.85714285714286,
+      "crap": 6.013119533527696,
+      "uncovered": [
+        {
+          "start": 444,
+          "end": 444
+        },
+        {
+          "start": 454,
+          "end": 454
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::check_deadlines",
+      "line": 310,
+      "cyclomatic": 6.0,
+      "coverage": 94.28571428571428,
+      "crap": 6.006717201166181,
+      "uncovered": [
+        {
+          "start": 321,
+          "end": 321
+        },
+        {
+          "start": 342,
+          "end": 342
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "decode_project_path",
+      "line": 118,
+      "cyclomatic": 6.0,
+      "coverage": 94.44444444444444,
+      "crap": 6.006172839506172,
+      "uncovered": [
+        {
+          "start": 140,
+          "end": 140
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "automation_filter_hint",
+      "line": 438,
+      "cyclomatic": 6.0,
+      "coverage": 94.44444444444444,
+      "crap": 6.006172839506172,
+      "uncovered": [
+        {
+          "start": 441,
+          "end": 441
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::is_descendant_of_latest",
+      "line": 471,
+      "cyclomatic": 6.0,
+      "coverage": 95.23809523809523,
+      "crap": 6.003887269193392,
+      "uncovered": [
+        {
+          "start": 480,
+          "end": 480
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "render_tree_mode",
+      "line": 14,
+      "cyclomatic": 6.0,
+      "coverage": 96.875,
+      "crap": 6.0010986328125,
+      "uncovered": [
+        {
+          "start": 25,
+          "end": 25
+        },
+        {
+          "start": 40,
+          "end": 40
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "render_ai_hits",
+      "line": 19,
+      "cyclomatic": 6.0,
+      "coverage": 97.22222222222221,
+      "crap": 6.000771604938271,
+      "uncovered": [
+        {
+          "start": 21,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "file": "./src/config.rs",
+      "function": "Effort::as_str",
+      "line": 22,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "render_frame",
+      "line": 310,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 310,
+          "end": 317
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_pick",
+      "line": 539,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 539,
+          "end": 548
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_update",
+      "line": 570,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 570,
+          "end": 576
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "resume_outcome",
+      "line": 698,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 698,
+          "end": 716
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::drain_incoming",
+      "line": 222,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::reconnect_now",
+      "line": 399,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 399,
+          "end": 408
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "still_needed",
+      "line": 489,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "should_scan_middle",
+      "line": 798,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_opencode",
+      "line": 499,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 499,
+          "end": 514
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_opencode_child",
+      "line": 517,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 517,
+          "end": 533
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_desktop_child",
+      "line": 544,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 544,
+          "end": 551
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "perform_upgrade",
+      "line": 359,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 359,
+          "end": 368
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "resolve_opencode_project_label",
+      "line": 991,
+      "cyclomatic": 4.0,
+      "coverage": 50.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 996,
+          "end": 1001
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_plain",
+      "line": 286,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "highlight_line_with_base",
+      "line": 1525,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_cursor_move_action",
+      "line": 1486,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_mode_switch_action",
+      "line": 1512,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::preview_message",
+      "line": 2084,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "searching_text",
+      "line": 99,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "push_compaction_spans",
+      "line": 166,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 166,
+          "end": 201
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "watchdog",
+      "line": 400,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "build_graph_symbols",
+      "line": 630,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "OpencodeSession::from_db",
+      "line": 179,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "read_project_label",
+      "line": 204,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "read_project_worktree",
+      "line": 235,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "read_part_row",
+      "line": 758,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "strip_xml_tags",
+      "line": 614,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_text_content",
+      "line": 792,
+      "cyclomatic": 2.0,
+      "coverage": 0.0,
+      "crap": 6.0,
+      "uncovered": [
+        {
+          "start": 792,
+          "end": 800
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "detect_automation",
+      "line": 564,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "decode_dir_name_short",
+      "line": 856,
+      "cyclomatic": 5.0,
+      "coverage": 68.42105263157895,
+      "crap": 5.787286776498032,
+      "uncovered": [
+        {
+          "start": 868,
+          "end": 871
+        },
+        {
+          "start": 873,
+          "end": 874
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_cli_child",
+      "line": 349,
+      "cyclomatic": 3.0,
+      "coverage": 33.33333333333333,
+      "crap": 5.666666666666668,
+      "uncovered": [
+        {
+          "start": 352,
+          "end": 352
+        },
+        {
+          "start": 355,
+          "end": 369
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "target_triple",
+      "line": 10,
+      "cyclomatic": 5.0,
+      "coverage": 71.42857142857143,
+      "crap": 5.5830903790087465,
+      "uncovered": [
+        {
+          "start": 13,
+          "end": 13
+        },
+        {
+          "start": 15,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::on_eof",
+      "line": 269,
+      "cyclomatic": 5.0,
+      "coverage": 75.0,
+      "crap": 5.390625,
+      "uncovered": [
+        {
+          "start": 271,
+          "end": 271
+        },
+        {
+          "start": 279,
+          "end": 282
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "ai_status_span",
+      "line": 66,
+      "cyclomatic": 5.0,
+      "coverage": 75.0,
+      "crap": 5.390625,
+      "uncovered": [
+        {
+          "start": 69,
+          "end": 69
+        },
+        {
+          "start": 84,
+          "end": 88
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "opencode_project_from_path",
+      "line": 919,
+      "cyclomatic": 5.0,
+      "coverage": 78.57142857142857,
+      "crap": 5.2459912536443145,
+      "uncovered": [
+        {
+          "start": 924,
+          "end": 924
+        },
+        {
+          "start": 930,
+          "end": 931
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_word_right",
+      "line": 168,
+      "cyclomatic": 5.0,
+      "coverage": 80.0,
+      "crap": 5.2,
+      "uncovered": [
+        {
+          "start": 179,
+          "end": 182
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::poll",
+      "line": 469,
+      "cyclomatic": 5.0,
+      "coverage": 80.95238095238095,
+      "crap": 5.172767519706295,
+      "uncovered": [
+        {
+          "start": 484,
+          "end": 487
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "collection_limit_satisfied",
+      "line": 1326,
+      "cyclomatic": 5.0,
+      "coverage": 85.71428571428571,
+      "crap": 5.072886297376093,
+      "uncovered": [
+        {
+          "start": 1333,
+          "end": 1333
+        },
+        {
+          "start": 1350,
+          "end": 1352
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::start_agent_search",
+      "line": 2303,
+      "cyclomatic": 5.0,
+      "coverage": 85.71428571428571,
+      "crap": 5.072886297376093,
+      "uncovered": [
+        {
+          "start": 2319,
+          "end": 2321
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "group_matches_project",
+      "line": 365,
+      "cyclomatic": 5.0,
+      "coverage": 86.36363636363636,
+      "crap": 5.0633921863260705,
+      "uncovered": [
+        {
+          "start": 380,
+          "end": 380
+        },
+        {
+          "start": 386,
+          "end": 388
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_enter_tree",
+      "line": 129,
+      "cyclomatic": 5.0,
+      "coverage": 86.66666666666667,
+      "crap": 5.059259259259259,
+      "uncovered": [
+        {
+          "start": 131,
+          "end": 133
+        },
+        {
+          "start": 162,
+          "end": 162
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "query_rows",
+      "line": 315,
+      "cyclomatic": 5.0,
+      "coverage": 86.95652173913044,
+      "crap": 5.055477932111449,
+      "uncovered": [
+        {
+          "start": 331,
+          "end": 333
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "push_tool_blocks",
+      "line": 524,
+      "cyclomatic": 5.0,
+      "coverage": 88.0,
+      "crap": 5.0432,
+      "uncovered": [
+        {
+          "start": 534,
+          "end": 534
+        },
+        {
+          "start": 543,
+          "end": 543
+        },
+        {
+          "start": 549,
+          "end": 549
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "search_query_from_command",
+      "line": 179,
+      "cyclomatic": 5.0,
+      "coverage": 88.88888888888889,
+      "crap": 5.034293552812072,
+      "uncovered": [
+        {
+          "start": 186,
+          "end": 186
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "scan_middle_line",
+      "line": 582,
+      "cyclomatic": 5.0,
+      "coverage": 90.0,
+      "crap": 5.025,
+      "uncovered": [
+        {
+          "start": 597,
+          "end": 597
+        },
+        {
+          "start": 606,
+          "end": 606
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "picker_follows_resume",
+      "line": 772,
+      "cyclomatic": 4.0,
+      "coverage": 60.0,
+      "crap": 5.024,
+      "uncovered": [
+        {
+          "start": 781,
+          "end": 786
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "search_title_style",
+      "line": 349,
+      "cyclomatic": 5.0,
+      "coverage": 90.9090909090909,
+      "crap": 5.018782870022539,
+      "uncovered": [
+        {
+          "start": 360,
+          "end": 360
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_right_tree",
+      "line": 113,
+      "cyclomatic": 5.0,
+      "coverage": 92.3076923076923,
+      "crap": 5.011379153390988,
+      "uncovered": [
+        {
+          "start": 121,
+          "end": 121
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "walk_session_files",
+      "line": 391,
+      "cyclomatic": 5.0,
+      "coverage": 92.3076923076923,
+      "crap": 5.011379153390988,
+      "uncovered": [
+        {
+          "start": 393,
+          "end": 393
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "collect_recent_sessions",
+      "line": 1142,
+      "cyclomatic": 5.0,
+      "coverage": 92.85714285714286,
+      "crap": 5.009110787172012,
+      "uncovered": [
+        {
+          "start": 1198,
+          "end": 1200
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "desktop_project_from_path",
+      "line": 973,
+      "cyclomatic": 5.0,
+      "coverage": 92.85714285714286,
+      "crap": 5.009110787172012,
+      "uncovered": [
+        {
+          "start": 975,
+          "end": 975
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "filter_match_row",
+      "line": 775,
+      "cyclomatic": 5.0,
+      "coverage": 94.11764705882352,
+      "crap": 5.005088540606554,
+      "uncovered": [
+        {
+          "start": 792,
+          "end": 792
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render",
+      "line": 244,
+      "cyclomatic": 5.0,
+      "coverage": 94.44444444444444,
+      "crap": 5.004286694101509,
+      "uncovered": [
+        {
+          "start": 284,
+          "end": 285
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "apply_tail_summary",
+      "line": 352,
+      "cyclomatic": 5.0,
+      "coverage": 95.23809523809523,
+      "crap": 5.0026994924954105,
+      "uncovered": [
+        {
+          "start": 361,
+          "end": 361
+        }
+      ]
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::displayable_parent_set",
+      "line": 241,
+      "cyclomatic": 5.0,
+      "coverage": 95.23809523809523,
+      "crap": 5.0026994924954105,
+      "uncovered": [
+        {
+          "start": 252,
+          "end": 252
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "find_summary_from_tail_with_chain",
+      "line": 418,
+      "cyclomatic": 5.0,
+      "coverage": 95.83333333333334,
+      "crap": 5.001808449074074,
+      "uncovered": [
+        {
+          "start": 431,
+          "end": 431
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "search",
+      "line": 37,
+      "cyclomatic": 5.0,
+      "coverage": 96.7741935483871,
+      "crap": 5.000839179618006,
+      "uncovered": [
+        {
+          "start": 66,
+          "end": 66
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "read_session_id_from_file",
+      "line": 126,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "encode",
+      "line": 417,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "decode",
+      "line": 427,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "extract_non_meta_user_text",
+      "line": 75,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "is_real_user_prompt",
+      "line": 98,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "any_hint",
+      "line": 542,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "collect_from_files",
+      "line": 1212,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "is_session_in_index",
+      "line": 108,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "child_exit_result",
+      "line": 445,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "dispatch_launch",
+      "line": 84,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "add_desktop_paths",
+      "line": 134,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "decide_update",
+      "line": 346,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "fill_stderr_prefix",
+      "line": 436,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "discard_remaining_stderr",
+      "line": 452,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "check_ripgrep_status",
+      "line": 540,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::process_line",
+      "line": 598,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "skip_osc_sequence",
+      "line": 1150,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "group_by_session",
+      "line": 60,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "count_opencode_session_messages",
+      "line": 160,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_key",
+      "line": 119,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_search_esc",
+      "line": 273,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_search_hints_without_hosts",
+      "line": 476,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "display_session_id",
+      "line": 928,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "truncate_around_query",
+      "line": 1468,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_lowercase_index",
+      "line": 1581,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_word_left",
+      "line": 146,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "session_matches_project",
+      "line": 340,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::cancel_where",
+      "line": 194,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::enter_tree_mode_direct",
+      "line": 18,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "push_message_spans",
+      "line": 203,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "result_outcome",
+      "line": 212,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "record_searches",
+      "line": 460,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::from_file",
+      "line": 76,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::build_display_graph",
+      "line": 374,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "push_blocks_from_part",
+      "line": 502,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "search_parts_streaming",
+      "line": 638,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_named_string_record",
+      "line": 215,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_codex_chat_message",
+      "line": 288,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "collect_codex_reasoning_text",
+      "line": 420,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "tool_result_entry_text",
+      "line": 517,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "SessionProvider::from_path",
+      "line": 56,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "collect_opencode_recent_sessions",
+      "line": 1119,
+      "cyclomatic": 3.0,
+      "coverage": 40.0,
+      "crap": 4.944,
+      "uncovered": [
+        {
+          "start": 1126,
+          "end": 1139
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "escape_like",
+      "line": 900,
+      "cyclomatic": 4.0,
+      "coverage": 63.63636363636363,
+      "crap": 4.769346356123216,
+      "uncovered": [
+        {
+          "start": 904,
+          "end": 907
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "show",
+      "line": 184,
+      "cyclomatic": 4.0,
+      "coverage": 64.70588235294117,
+      "crap": 4.703439853450031,
+      "uncovered": [
+        {
+          "start": 186,
+          "end": 191
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "ParseError::fmt",
+      "line": 247,
+      "cyclomatic": 4.0,
+      "coverage": 71.42857142857143,
+      "crap": 4.373177842565598,
+      "uncovered": [
+        {
+          "start": 250,
+          "end": 251
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "opencode_summary_to_recent",
+      "line": 1012,
+      "cyclomatic": 4.0,
+      "coverage": 75.86206896551724,
+      "crap": 4.2250194759932755,
+      "uncovered": [
+        {
+          "start": 1038,
+          "end": 1051
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "list_sessions_for_recent",
+      "line": 268,
+      "cyclomatic": 4.0,
+      "coverage": 76.47058823529412,
+      "crap": 4.208426623244454,
+      "uncovered": [
+        {
+          "start": 270,
+          "end": 270
+        },
+        {
+          "start": 274,
+          "end": 276
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "locate_opencode_message",
+      "line": 748,
+      "cyclomatic": 4.0,
+      "coverage": 78.26086956521739,
+      "crap": 4.164379058107997,
+      "uncovered": [
+        {
+          "start": 760,
+          "end": 764
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "should_fork_for_resume",
+      "line": 40,
+      "cyclomatic": 4.0,
+      "coverage": 81.81818181818183,
+      "crap": 4.096168294515402,
+      "uncovered": [
+        {
+          "start": 43,
+          "end": 43
+        },
+        {
+          "start": 49,
+          "end": 49
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::on_response",
+      "line": 254,
+      "cyclomatic": 4.0,
+      "coverage": 83.33333333333334,
+      "crap": 4.0740740740740735,
+      "uncovered": [
+        {
+          "start": 259,
+          "end": 259
+        },
+        {
+          "start": 261,
+          "end": 261
+        }
+      ]
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "EnvGuard::drop",
+      "line": 49,
+      "cyclomatic": 4.0,
+      "coverage": 83.33333333333334,
+      "crap": 4.0740740740740735,
+      "uncovered": [
+        {
+          "start": 55,
+          "end": 55
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "read_codex_session_project",
+      "line": 1004,
+      "cyclomatic": 4.0,
+      "coverage": 83.33333333333334,
+      "crap": 4.0740740740740735,
+      "uncovered": [
+        {
+          "start": 1007,
+          "end": 1007
+        },
+        {
+          "start": 1009,
+          "end": 1009
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "read_desktop_session_title",
+      "line": 1037,
+      "cyclomatic": 4.0,
+      "coverage": 83.33333333333334,
+      "crap": 4.0740740740740735,
+      "uncovered": [
+        {
+          "start": 1040,
+          "end": 1040
+        },
+        {
+          "start": 1042,
+          "end": 1042
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "group_project",
+      "line": 871,
+      "cyclomatic": 4.0,
+      "coverage": 83.33333333333334,
+      "crap": 4.0740740740740735,
+      "uncovered": [
+        {
+          "start": 875,
+          "end": 875
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::toggle_automation_filter",
+      "line": 182,
+      "cyclomatic": 4.0,
+      "coverage": 84.61538461538461,
+      "crap": 4.058261265361857,
+      "uncovered": [
+        {
+          "start": 185,
+          "end": 185
+        },
+        {
+          "start": 187,
+          "end": 187
+        }
+      ]
+    },
+    {
+      "file": "./src/config.rs",
+      "function": "load_config",
+      "line": 81,
+      "cyclomatic": 4.0,
+      "coverage": 85.71428571428571,
+      "crap": 4.0466472303206995,
+      "uncovered": [
+        {
+          "start": 85,
+          "end": 85
+        },
+        {
+          "start": 94,
+          "end": 94
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "update_to",
+      "line": 371,
+      "cyclomatic": 4.0,
+      "coverage": 85.71428571428571,
+      "crap": 4.0466472303206995,
+      "uncovered": [
+        {
+          "start": 377,
+          "end": 377
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "provider_badge_style",
+      "line": 890,
+      "cyclomatic": 4.0,
+      "coverage": 85.71428571428571,
+      "crap": 4.0466472303206995,
+      "uncovered": [
+        {
+          "start": 893,
+          "end": 893
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "render_tree",
+      "line": 99,
+      "cyclomatic": 4.0,
+      "coverage": 86.66666666666667,
+      "crap": 4.037925925925926,
+      "uncovered": [
+        {
+          "start": 112,
+          "end": 115
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_content_blocks",
+      "line": 448,
+      "cyclomatic": 4.0,
+      "coverage": 87.5,
+      "crap": 4.03125,
+      "uncovered": [
+        {
+          "start": 454,
+          "end": 454
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "build_prefilter_patterns",
+      "line": 112,
+      "cyclomatic": 4.0,
+      "coverage": 88.88888888888889,
+      "crap": 4.021947873799726,
+      "uncovered": [
+        {
+          "start": 127,
+          "end": 128
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "first_user_message_in_history",
+      "line": 887,
+      "cyclomatic": 4.0,
+      "coverage": 90.9090909090909,
+      "crap": 4.012021036814425,
+      "uncovered": [
+        {
+          "start": 895,
+          "end": 895
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "is_agent_or_subagent_path",
+      "line": 813,
+      "cyclomatic": 4.0,
+      "coverage": 90.9090909090909,
+      "crap": 4.012021036814425,
+      "uncovered": [
+        {
+          "start": 821,
+          "end": 821
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_ai_enter",
+      "line": 1396,
+      "cyclomatic": 4.0,
+      "coverage": 90.9090909090909,
+      "crap": 4.012021036814425,
+      "uncovered": [
+        {
+          "start": 1398,
+          "end": 1398
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_down_tree",
+      "line": 85,
+      "cyclomatic": 4.0,
+      "coverage": 90.9090909090909,
+      "crap": 4.012021036814425,
+      "uncovered": [
+        {
+          "start": 91,
+          "end": 91
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::dag_parent_uuid",
+      "line": 124,
+      "cyclomatic": 4.0,
+      "coverage": 90.9090909090909,
+      "crap": 4.012021036814425,
+      "uncovered": [
+        {
+          "start": 135,
+          "end": 135
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::send",
+      "line": 356,
+      "cyclomatic": 4.0,
+      "coverage": 91.30434782608695,
+      "crap": 4.010520259718912,
+      "uncovered": [
+        {
+          "start": 358,
+          "end": 358
+        },
+        {
+          "start": 374,
+          "end": 374
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "cli_project_from_path",
+      "line": 948,
+      "cyclomatic": 4.0,
+      "coverage": 91.66666666666666,
+      "crap": 4.0092592592592595,
+      "uncovered": [
+        {
+          "start": 955,
+          "end": 955
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_codex_tool_output",
+      "line": 406,
+      "cyclomatic": 4.0,
+      "coverage": 92.3076923076923,
+      "crap": 4.007282658170232,
+      "uncovered": [
+        {
+          "start": 415,
+          "end": 415
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "prepare_resume",
+      "line": 226,
+      "cyclomatic": 4.0,
+      "coverage": 92.85714285714286,
+      "crap": 4.005830903790088,
+      "uncovered": [
+        {
+          "start": 239,
+          "end": 239
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "dedup_sort_truncate_sessions",
+      "line": 1355,
+      "cyclomatic": 4.0,
+      "coverage": 93.75,
+      "crap": 4.00390625,
+      "uncovered": [
+        {
+          "start": 1363,
+          "end": 1363
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "build_tree_row_item",
+      "line": 137,
+      "cyclomatic": 4.0,
+      "coverage": 94.11764705882352,
+      "crap": 4.003256665988195,
+      "uncovered": [
+        {
+          "start": 153,
+          "end": 153
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "record_on_chain_summary",
+      "line": 175,
+      "cyclomatic": 4.0,
+      "coverage": 94.44444444444444,
+      "crap": 4.002743484224966,
+      "uncovered": [
+        {
+          "start": 183,
+          "end": 183
+        }
+      ]
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "build_search_paths",
+      "line": 74,
+      "cyclomatic": 4.0,
+      "coverage": 95.0,
+      "crap": 4.002,
+      "uncovered": [
+        {
+          "start": 92,
+          "end": 92
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "collect_opencode_list_entries",
+      "line": 988,
+      "cyclomatic": 4.0,
+      "coverage": 95.83333333333334,
+      "crap": 4.001157407407407,
+      "uncovered": [
+        {
+          "start": 993,
+          "end": 993
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "wire_match",
+      "line": 146,
+      "cyclomatic": 4.0,
+      "coverage": 95.83333333333334,
+      "crap": 4.001157407407407,
+      "uncovered": [
+        {
+          "start": 154,
+          "end": 154
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "extract_context_around_span",
+      "line": 1239,
+      "cyclomatic": 4.0,
+      "coverage": 96.7741935483871,
+      "crap": 4.000537074955523,
+      "uncovered": [
+        {
+          "start": 1248,
+          "end": 1248
+        }
+      ]
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::from_records",
+      "line": 120,
+      "cyclomatic": 4.0,
+      "coverage": 96.96969696969697,
+      "crap": 4.00044522358572,
+      "uncovered": [
+        {
+          "start": 134,
+          "end": 134
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "jsonl_history_messages",
+      "line": 639,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "Anchor::from_args",
+      "line": 665,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/config.rs",
+      "function": "config_path",
+      "line": 72,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "main",
+      "line": 357,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_resume",
+      "line": 459,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/remote/oneshot.rs",
+      "function": "query_hosts",
+      "line": 43,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "extract_text_for_automation",
+      "line": 116,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "record_automation",
+      "line": 195,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "record_first_user_message",
+      "line": 207,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "scan_tail",
+      "line": 454,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "any_still_needed_besides_summary",
+      "line": 499,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "record_first_prompt",
+      "line": 96,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "ensure_project_dir",
+      "line": 205,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "fork_uuid",
+      "line": 109,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "add_codex_paths",
+      "line": 115,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "verify_checksum",
+      "line": 191,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "build_ripgrep_args_with_extra",
+      "line": 78,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "spawn_ripgrep",
+      "line": 385,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_ctrl_c",
+      "line": 154,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "kept_line_width",
+      "line": 138,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_search_input",
+      "line": 296,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "clear_area",
+      "line": 602,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "provider_badge_label",
+      "line": 882,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "recent_session_header_item",
+      "line": 1127,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "set_group_message_count",
+      "line": 703,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::take_outcome",
+      "line": 1178,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_search_result",
+      "line": 1693,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::anchor_for",
+      "line": 1749,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::remote_project_param",
+      "line": 2182,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "cut_to_columns",
+      "line": 134,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/project_match.rs",
+      "function": "home_relative",
+      "line": 22,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "extract_role_and_preview",
+      "line": 577,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "parse_session_path",
+      "line": 118,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "load_messages",
+      "line": 378,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "parse_message_role",
+      "line": 483,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "materialize_session",
+      "line": 564,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::render_content",
+      "line": 102,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_tool_result_content",
+      "line": 503,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "SessionProvider::display_name",
+      "line": 76,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "find_codex_rollout_near",
+      "line": 189,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "Rollouts::segments",
+      "line": 215,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "is_record_displayable",
+      "line": 287,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "add_opencode_path",
+      "line": 154,
+      "cyclomatic": 3.0,
+      "coverage": 57.14285714285714,
+      "crap": 3.7084548104956268,
+      "uncovered": [
+        {
+          "start": 156,
+          "end": 158
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_tab",
+      "line": 165,
+      "cyclomatic": 3.0,
+      "coverage": 57.14285714285714,
+      "crap": 3.7084548104956268,
+      "uncovered": [
+        {
+          "start": 167,
+          "end": 169
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "format_parse_error",
+      "line": 294,
+      "cyclomatic": 3.0,
+      "coverage": 63.63636363636363,
+      "crap": 3.432757325319309,
+      "uncovered": [
+        {
+          "start": 297,
+          "end": 297
+        },
+        {
+          "start": 299,
+          "end": 301
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "wait_child",
+      "line": 558,
+      "cyclomatic": 3.0,
+      "coverage": 66.66666666666666,
+      "crap": 3.333333333333334,
+      "uncovered": [
+        {
+          "start": 567,
+          "end": 570
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "truncate_to_width",
+      "line": 1452,
+      "cyclomatic": 3.0,
+      "coverage": 70.0,
+      "crap": 3.2430000000000003,
+      "uncovered": [
+        {
+          "start": 1454,
+          "end": 1454
+        },
+        {
+          "start": 1460,
+          "end": 1461
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "next_char_boundary",
+      "line": 1219,
+      "cyclomatic": 3.0,
+      "coverage": 71.42857142857143,
+      "crap": 3.2099125364431487,
+      "uncovered": [
+        {
+          "start": 1222,
+          "end": 1223
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::adjust_scroll",
+      "line": 600,
+      "cyclomatic": 3.0,
+      "coverage": 71.42857142857143,
+      "crap": 3.2099125364431487,
+      "uncovered": [
+        {
+          "start": 602,
+          "end": 602
+        },
+        {
+          "start": 604,
+          "end": 604
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "cutoff_timestamp_for_limit",
+      "line": 1305,
+      "cyclomatic": 3.0,
+      "coverage": 72.22222222222221,
+      "crap": 3.1929012345679015,
+      "uncovered": [
+        {
+          "start": 1307,
+          "end": 1307
+        },
+        {
+          "start": 1315,
+          "end": 1318
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::connect",
+      "line": 156,
+      "cyclomatic": 3.0,
+      "coverage": 77.77777777777779,
+      "crap": 3.0987654320987654,
+      "uncovered": [
+        {
+          "start": 169,
+          "end": 172
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::content_blocks",
+      "line": 152,
+      "cyclomatic": 3.0,
+      "coverage": 80.0,
+      "crap": 3.072,
+      "uncovered": [
+        {
+          "start": 154,
+          "end": 154
+        }
+      ]
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "sha256_via_shasum",
+      "line": 168,
+      "cyclomatic": 3.0,
+      "coverage": 81.81818181818183,
+      "crap": 3.0540946656649135,
+      "uncovered": [
+        {
+          "start": 177,
+          "end": 179
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_opencode_tail",
+      "line": 813,
+      "cyclomatic": 3.0,
+      "coverage": 82.75862068965517,
+      "crap": 3.0461273524949775,
+      "uncovered": [
+        {
+          "start": 822,
+          "end": 826
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_direct_resume",
+      "line": 600,
+      "cyclomatic": 3.0,
+      "coverage": 83.33333333333334,
+      "crap": 3.0416666666666665,
+      "uncovered": [
+        {
+          "start": 616,
+          "end": 618
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "poll_cancel",
+      "line": 742,
+      "cyclomatic": 3.0,
+      "coverage": 83.33333333333334,
+      "crap": 3.0416666666666665,
+      "uncovered": [
+        {
+          "start": 744,
+          "end": 744
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "project_label_from_cwd",
+      "line": 1020,
+      "cyclomatic": 3.0,
+      "coverage": 84.61538461538461,
+      "crap": 3.0327719617660445,
+      "uncovered": [
+        {
+          "start": 1024,
+          "end": 1024
+        },
+        {
+          "start": 1026,
+          "end": 1026
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "print_json_line",
+      "line": 338,
+      "cyclomatic": 3.0,
+      "coverage": 85.71428571428571,
+      "crap": 3.0262390670553936,
+      "uncovered": [
+        {
+          "start": 344,
+          "end": 344
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "kill_locked_child",
+      "line": 497,
+      "cyclomatic": 3.0,
+      "coverage": 85.71428571428571,
+      "crap": 3.0262390670553936,
+      "uncovered": [
+        {
+          "start": 502,
+          "end": 502
+        }
+      ]
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "is_displayable_type",
+      "line": 272,
+      "cyclomatic": 3.0,
+      "coverage": 85.71428571428571,
+      "crap": 3.0262390670553936,
+      "uncovered": [
+        {
+          "start": 281,
+          "end": 281
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_by_session_id_resolves",
+      "line": 261,
+      "cyclomatic": 3.0,
+      "coverage": 87.5,
+      "crap": 3.017578125,
+      "uncovered": [
+        {
+          "start": 268,
+          "end": 268
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "replace_session_id_in_value",
+      "line": 119,
+      "cyclomatic": 3.0,
+      "coverage": 87.5,
+      "crap": 3.017578125,
+      "uncovered": [
+        {
+          "start": 124,
+          "end": 124
+        }
+      ]
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "is_context_loss_message",
+      "line": 652,
+      "cyclomatic": 3.0,
+      "coverage": 87.5,
+      "crap": 3.017578125,
+      "uncovered": [
+        {
+          "start": 654,
+          "end": 654
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_groups_filter",
+      "line": 2227,
+      "cyclomatic": 3.0,
+      "coverage": 88.23529411764706,
+      "crap": 3.0146549969468754,
+      "uncovered": [
+        {
+          "start": 2250,
+          "end": 2250
+        },
+        {
+          "start": 2265,
+          "end": 2267
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "resume_inner",
+      "line": 152,
+      "cyclomatic": 3.0,
+      "coverage": 88.88888888888889,
+      "crap": 3.0123456790123457,
+      "uncovered": [
+        {
+          "start": 190,
+          "end": 197
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "desktop_session_name_from_path",
+      "line": 936,
+      "cyclomatic": 3.0,
+      "coverage": 88.88888888888889,
+      "crap": 3.0123456790123457,
+      "uncovered": [
+        {
+          "start": 942,
+          "end": 942
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_up_tree",
+      "line": 75,
+      "cyclomatic": 3.0,
+      "coverage": 88.88888888888889,
+      "crap": 3.0123456790123457,
+      "uncovered": [
+        {
+          "start": 80,
+          "end": 80
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "drain_stderr",
+      "line": 388,
+      "cyclomatic": 3.0,
+      "coverage": 88.88888888888889,
+      "crap": 3.0123456790123457,
+      "uncovered": [
+        {
+          "start": 395,
+          "end": 395
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::cancel",
+      "line": 380,
+      "cyclomatic": 3.0,
+      "coverage": 90.0,
+      "crap": 3.009,
+      "uncovered": [
+        {
+          "start": 382,
+          "end": 382
+        }
+      ]
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "exit_report",
+      "line": 478,
+      "cyclomatic": 3.0,
+      "coverage": 90.47619047619048,
+      "crap": 3.007774538386783,
+      "uncovered": [
+        {
+          "start": 487,
+          "end": 488
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_left",
+      "line": 153,
+      "cyclomatic": 3.0,
+      "coverage": 90.9090909090909,
+      "crap": 3.006761833208114,
+      "uncovered": [
+        {
+          "start": 158,
+          "end": 158
+        }
+      ]
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "skip_partial_first_line",
+      "line": 298,
+      "cyclomatic": 3.0,
+      "coverage": 91.66666666666666,
+      "crap": 3.0052083333333335,
+      "uncovered": [
+        {
+          "start": 304,
+          "end": 304
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "decode_projects_marker_path",
+      "line": 98,
+      "cyclomatic": 3.0,
+      "coverage": 91.66666666666666,
+      "crap": 3.0052083333333335,
+      "uncovered": [
+        {
+          "start": 103,
+          "end": 103
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_recent_sessions_filter",
+      "line": 2154,
+      "cyclomatic": 3.0,
+      "coverage": 91.66666666666666,
+      "crap": 3.0052083333333335,
+      "uncovered": [
+        {
+          "start": 2174,
+          "end": 2175
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_down_sub_cursor",
+      "line": 115,
+      "cyclomatic": 3.0,
+      "coverage": 91.66666666666666,
+      "crap": 3.0052083333333335,
+      "uncovered": [
+        {
+          "start": 117,
+          "end": 117
+        }
+      ]
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "append_command_args",
+      "line": 768,
+      "cyclomatic": 3.0,
+      "coverage": 91.66666666666666,
+      "crap": 3.0052083333333335,
+      "uncovered": [
+        {
+          "start": 774,
+          "end": 774
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::poll_recent_loads",
+      "line": 1562,
+      "cyclomatic": 3.0,
+      "coverage": 93.33333333333333,
+      "crap": 3.002666666666667,
+      "uncovered": [
+        {
+          "start": 1574,
+          "end": 1574
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::enter_tree_mode_for_ref",
+      "line": 2110,
+      "cyclomatic": 3.0,
+      "coverage": 93.54838709677419,
+      "crap": 3.002416837299856,
+      "uncovered": [
+        {
+          "start": 2129,
+          "end": 2130
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::spawn_message_counts",
+      "line": 1815,
+      "cyclomatic": 3.0,
+      "coverage": 93.93939393939394,
+      "crap": 3.0020035061357375,
+      "uncovered": [
+        {
+          "start": 1817,
+          "end": 1817
+        },
+        {
+          "start": 1843,
+          "end": 1843
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_tree.rs",
+      "function": "render_tree_preview",
+      "line": 267,
+      "cyclomatic": 3.0,
+      "coverage": 94.5945945945946,
+      "crap": 3.001421436045249,
+      "uncovered": [
+        {
+          "start": 271,
+          "end": 271
+        },
+        {
+          "start": 275,
+          "end": 275
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_recent_session_header_text",
+      "line": 1101,
+      "cyclomatic": 3.0,
+      "coverage": 95.45454545454545,
+      "crap": 3.000845229151014,
+      "uncovered": [
+        {
+          "start": 1104,
+          "end": 1104
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::reset_search_state",
+      "line": 1245,
+      "cyclomatic": 3.0,
+      "coverage": 95.83333333333334,
+      "crap": 3.0006510416666665,
+      "uncovered": [
+        {
+          "start": 1265,
+          "end": 1265
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_remote_search",
+      "line": 1954,
+      "cyclomatic": 3.0,
+      "coverage": 96.0,
+      "crap": 3.000576,
+      "uncovered": [
+        {
+          "start": 1961,
+          "end": 1961
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "build_snippet_regex",
+      "line": 217,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "render_match_content_with",
+      "line": 250,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "is_path_like",
+      "line": 452,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_jsonl",
+      "line": 510,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_jsonl_tail",
+      "line": 547,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_opencode",
+      "line": 777,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "opencode_row",
+      "line": 844,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "classify_non_message_line",
+      "line": 873,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "truncate_chars",
+      "line": 902,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "resolve_tree_target",
+      "line": 146,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "pick_exit_code",
+      "line": 558,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "apply_after_resume",
+      "line": 682,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "picker_launch_runs_as_child",
+      "line": 755,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireRecent::from_recent",
+      "line": 237,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "write_line",
+      "line": 134,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "Host::label",
+      "line": 66,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "fold_max_timestamp",
+      "line": 163,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "scan_head_record",
+      "line": 219,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "merge_head_and_tail",
+      "line": 762,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "middle_scan_needs",
+      "line": 788,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "analyze_session",
+      "line": 30,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "record_timestamps",
+      "line": 71,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "record_git_branch",
+      "line": 82,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "codex_resume_invocation",
+      "line": 374,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "exec_command",
+      "line": 646,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "build_chain_from_tip",
+      "line": 55,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "resume_label",
+      "line": 44,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "launcher_table",
+      "line": 76,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "fork_applies",
+      "line": 103,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "resolve_update_target",
+      "line": 45,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "preflight",
+      "line": 60,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "parse_latest_tag",
+      "line": 67,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "sha256_via_sha256sum",
+      "line": 159,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "locate_extracted_binary",
+      "line": 238,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "compare_versions",
+      "line": 325,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "watchdog_loop",
+      "line": 478,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "skip_csi_sequence",
+      "line": 1140,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "assistant_prefix_for",
+      "line": 75,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "build_search_hints",
+      "line": 460,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "collapsed_preview_params",
+      "line": 624,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "format_session_header_line",
+      "line": 908,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "style_with_bg",
+      "line": 957,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::clamp_cursor_to_boundary",
+      "line": 45,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::local_total_count",
+      "line": 619,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::is_loading",
+      "line": 649,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "PickedSession::write_output",
+      "line": 745,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::project_scoped_search_paths",
+      "line": 1129,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::handle_ai_action",
+      "line": 1354,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::tick",
+      "line": 1538,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::poll_tree_load",
+      "line": 1579,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::poll_hosts",
+      "line": 1852,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::cycle_host_filter",
+      "line": 2204,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::start_search",
+      "line": 2339,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::set_searching_for_test",
+      "line": 2391,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::drop",
+      "line": 2491,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::send_search",
+      "line": 167,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_down_recent",
+      "line": 103,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::enter_tree_mode",
+      "line": 9,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::on_tab_tree",
+      "line": 166,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::adjust_tree_scroll",
+      "line": 175,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "build_ai_hints",
+      "line": 153,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/project_match.rs",
+      "function": "remote_project_matches",
+      "line": 41,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "AgentSearchHandle::cancel",
+      "line": 67,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "spawn_with_timeout",
+      "line": 319,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "JsonlTreeBuilder::capture_session_id",
+      "line": 566,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "OpencodeSession::from_file",
+      "line": 193,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "build_message",
+      "line": 458,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "plan_part_search",
+      "line": 682,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "part_text_matches",
+      "line": 798,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "build_match_row",
+      "line": 807,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::dag_uuid",
+      "line": 111,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::is_sidechain",
+      "line": 140,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_tool_result_block",
+      "line": 495,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_text_only",
+      "line": 569,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_tag_at",
+      "line": 744,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "slash_command",
+      "line": 781,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "SessionSource::display_name",
+      "line": 35,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "read_opencode_session_cwd",
+      "line": 317,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "collect_session_jsonl_files",
+      "line": 380,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "detect_automation_by_path",
+      "line": 592,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "Rollouts::current_rollout",
+      "line": 205,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::tip",
+      "line": 166,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::chain_from",
+      "line": 207,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::check_exit",
+      "line": 297,
+      "cyclomatic": 2.0,
+      "coverage": 66.66666666666666,
+      "crap": 2.1481481481481484,
+      "uncovered": [
+        {
+          "start": 303,
+          "end": 306
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "render_preview",
+      "line": 1640,
+      "cyclomatic": 2.0,
+      "coverage": 68.42105263157895,
+      "crap": 2.125965884239685,
+      "uncovered": [
+        {
+          "start": 1645,
+          "end": 1654
+        },
+        {
+          "start": 1658,
+          "end": 1667
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "previous_char_boundary",
+      "line": 1211,
+      "cyclomatic": 2.0,
+      "coverage": 71.42857142857143,
+      "crap": 2.0932944606413995,
+      "uncovered": [
+        {
+          "start": 1214,
+          "end": 1215
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_toggle_regex",
+      "line": 173,
+      "cyclomatic": 2.0,
+      "coverage": 71.42857142857143,
+      "crap": 2.0932944606413995,
+      "uncovered": [
+        {
+          "start": 177,
+          "end": 178
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "non_empty",
+      "line": 460,
+      "cyclomatic": 2.0,
+      "coverage": 80.0,
+      "crap": 2.032,
+      "uncovered": [
+        {
+          "start": 462,
+          "end": 462
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_tui_mode",
+      "line": 580,
+      "cyclomatic": 2.0,
+      "coverage": 81.81818181818183,
+      "crap": 2.0240420736288502,
+      "uncovered": [
+        {
+          "start": 591,
+          "end": 593
+        }
+      ]
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "add_fallback_path",
+      "line": 163,
+      "cyclomatic": 2.0,
+      "coverage": 81.81818181818183,
+      "crap": 2.0240420736288502,
+      "uncovered": [
+        {
+          "start": 171,
+          "end": 172
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "read_session_cwd",
+      "line": 325,
+      "cyclomatic": 2.0,
+      "coverage": 83.33333333333334,
+      "crap": 2.0185185185185186,
+      "uncovered": [
+        {
+          "start": 327,
+          "end": 327
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "run_serve",
+      "line": 521,
+      "cyclomatic": 2.0,
+      "coverage": 85.71428571428571,
+      "crap": 2.011661807580175,
+      "uncovered": [
+        {
+          "start": 523,
+          "end": 524
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "truncated_context",
+      "line": 1227,
+      "cyclomatic": 2.0,
+      "coverage": 85.71428571428571,
+      "crap": 2.011661807580175,
+      "uncovered": [
+        {
+          "start": 1233,
+          "end": 1233
+        }
+      ]
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "millis_to_datetime",
+      "line": 891,
+      "cyclomatic": 2.0,
+      "coverage": 87.5,
+      "crap": 2.0078125,
+      "uncovered": [
+        {
+          "start": 893,
+          "end": 893
+        }
+      ]
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "is_opencode_storage_path",
+      "line": 691,
+      "cyclomatic": 2.0,
+      "coverage": 88.88888888888889,
+      "crap": 2.0054869684499312,
+      "uncovered": [
+        {
+          "start": 693,
+          "end": 693
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "PickedSession::to_key_value",
+      "line": 729,
+      "cyclomatic": 2.0,
+      "coverage": 88.88888888888889,
+      "crap": 2.0054869684499312,
+      "uncovered": [
+        {
+          "start": 738,
+          "end": 738
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::write",
+      "line": 210,
+      "cyclomatic": 2.0,
+      "coverage": 90.0,
+      "crap": 2.004,
+      "uncovered": [
+        {
+          "start": 212,
+          "end": 212
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_codex_child",
+      "line": 386,
+      "cyclomatic": 2.0,
+      "coverage": 90.0,
+      "crap": 2.004,
+      "uncovered": [
+        {
+          "start": 391,
+          "end": 391
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::process_debounce",
+      "line": 1654,
+      "cyclomatic": 2.0,
+      "coverage": 90.0,
+      "crap": 2.004,
+      "uncovered": [
+        {
+          "start": 1659,
+          "end": 1659
+        }
+      ]
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "RolloutIndex::scan",
+      "line": 104,
+      "cyclomatic": 2.0,
+      "coverage": 90.32258064516128,
+      "crap": 2.0036252559497836,
+      "uncovered": [
+        {
+          "start": 111,
+          "end": 111
+        },
+        {
+          "start": 118,
+          "end": 118
+        },
+        {
+          "start": 131,
+          "end": 131
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::send_to",
+      "line": 145,
+      "cyclomatic": 2.0,
+      "coverage": 90.9090909090909,
+      "crap": 2.0030052592036065,
+      "uncovered": [
+        {
+          "start": 150,
+          "end": 150
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "path_is_under_codex_home",
+      "line": 93,
+      "cyclomatic": 2.0,
+      "coverage": 92.85714285714286,
+      "crap": 2.001457725947522,
+      "uncovered": [
+        {
+          "start": 98,
+          "end": 98
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "with_full_quota",
+      "line": 74,
+      "cyclomatic": 2.0,
+      "coverage": 93.33333333333333,
+      "crap": 2.0011851851851854,
+      "uncovered": [
+        {
+          "start": 76,
+          "end": 76
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireRecent::into_recent",
+      "line": 256,
+      "cyclomatic": 2.0,
+      "coverage": 93.75,
+      "crap": 2.0009765625,
+      "uncovered": [
+        {
+          "start": 268,
+          "end": 268
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "spawn_remote_query",
+      "line": 170,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "host_summaries",
+      "line": 188,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "resolve_show_target",
+      "line": 462,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "local_list",
+      "line": 967,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "init_app",
+      "line": 215,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 215,
+          "end": 232
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "visible_height",
+      "line": 320,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "launch_remote_resume",
+      "line": 504,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "remove_stale_output",
+      "line": 550,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "launch_resume",
+      "line": 737,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "is_quick_exit",
+      "line": 764,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/remote/config.rs",
+      "function": "resolve_hosts",
+      "line": 19,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::set_state",
+      "line": 176,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::close",
+      "line": 187,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::on_hello",
+      "line": 241,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "cancel_request",
+      "line": 91,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "truncate_summary",
+      "line": 53,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "strip_leading_recog_automation_marker",
+      "line": 63,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "find_summary_from_tail",
+      "line": 450,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "all_needs_met",
+      "line": 503,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "opencode_databases_for_search_paths",
+      "line": 1087,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "run_child",
+      "line": 406,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_remote_child",
+      "line": 415,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "ssh_exit_result",
+      "line": 435,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "resume_desktop",
+      "line": 536,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 536,
+          "end": 540
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "exec_command",
+      "line": 640,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 640,
+          "end": 643
+        }
+      ]
+    },
+    {
+      "file": "./src/resume/fork.rs",
+      "function": "latest_tip_uuid",
+      "line": 62,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "add_claude_cli_path",
+      "line": 100,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "ensure_not_homebrew",
+      "line": 36,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "release_artifact_name",
+      "line": 54,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "sha256_of",
+      "line": 183,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "verify_downloaded",
+      "line": 207,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "build_regex_matcher",
+      "line": 61,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "is_regex_slash_command_query",
+      "line": 136,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "slash_command_search_head",
+      "line": 140,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "push_unique",
+      "line": 150,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "drain_stderr",
+      "line": 420,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "kill_and_reap_child",
+      "line": 513,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "reap_child",
+      "line": 521,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "signal_done",
+      "line": 529,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::point_at_current_rollout",
+      "line": 619,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::track_file_truncation",
+      "line": 638,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::needs_parent_resolution",
+      "line": 651,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::resolve_to_parent",
+      "line": 665,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::content_matches",
+      "line": 682,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "extract_context",
+      "line": 1276,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "is_ctrl_h",
+      "line": 83,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/dispatch.rs",
+      "function": "classify_key",
+      "line": 92,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "select_preview_message",
+      "line": 656,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "truncate_prefix",
+      "line": 949,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "preview_content_style",
+      "line": 964,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::backspace",
+      "line": 101,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::delete_forward",
+      "line": 117,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_left",
+      "line": 126,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_right",
+      "line": 136,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::delete_word_left",
+      "line": 189,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::delete_word_right",
+      "line": 200,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::default",
+      "line": 227,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 227,
+          "end": 229
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "search_path_supports_cwd_scope",
+      "line": 320,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "read_opencode_session_cwd_cached",
+      "line": 400,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "AiState::selected_hit",
+      "line": 902,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::with_remote_hosts",
+      "line": 1099,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 1099,
+          "end": 1105
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::can_filter_by_codex_cwd",
+      "line": 1117,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::edit_input",
+      "line": 1159,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::suspend_for_resume",
+      "line": 1208,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::return_from_resume",
+      "line": 1227,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::enter_tree_mode_for_hit",
+      "line": 1409,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::poll_message_counts",
+      "line": 1609,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::begin_results_for",
+      "line": 1764,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::restore_anchor",
+      "line": 1799,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::resend_recent",
+      "line": 2219,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostFilter::next",
+      "line": 33,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::reconnect_down",
+      "line": 215,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::poll",
+      "line": 222,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "session_outcome",
+      "line": 8,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::in_recent_sessions_mode",
+      "line": 32,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::on_enter",
+      "line": 225,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::enter_tree_mode_recent",
+      "line": 293,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::exit_tree_mode",
+      "line": 60,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/project_match.rs",
+      "function": "path_is_within_project",
+      "line": 10,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "resolve_ccs_path",
+      "line": 98,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "ccs_path_or_proc_exe",
+      "line": 105,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "build_agent_args",
+      "line": 134,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::branch_count",
+      "line": 197,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::project",
+      "line": 206,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "build_latest_chain",
+      "line": 609,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "opencode_database_path",
+      "line": 83,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "is_opencode_session_path",
+      "line": 90,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "bucket_parts_by_message",
+      "line": 441,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "SessionRecord::from_jsonl",
+      "line": 78,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_message_record",
+      "line": 178,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_system_record",
+      "line": 237,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_codex_tool_result",
+      "line": 343,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_codex_reasoning",
+      "line": 356,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "push_reasoning_part",
+      "line": 441,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_preview",
+      "line": 586,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_command_with_optional_args",
+      "line": 752,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "SessionSource::from_path",
+      "line": 26,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "normalize_session_path",
+      "line": 85,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "resolve_codex_subagent_session",
+      "line": 205,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "uncovered": [
+        {
+          "start": 205,
+          "end": 207
+        }
+      ]
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "resolve_codex_subagent_session_with",
+      "line": 209,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "is_walkable_dir",
+      "line": 409,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "is_session_file",
+      "line": 416,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "codex_home",
+      "line": 64,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "RolloutIndex::current_rollout_for_thread",
+      "line": 148,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "remote_hosts",
+      "line": 259,
+      "cyclomatic": 1.0,
+      "coverage": 50.0,
+      "crap": 1.125,
+      "uncovered": [
+        {
+          "start": 261,
+          "end": 263
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "install_panic_hook",
+      "line": 372,
+      "cyclomatic": 1.0,
+      "coverage": 50.0,
+      "crap": 1.125,
+      "uncovered": [
+        {
+          "start": 375,
+          "end": 378
+        }
+      ]
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "resolve_tree_target_or_exit",
+      "line": 157,
+      "cyclomatic": 1.0,
+      "coverage": 60.0,
+      "crap": 1.064,
+      "uncovered": [
+        {
+          "start": 159,
+          "end": 160
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "derive_current_project_paths",
+      "line": 241,
+      "cyclomatic": 1.0,
+      "coverage": 90.47619047619048,
+      "crap": 1.0008638375985315,
+      "uncovered": [
+        {
+          "start": 249,
+          "end": 249
+        },
+        {
+          "start": 262,
+          "end": 262
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::merge_remote",
+      "line": 577,
+      "cyclomatic": 1.0,
+      "coverage": 90.47619047619048,
+      "crap": 1.0008638375985315,
+      "uncovered": [
+        {
+          "start": 589,
+          "end": 589
+        },
+        {
+          "start": 591,
+          "end": 591
+        }
+      ]
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "host_status_spans",
+      "line": 383,
+      "cyclomatic": 1.0,
+      "coverage": 95.23809523809523,
+      "crap": 1.0001079796998165,
+      "uncovered": [
+        {
+          "start": 395,
+          "end": 395
+        }
+      ]
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "Connection::start",
+      "line": 469,
+      "cyclomatic": 1.0,
+      "coverage": 95.83333333333334,
+      "crap": 1.000072337962963,
+      "uncovered": [
+        {
+          "start": 481,
+          "end": 481
+        }
+      ]
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "join_remote",
+      "line": 184,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "render_match_content",
+      "line": 234,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "is_false",
+      "line": 395,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "own_session_id",
+      "line": 586,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "show_summary",
+      "line": 597,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "jsonl_row",
+      "line": 617,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "line_message_index",
+      "line": 721,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli.rs",
+      "function": "remote_list_row",
+      "line": 950,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/config.rs",
+      "function": "AgentSearchConfig::default",
+      "line": 42,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "file_stem_or_unknown",
+      "line": 165,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "session_id_for_resume",
+      "line": 176,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "resume_session_id",
+      "line": 480,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "select_hosts_or_exit",
+      "line": 486,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "find_host",
+      "line": 493,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "wait_for_enter",
+      "line": 792,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/config.rs",
+      "function": "host",
+      "line": 50,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "ClientTimeouts::default",
+      "line": 46,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::spawn",
+      "line": 139,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::go_down",
+      "line": 195,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::fail_pending",
+      "line": 201,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::name",
+      "line": 348,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::state",
+      "line": 352,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::poll",
+      "line": 391,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "HostClient::drop",
+      "line": 412,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "parse_reply",
+      "line": 436,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "Connection::tail",
+      "line": 495,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "detach_from_terminal",
+      "line": 536,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/client.rs",
+      "function": "detach_from_terminal",
+      "line": 542,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "Snippets::cut",
+      "line": 99,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "in_project",
+      "line": 107,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "finish_group",
+      "line": 116,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "recent",
+      "line": 175,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/server.rs",
+      "function": "tree",
+      "line": 202,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireHello::current",
+      "line": 27,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireCancel::new",
+      "line": 55,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireMatch::into_match",
+      "line": 177,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireGroup::into_group",
+      "line": 209,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireTreeRow::from",
+      "line": 279,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "TreeRow::from",
+      "line": 294,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireTree::from_tree",
+      "line": 309,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/wire.rs",
+      "function": "WireTree::into_tree",
+      "line": 319,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/ssh.rs",
+      "function": "ssh_program",
+      "line": 74,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/ssh.rs",
+      "function": "ssh_command",
+      "line": 81,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/ssh.rs",
+      "function": "shell_quote",
+      "line": 88,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "run_stdio",
+      "line": 21,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "default_handler",
+      "line": 30,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "spawn_request",
+      "line": 97,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "panic_text",
+      "line": 125,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/serve.rs",
+      "function": "lock",
+      "line": 145,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "Host::is_local",
+      "line": 61,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "SessionRef::new",
+      "line": 84,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "SessionRef::local",
+      "line": 91,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/remote/mod.rs",
+      "function": "SessionRef::local_path",
+      "line": 95,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "RecentSession::session_ref",
+      "line": 47,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "summary_is_on_latest_chain",
+      "line": 149,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "non_empty_truncated",
+      "line": 344,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "contains_any",
+      "line": 507,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "codex_cwd_for_path",
+      "line": 747,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "extract_session_id_from_head",
+      "line": 974,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "find_jsonl_files",
+      "line": 980,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "sort_recent_sessions_desc",
+      "line": 988,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/recent.rs",
+      "function": "unique_session_count",
+      "line": 1297,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "fallback_working_dir",
+      "line": 244,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "canonical_resume_path",
+      "line": 272,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "build_codex_resume_command",
+      "line": 314,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "build_opencode_resume_command",
+      "line": 457,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "wait_child",
+      "line": 581,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "IgnoredInterrupts::install",
+      "line": 617,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/launcher.rs",
+      "function": "IgnoredInterrupts::drop",
+      "line": 630,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "encode_path_for_claude",
+      "line": 6,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "walk_fs_for_path",
+      "line": 21,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/path_codec.rs",
+      "function": "decode_dash_encoded_path",
+      "line": 89,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "test_resolve_parent_session",
+      "line": 11,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "test_prepare_cli_resume_session_id",
+      "line": 16,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "runs_in_terminal",
+      "line": 26,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "resume",
+      "line": 207,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/resume/mod.rs",
+      "function": "resume_child",
+      "line": 225,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "EnvGuard::new",
+      "line": 41,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "get_search_paths",
+      "line": 63,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "is_homebrew_install",
+      "line": 30,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "parse_hash_output",
+      "line": 153,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/update.rs",
+      "function": "release_asset_urls",
+      "line": 214,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "build_ripgrep_args",
+      "line": 74,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "push_command_tag_prefilters",
+      "line": 145,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search",
+      "line": 158,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_with_options",
+      "line": 164,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_multiple_paths",
+      "line": 181,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "search_multiple_paths_with_extra_args",
+      "line": 194,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "spawn_watchdog",
+      "line": 468,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "take_child",
+      "line": 508,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/ripgrep.rs",
+      "function": "MatchProcessor::new",
+      "line": 584,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "SessionGroup::total_matches",
+      "line": 30,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "SessionGroup::capped",
+      "line": 35,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "SessionGroup::session_ref",
+      "line": 40,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "SessionGroup::latest_timestamp",
+      "line": 45,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/group.rs",
+      "function": "SessionGroup::first_match",
+      "line": 54,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/message.rs",
+      "function": "Message::from_jsonl",
+      "line": 26,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/search/message.rs",
+      "function": "Message::extract_content",
+      "line": 96,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/view.rs",
+      "function": "AppView::deref",
+      "line": 12,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "busy_style",
+      "line": 365,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "status_spans",
+      "line": 373,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "remote_label",
+      "line": 865,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "right_badge_text",
+      "line": 899,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "spans_width",
+      "line": 973,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "sanitize_single_line",
+      "line": 1436,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_search.rs",
+      "function": "highlight_line",
+      "line": 1513,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::new",
+      "line": 38,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::text",
+      "line": 55,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::cursor_pos",
+      "line": 59,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::len",
+      "line": 63,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::is_empty",
+      "line": 67,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::set_text",
+      "line": 72,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::set_text_and_cursor",
+      "line": 82,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::into_text",
+      "line": 88,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::push_char",
+      "line": 95,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_home",
+      "line": 212,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::move_end",
+      "line": 216,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "InputState::clear",
+      "line": 220,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "search_path_is_within_claude_project",
+      "line": 232,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "search_path_is_standard_codex_scope",
+      "line": 270,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "search_path_supports_opencode_cwd_scope",
+      "line": 314,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "canonicalize_path_to_string",
+      "line": 325,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::new",
+      "line": 436,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::spawn_load",
+      "line": 452,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::start_project_load",
+      "line": 462,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "RecentState::total_count",
+      "line": 615,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "AiState::searching",
+      "line": 898,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "AiState::reset_search",
+      "line": 907,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::new",
+      "line": 998,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::new_with_current_dir",
+      "line": 1003,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::with_links",
+      "line": 1107,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::with_host_links",
+      "line": 1113,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::view",
+      "line": 1149,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_key",
+      "line": 1153,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_backspace",
+      "line": 1166,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::on_delete",
+      "line": 1170,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::is_opened",
+      "line": 1238,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::clear_input",
+      "line": 1271,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_left",
+      "line": 1278,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_right",
+      "line": 1282,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_word_left",
+      "line": 1286,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_word_right",
+      "line": 1290,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_home",
+      "line": 1294,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::move_cursor_end",
+      "line": 1298,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::delete_word_left",
+      "line": 1302,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::delete_word_right",
+      "line": 1306,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::key_context",
+      "line": 1311,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::apply_local_groups",
+      "line": 1720,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::rebuild_all_groups",
+      "line": 1783,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::remote_search_request",
+      "line": 2144,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::send_recent_to",
+      "line": 2195,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::enter_ai_mode",
+      "line": 2273,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::exit_ai_mode",
+      "line": 2281,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::is_searching",
+      "line": 2380,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "show_key",
+      "line": 2405,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::deliver_local_groups_for_test",
+      "line": 2416,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "App::suspend_for_resume_for_test",
+      "line": 2424,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "test_recent",
+      "line": 2431,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/state.rs",
+      "function": "test_group",
+      "line": 2453,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostFilter::allows_remote",
+      "line": 52,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostStatus::new",
+      "line": 72,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::new",
+      "line": 123,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::has_hosts",
+      "line": 135,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::names",
+      "line": 140,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::show_pending",
+      "line": 160,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::cancel_searches",
+      "line": 179,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::cancel_recents",
+      "line": 185,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::cancel_trees",
+      "line": 190,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::groups_for",
+      "line": 232,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::status_texts",
+      "line": 240,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/hosts_state.rs",
+      "function": "HostsState::down_reasons",
+      "line": 251,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::recent_sessions_visible_items",
+      "line": 38,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::selected_group",
+      "line": 300,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/search_mode.rs",
+      "function": "App::selected_match",
+      "line": 304,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::enter_tree_mode_for_file",
+      "line": 36,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/tree_mode.rs",
+      "function": "App::find_session_file",
+      "line": 56,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tui/render_ai.rs",
+      "function": "columns",
+      "line": 129,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/project_match.rs",
+      "function": "normalize_path_for_prefix_check",
+      "line": 5,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "AgentSearchHandle::for_test",
+      "line": 80,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "AgentSearchHandle::drop",
+      "line": 92,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "system_prompt",
+      "line": 113,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "parse_hits",
+      "line": 261,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "spawn_agent_search",
+      "line": 310,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "SetOnDrop::drop",
+      "line": 535,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/agent_search.rs",
+      "function": "remote_hit_session",
+      "line": 607,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::insert_cached_content",
+      "line": 215,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::from_rows",
+      "line": 224,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "render_full_text",
+      "line": 625,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/tree/mod.rs",
+      "function": "SessionTree::new_for_test",
+      "line": 665,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "is_opencode_db_filename",
+      "line": 44,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "synthetic_session_path",
+      "line": 107,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "open_db",
+      "line": 134,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "fetch_message_rows",
+      "line": 400,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "fetch_part_rows",
+      "line": 422,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "message_created_at",
+      "line": 494,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/opencode.rs",
+      "function": "visible_text",
+      "line": 517,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_compacted_record",
+      "line": 161,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_summary_record",
+      "line": 198,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "string_field_record",
+      "line": 224,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "other_record",
+      "line": 260,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "codex_call_name",
+      "line": 369,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "codex_field_string",
+      "line": 378,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "codex_field_json",
+      "line": 388,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "codex_assistant_message",
+      "line": 392,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "json_to_string",
+      "line": 402,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_text_block",
+      "line": 476,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_tool_use_block",
+      "line": 482,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_thinking_block",
+      "line": 530,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "parse_server_tool_use_block",
+      "line": 536,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "render_full",
+      "line": 549,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "next_command_tag",
+      "line": 730,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/record.rs",
+      "function": "collapse_spaces",
+      "line": 803,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "is_codex_session_path",
+      "line": 111,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_codex_session_id_from_path",
+      "line": 120,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_session_id",
+      "line": 127,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_codex_parent_thread_id",
+      "line": 143,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_timestamp",
+      "line": 222,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_uuid",
+      "line": 232,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_parent_uuid",
+      "line": 239,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_parent_uuid_or_logical",
+      "line": 248,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_leaf_uuid",
+      "line": 257,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_record_type",
+      "line": 264,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_branch",
+      "line": 270,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "extract_cwd",
+      "line": 284,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "is_sidechain",
+      "line": 334,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "matches_scheduled_task_marker",
+      "line": 353,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "matches_ralphex_marker",
+      "line": 357,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "matches_claude_mem_content_marker",
+      "line": 361,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "matches_recog_automation_marker",
+      "line": 365,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "matches_ccs_ai_ranker_marker",
+      "line": 371,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/mod.rs",
+      "function": "resolve_parent_session",
+      "line": 502,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "RolloutName::order_key",
+      "line": 57,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "RolloutIndex::rollout_path",
+      "line": 143,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "pick_current",
+      "line": 160,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "current_rollout_among",
+      "line": 171,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "Rollouts::index",
+      "line": 197,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "resolve_segments",
+      "line": 254,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "history_lines",
+      "line": 259,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "file_lines",
+      "line": 265,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/session/codex_history.rs",
+      "function": "lines_of_segments",
+      "line": 273,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::len",
+      "line": 220,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::is_empty",
+      "line": 225,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::displayable_count",
+      "line": 230,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/dag/mod.rs",
+      "function": "SessionDag::get",
+      "line": 235,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    }
+  ],
+  "diagnostics": {
+    "analyzed_files": 38,
+    "lcov_files": 38,
+    "matched_files": 38,
+    "source_only": {
+      "count": 0,
+      "examples": []
+    },
+    "lcov_only": {
+      "count": 0,
+      "examples": []
+    }
+  },
+  "duplicates": [
+    {
+      "first_file": "./src/resume/launcher.rs",
+      "first_function": "codex_resume_invocation",
+      "first_start_line": 374,
+      "first_end_line": 382,
+      "second_file": "./src/resume/launcher.rs",
+      "second_function": "opencode_resume_invocation",
+      "second_start_line": 488,
+      "second_end_line": 496,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/resume/mod.rs",
+      "first_function": "resume",
+      "first_start_line": 207,
+      "first_end_line": 220,
+      "second_file": "./src/resume/mod.rs",
+      "second_function": "resume_child",
+      "second_start_line": 225,
+      "second_end_line": 238,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/session/mod.rs",
+      "first_function": "extract_uuid",
+      "first_start_line": 232,
+      "first_end_line": 236,
+      "second_file": "./src/session/mod.rs",
+      "second_function": "extract_parent_uuid",
+      "second_start_line": 239,
+      "second_end_line": 243,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/session/mod.rs",
+      "first_function": "extract_uuid",
+      "first_start_line": 232,
+      "first_end_line": 236,
+      "second_file": "./src/session/mod.rs",
+      "second_function": "extract_leaf_uuid",
+      "second_start_line": 257,
+      "second_end_line": 261,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/session/mod.rs",
+      "first_function": "extract_parent_uuid",
+      "first_start_line": 239,
+      "first_end_line": 243,
+      "second_file": "./src/session/mod.rs",
+      "second_function": "extract_leaf_uuid",
+      "second_start_line": 257,
+      "second_end_line": 261,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/session/record.rs",
+      "first_function": "parse_text_block",
+      "first_start_line": 476,
+      "first_end_line": 480,
+      "second_file": "./src/session/record.rs",
+      "second_function": "parse_thinking_block",
+      "second_start_line": 530,
+      "second_end_line": 534,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/tui/state.rs",
+      "first_function": "handle_cursor_move_action",
+      "first_start_line": 1486,
+      "first_end_line": 1495,
+      "second_file": "./src/tui/state.rs",
+      "second_function": "handle_mode_switch_action",
+      "second_start_line": 1512,
+      "second_end_line": 1521,
+      "score": 1.0
+    }
+  ]
+}
