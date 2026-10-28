@@ -324,7 +324,7 @@ impl SessionTree {
             let graph = build_graph_symbols(&prefix_lanes, connector);
 
             let is_compaction = node.role.as_deref() == Some("compaction")
-                || is_context_loss_message(&node.content_preview);
+                || is_context_loss_message(node.content_preview.as_deref());
 
             rows.push(TreeRow {
                 uuid: uuid.clone(),
@@ -649,7 +649,7 @@ fn build_graph_symbols(prefix_lanes: &[bool], connector: Option<bool>) -> String
 
 /// Detect messages related to context loss / auto-compaction by content.
 /// These are regular user/assistant messages but carry compaction metadata.
-fn is_context_loss_message(content_preview: &Option<String>) -> bool {
+fn is_context_loss_message(content_preview: Option<&str>) -> bool {
     let Some(preview) = content_preview else {
         return false;
     };
