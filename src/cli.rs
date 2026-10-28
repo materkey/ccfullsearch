@@ -655,6 +655,25 @@ fn jsonl_history_messages(
     messages
 }
 
+/// The message a `show` window centers on; `--line` wins when both are given.
+enum Anchor<'a> {
+    Line(usize),
+    Uuid(&'a str),
+}
+
+impl<'a> Anchor<'a> {
+    fn from_args(line: Option<usize>, uuid: Option<&'a str>) -> Result<Self, String> {
+        match (line, uuid) {
+            (Some(n), _) => Ok(Anchor::Line(n)),
+            (None, Some(u)) => Ok(Anchor::Uuid(u)),
+            (None, None) => Err(
+                "pass --line or --uuid to anchor the window (both come from search output)"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 /// Parse every message of a JSONL session and find the one `line` or `uuid`
 /// names. Shared by `ccs show` and `ccs serve`'s `show`.
 pub(crate) fn locate_jsonl_message(
@@ -662,20 +681,7 @@ pub(crate) fn locate_jsonl_message(
     line: Option<usize>,
     uuid: Option<&str>,
 ) -> Result<(Vec<Message>, usize), String> {
-    enum Anchor<'a> {
-        Line(usize),
-        Uuid(&'a str),
-    }
-    let anchor = match (line, uuid) {
-        (Some(n), _) => Anchor::Line(n),
-        (None, Some(u)) => Anchor::Uuid(u),
-        (None, None) => {
-            return Err(
-                "pass --line or --uuid to anchor the window (both come from search output)"
-                    .to_string(),
-            )
-        }
-    };
+    let anchor = Anchor::from_args(line, uuid)?;
 
     fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
     let own_path = Path::new(file_path);
@@ -692,28 +698,49 @@ pub(crate) fn locate_jsonl_message(
             }
         }
     });
-    let total_lines = messages
-        .iter()
-        .filter(|m| m.file_path.as_deref() == Some(file_path))
-        .map(|m| m.line_number)
-        .chain([last_other_line])
-        .max()
-        .unwrap_or(0);
 
     let target_idx = match anchor {
-        Anchor::Line(n) => messages
-            .iter()
-            .position(|m| m.line_number == n && m.file_path.as_deref() == Some(file_path))
-            .ok_or_else(|| match &anchor_line_kind {
-                Some(kind) => format!("line {} is not a message record ({})", n, kind),
-                None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
-            })?,
+        Anchor::Line(n) => line_message_index(
+            &messages,
+            file_path,
+            n,
+            anchor_line_kind.as_deref(),
+            last_other_line,
+        )?,
         Anchor::Uuid(u) => messages
             .iter()
             .position(|m| m.uuid.as_deref() == Some(u))
             .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?,
     };
     Ok((messages, target_idx))
+}
+
+/// Index of the message on line `n` of `file_path` itself, not of a base file
+/// stitched before it. The error names the record on that line
+/// (`anchor_line_kind`) or says the line is past the last one.
+fn line_message_index(
+    messages: &[Message],
+    file_path: &str,
+    n: usize,
+    anchor_line_kind: Option<&str>,
+    last_other_line: usize,
+) -> Result<usize, String> {
+    messages
+        .iter()
+        .position(|m| m.line_number == n && m.file_path.as_deref() == Some(file_path))
+        .ok_or_else(|| match anchor_line_kind {
+            Some(kind) => format!("line {} is not a message record ({})", n, kind),
+            None => {
+                let total_lines = messages
+                    .iter()
+                    .filter(|m| m.file_path.as_deref() == Some(file_path))
+                    .map(|m| m.line_number)
+                    .chain([last_other_line])
+                    .max()
+                    .unwrap_or(0);
+                format!("line {} is beyond end of file ({} lines)", n, total_lines)
+            }
+        })
 }
 
 /// Load an Opencode session's messages and find the one `uuid` names.
@@ -1192,6 +1219,12 @@ mod tests {
     fn locate_jsonl_message_when_line_and_uuid_given_then_line_wins() {
         let (messages, idx) = locate_jsonl_message(&linear_fixture(), Some(3), Some("u1")).unwrap();
         assert_eq!(messages[idx].uuid.as_deref(), Some("u3"));
+    }
+
+    #[test]
+    fn locate_jsonl_message_when_line_past_end_then_error_counts_lines() {
+        let err = locate_jsonl_message(&linear_fixture(), Some(99), None).unwrap_err();
+        assert_eq!(err, "line 99 is beyond end of file (4 lines)");
     }
 
     #[test]
