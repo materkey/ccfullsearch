@@ -662,11 +662,20 @@ pub(crate) fn locate_jsonl_message(
     line: Option<usize>,
     uuid: Option<&str>,
 ) -> Result<(Vec<Message>, usize), String> {
-    if line.is_none() && uuid.is_none() {
-        return Err(
-            "pass --line or --uuid to anchor the window (both come from search output)".to_string(),
-        );
+    enum Anchor<'a> {
+        Line(usize),
+        Uuid(&'a str),
     }
+    let anchor = match (line, uuid) {
+        (Some(n), _) => Anchor::Line(n),
+        (None, Some(u)) => Anchor::Uuid(u),
+        (None, None) => {
+            return Err(
+                "pass --line or --uuid to anchor the window (both come from search output)"
+                    .to_string(),
+            )
+        }
+    };
 
     fs::File::open(file_path).map_err(|e| format!("cannot open {}: {}", file_path, e))?;
     let own_path = Path::new(file_path);
@@ -691,20 +700,18 @@ pub(crate) fn locate_jsonl_message(
         .max()
         .unwrap_or(0);
 
-    let target_idx = if let Some(n) = line {
-        messages
+    let target_idx = match anchor {
+        Anchor::Line(n) => messages
             .iter()
             .position(|m| m.line_number == n && m.file_path.as_deref() == Some(file_path))
             .ok_or_else(|| match &anchor_line_kind {
                 Some(kind) => format!("line {} is not a message record ({})", n, kind),
                 None => format!("line {} is beyond end of file ({} lines)", n, total_lines),
-            })?
-    } else {
-        let u = uuid.expect("checked above");
-        messages
+            })?,
+        Anchor::Uuid(u) => messages
             .iter()
             .position(|m| m.uuid.as_deref() == Some(u))
-            .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?
+            .ok_or_else(|| format!("no message with uuid {} in {}", u, file_path))?,
     };
     Ok((messages, target_idx))
 }
@@ -1172,5 +1179,27 @@ mod tests {
         let (s, truncated) = truncate_chars("hi", 10);
         assert_eq!(s, "hi");
         assert!(!truncated);
+    }
+
+    fn linear_fixture() -> String {
+        format!(
+            "{}/tests/fixtures/linear_session.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    #[test]
+    fn locate_jsonl_message_when_line_and_uuid_given_then_line_wins() {
+        let (messages, idx) = locate_jsonl_message(&linear_fixture(), Some(3), Some("u1")).unwrap();
+        assert_eq!(messages[idx].uuid.as_deref(), Some("u3"));
+    }
+
+    #[test]
+    fn locate_jsonl_message_when_no_anchor_then_error() {
+        let err = locate_jsonl_message(&linear_fixture(), None, None).unwrap_err();
+        assert!(
+            err.contains("pass --line or --uuid"),
+            "unexpected error: {err}"
+        );
     }
 }
