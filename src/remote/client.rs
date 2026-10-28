@@ -476,7 +476,7 @@ impl Connection {
         let tail = stderr_tail.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let mut tail = tail.lock().unwrap_or_else(|p| p.into_inner());
+                let mut tail = tail.lock().expect("stderr tail writer never panics");
                 if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
@@ -495,7 +495,10 @@ impl Connection {
     fn tail(&self) -> String {
         // Give the stderr reader a moment to catch the last lines.
         std::thread::sleep(Duration::from_millis(20));
-        let tail = self.stderr_tail.lock().unwrap_or_else(|p| p.into_inner());
+        let tail = self
+            .stderr_tail
+            .lock()
+            .expect("stderr tail writer never panics");
         tail.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 }

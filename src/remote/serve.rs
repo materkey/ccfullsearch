@@ -130,7 +130,7 @@ fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// One whole line per message; a panicked writer elsewhere does not stop us.
+/// One whole line per message.
 fn write_line<W: Write, T: serde::Serialize>(
     output: &Arc<Mutex<W>>,
     value: &T,
@@ -145,7 +145,7 @@ fn write_line<W: Write, T: serde::Serialize>(
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .expect("no serve thread panics while holding a lock")
 }
 
 #[cfg(test)]
