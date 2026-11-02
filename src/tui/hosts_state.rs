@@ -236,13 +236,14 @@ impl HostsState {
             .flat_map(|s| s.groups.iter())
     }
 
-    /// Status text per host for the status bar, in config order.
+    /// Status text for the status bar, in config order. A healthy idle host
+    /// has none: the bar speaks up only for a search or a problem.
     pub fn status_texts(&self) -> Vec<String> {
         self.names()
             .into_iter()
             .filter_map(|name| {
                 let status = self.status.get(&name)?;
-                Some(format!("{name}: {}", status_word(status)))
+                Some(format!("{name}: {}", status_word(status)?))
             })
             .collect()
     }
@@ -259,9 +260,9 @@ impl HostsState {
     }
 }
 
-fn status_word(status: &HostStatus) -> String {
+fn status_word(status: &HostStatus) -> Option<String> {
     let word = match &status.state {
-        HostState::Connecting => "…".to_string(),
+        HostState::Connecting => return None,
         HostState::Down { reason } if reason == "ccs не найден" => reason.clone(),
         HostState::Down { .. } => "недоступен".to_string(),
         HostState::Incompatible { .. } => "обнови ccs".to_string(),
@@ -277,15 +278,12 @@ fn status_word(status: &HostStatus) -> String {
                 .collect();
             format!("ошибка ({error})")
         }
-        HostState::Ready => status
-            .results
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "ok".to_string()),
+        HostState::Ready => status.results?.to_string(),
     };
-    match &status.other_version {
+    Some(match &status.other_version {
         Some(v) if status.state == HostState::Ready => format!("{word} (ccs {v})"),
         _ => word,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1190,5 +1188,32 @@ mod tests {
             hosts.status_texts(),
             vec!["Z: ошибка (timeout)".to_string()]
         );
+    }
+
+    #[test]
+    fn status_texts_when_host_healthy_and_idle_then_nothing_shown() {
+        let mut hosts = HostsState::new(vec![Box::new(FakeLink::new("Z", HostState::Connecting))]);
+        assert_eq!(hosts.status_texts(), Vec::<String>::new());
+        let status = hosts.status.get_mut("Z").unwrap();
+        status.state = HostState::Ready;
+        assert_eq!(hosts.status_texts(), Vec::<String>::new());
+        status_of(&mut hosts).other_version = Some("0.1.0".into());
+        assert_eq!(hosts.status_texts(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn status_texts_when_search_runs_then_waiting_and_count_shown() {
+        let mut hosts = HostsState::new(vec![Box::new(FakeLink::new("Z", HostState::Ready))]);
+        status_of(&mut hosts).waiting = true;
+        assert_eq!(hosts.status_texts(), vec!["Z: …".to_string()]);
+        let status = status_of(&mut hosts);
+        status.waiting = false;
+        status.results = Some(3);
+        status.other_version = Some("0.1.0".into());
+        assert_eq!(hosts.status_texts(), vec!["Z: 3 (ccs 0.1.0)".to_string()]);
+    }
+
+    fn status_of(hosts: &mut HostsState) -> &mut HostStatus {
+        hosts.status.get_mut("Z").unwrap()
     }
 }

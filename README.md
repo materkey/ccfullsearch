@@ -331,7 +331,7 @@ ccs_path = "/home/me/.cargo/bin/ccs"
 
 `name` is an ssh alias: address, user, key and ControlMaster come from `~/.ssh/config`. Each host needs the same `ccs` version installed; `ccs_path` points at it when it is not on the PATH of a non-interactive ssh shell. `ccs` connects with `ssh -o BatchMode=yes`, so it never asks for a password: key-based login must work without a prompt.
 
-- Search and recent sessions cover every host by default. Results from this machine show at once; a host's results join the list when they arrive, and a host that is down never delays the rest. The status line shows each host: `Z270XX: 37`, `Z270XX: …` (waiting), `Z270XX: недоступен (reason)`, `Z270XX: обнови ccs` (older ccs there).
+- Search and recent sessions cover every host by default. Results from this machine show at once; a host's results join the list when they arrive, and a host that is down never delays the rest. The status line stays silent about a healthy idle host. It names a host only during a search (`Z270XX: 37`, `Z270XX: …` while waiting) or on a problem (`Z270XX: недоступен (reason)`, `Z270XX: обнови ccs` for an older ccs there).
 - Remote rows carry the host name before the project. `Enter` opens the session on its host with `ssh -t <host> ccs resume …`, in the project directory there; the tree view, preview and branch-aware resume work as for local sessions.
 - `Ctrl+A` matches a remote project by its path relative to that machine's home (`~/projects/x` on both machines is the same project).
 - `Ctrl+L` cycles the host filter and reconnects hosts that are down.
