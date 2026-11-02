@@ -17,8 +17,9 @@
 #   FPS             — frames per second sampled from the recording (default 10)
 #   COLS, ROWS      — terminal columns/rows (default 120 x 35)
 #   GIF_WIDTH       — output GIF width in px (default 720)
-#   DEMO_DURATION   — hard cap for screencapture in seconds (default 18). Must
-#                     exceed the sum of scene `sleep`s, currently ~17.5 s.
+#   DEMO_DURATION   — length of the recording in seconds (default 20). Must
+#                     exceed the sum of scene `sleep`s (~18 s) plus the time the
+#                     `kitty @` calls take; the rest is a hold on the last scene.
 
 set -euo pipefail
 
@@ -118,11 +119,9 @@ echo "demo window: kitty_id=$WIN_ID platform_window_id=$WID"
 # ----- Background video recorder -----
 # screencapture -v -l<wid> records video of the named window directly. This
 # is much smoother than looping `screencapture -t png` (which capped out at
-# ~1fps because each invocation re-acquires the window). -V caps the
-# recording length so we have a hard upper bound; the foreground driver
-# kills the recorder via SIGINT once scenes finish, which screencapture
-# handles cleanly (flushes the .mov file).
-DEMO_DURATION="${DEMO_DURATION:-18}"
+# ~1fps because each invocation re-acquires the window). -V sets the recording
+# length: the kill -INT below does not end it early (see there).
+DEMO_DURATION="${DEMO_DURATION:-20}"
 screencapture -x -o -v -V "$DEMO_DURATION" -l"$WID" "$MOV" &
 GRABBER_PID=$!
 sleep 0.4   # let recorder hook into the window before scenes start
@@ -148,26 +147,23 @@ for _ in 1 2 3; do send down; sleep 0.6; done
 send right
 sleep 1.4
 
-# Move within group
-send down; sleep 0.5
+# Move within group. It has two matches, so one Down stays inside it; the cursor
+# must stay on this group (markdown-parser), the only session with a fork.
 send down; sleep 0.5
 
 # Collapse with Left
 send left
 sleep 0.7
-send up; sleep 0.4
-send up; sleep 0.4
 
 # Tree view (Ctrl+B)
 send ctrl+b
 sleep 2.3
 
-# Navigate tree
-for _ in 1 2 3 4; do send down; sleep 0.35; done
+# Jump to the fork
+send right; sleep 1.0
 
-# Jump branches
-send right; sleep 0.45
-send right; sleep 0.8
+# Walk down to the branch that is not the latest
+for _ in 1 2 3; do send down; sleep 0.45; done
 
 # Preview with Tab, then close
 send tab
@@ -180,8 +176,8 @@ send escape
 sleep 1.0
 
 # ----- Stop recorder and close window -----
-# SIGINT (not SIGTERM) — screencapture catches it, finalises the mov header,
-# and exits cleanly. SIGTERM tends to leave a truncated/unplayable file.
+# A background job of a non-interactive bash ignores SIGINT, so wait runs until
+# -V ends the recording. SIGTERM tends to leave a truncated/unplayable file.
 kill -INT "$GRABBER_PID" 2>/dev/null || true
 wait "$GRABBER_PID" 2>/dev/null || true
 GRABBER_PID=""

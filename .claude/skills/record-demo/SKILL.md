@@ -155,6 +155,8 @@ Keep the recording ≈ 14 s / 30–35 frames / 300–500 KB:
 11. **Back to search** with `Esc` (1 s)
 12. Kill tmux without another capture
 
+`record-demo-kitty.sh` differs from the list above. `markdown-parser` is the only session with a fork, so the cursor has to stay on it: one `↓` inside the group (a second one leaves it) and no going back up. In the tree, `→` jumps to the fork, three `↓` reach the branch that is not the latest, and `Tab` previews it.
+
 ## Files in this skill
 
 | Path | Purpose |
