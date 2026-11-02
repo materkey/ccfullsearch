@@ -7,13 +7,13 @@ Main keys:
 - `Up` / `Down`: move through sessions or messages.
 - `Right` / `Left`: expand a search result so `Up` / `Down` walk its matches, then collapse it again. `Right` expands only with the input cursor at the end of the query.
 - `Enter`: resume the selected session or selected tree message.
-- `Tab` / `Ctrl+V`: show or hide the preview pane.
+- `Tab` / `Ctrl+V`: show or hide the preview of a search result (in the tree: `Tab`).
 - `Ctrl+B`: open the conversation tree.
 - `Ctrl+A`: toggle current-project filtering.
 - `Ctrl+H`: switch between manual, automated, and all sessions.
 - `Ctrl+L`: switch between all machines, this machine, remote machines and each remote host (only with remote hosts configured, see [Remote hosts](remote-hosts.md)).
 - `Ctrl+R`: toggle regex search.
-- `Ctrl+G`: find a session across the whole history by describing it (AI search).
+- `Ctrl+G`: find a session across the whole history by describing it (AI search; Opencode sessions are left out).
 - `Ctrl+C`: clear the current query, or quit when the query is empty.
 - `Esc`: close preview or quit.
 
@@ -37,7 +37,7 @@ Useful keys in tree view:
 
 ## AI search
 
-Press `Ctrl+G`, describe the session in your own words (any language), then press `Enter`. `ccs` starts `claude -p` as a search agent over your whole history, not only the sessions on screen. The agent may only run `ccs search` and `ccs show`; it tries several phrasings and returns up to five sessions, each with a short reason.
+Press `Ctrl+G`, describe the session in your own words (any language), then press `Enter`. `ccs` starts `claude -p` as a search agent over your whole history, not only the sessions on screen, though it cannot return Opencode sessions. The agent may only run `ccs search` and `ccs show`; it tries several phrasings and returns up to five sessions, each with a short reason.
 
 A search takes about half a minute. While it runs, the status bar shows the queries the agent is trying, and `Esc` stops it. In the results, `Enter` opens a session at its latest point, `→` or `Ctrl+B` opens its tree, typing edits the query, and `Esc` returns to the list you came from.
 

@@ -7,7 +7,7 @@ ccs search "docker build" --limit 10
 ccs search "OOM|OutOfMemory" --regex --limit 20
 ```
 
-`ccs search` writes JSONL, one `{"type":"match",...}` object per matching message.
+`ccs search` writes JSONL, one `{"type":"match",...}` object per matching message. `--limit` defaults to 100.
 
 Fields:
 
@@ -27,13 +27,14 @@ Fields:
 The last line is always a summary record, even with zero matches, so consumers can tell whether the result set is complete:
 
 ```json
-{"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true}
+{"type":"summary","shown":100,"total_matches":2721,"sessions":24,"truncated":true,"hosts":[{"name":"local","status":"ok","shown":100}]}
 ```
 
 - `shown`: number of result lines emitted.
 - `total_matches`: matches found before applying `--limit`.
 - `sessions`: distinct sessions among the shown results.
 - `truncated`: `true` when results are incomplete (the limit cut them off or a per-file match cap was hit).
+- `hosts`: how each host answered: `name`, `status` (`ok`, `down`, `incompatible`, `timeout` or `error`), `shown`, and `error` with the reason when there is one.
 
 Example:
 
@@ -62,10 +63,11 @@ Codex keeps a reverted or forked thread in a new rollout file that points at a p
 
 ## `ccs list`
 
-`ccs list` writes JSONL, one object per recent session.
+`ccs list` writes JSONL, one object per recent session. `--limit` defaults to 50, and there is no summary line, so the output stops silently at the limit.
 
 Fields:
 
+- `host`
 - `session_id`
 - `project`
 - `provider`
@@ -98,6 +100,7 @@ file_path: /path/to/session.jsonl
 source: CLI
 project: my-project
 message_uuid: def-456
+host: local
 ```
 
 `message_uuid` is included when the selected row maps to a concrete message, such as a search result or tree selection.
@@ -125,3 +128,5 @@ Resume from a specific message UUID:
 ```bash
 ccs --overlay --tree /path/to/session.jsonl --resume-uuid <message-uuid>
 ```
+
+This form resumes once and exits; it does not open the picker.

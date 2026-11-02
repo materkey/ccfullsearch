@@ -51,20 +51,22 @@ cargo test
 
 ## Release
 
-1. Bump `version` in `Cargo.toml`.
+`.claude/skills/release-ccs/SKILL.md` has the full flow.
+
+1. Bump `version` in `Cargo.toml` and run `cargo check` so `Cargo.lock` follows.
 2. Update `CHANGELOG.md`.
-3. Commit and push to `main`.
-4. Publish to crates.io:
-
-   ```bash
-   cargo publish
-   ```
-
-5. Tag and push:
+3. Commit and push to `main`, then wait for green CI. A tag starts the release build, so never tag before that.
+4. Tag and push:
 
    ```bash
    git tag v<VERSION>
    git push origin v<VERSION>
    ```
 
-The tag push triggers cargo-dist, which builds release archives, shell installers, checksums, a GitHub Release, and the Homebrew formula in `materkey/homebrew-ccs`.
+   The tag push triggers cargo-dist, which builds release archives, shell installers, checksums, a GitHub Release, and the Homebrew formula in `materkey/homebrew-ccs`.
+
+5. When the Release workflow has finished, publish to crates.io. The workflow's `release: published` trigger does not fire for a release created by cargo-dist, so dispatch it by hand:
+
+   ```bash
+   gh workflow run publish-crates.yml --repo materkey/ccfullsearch -f tag=v<VERSION>
+   ```

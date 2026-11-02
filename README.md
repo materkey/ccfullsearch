@@ -74,9 +74,9 @@ If Claude, Codex or Opencode fails to start the session, `ccs` shows the error; 
   <img src="./assets/readme/how-it-works.svg" width="100%" alt="Three steps. Find a session by an exact phrase, a regex or a description. Inspect its messages and conversation tree; Codex sessions have no tree. Resume it in claude, codex or opencode; in the tree, any Claude Code message but the latest resumes as a fork.">
 </p>
 
-- **Full transcripts, not titles.** `ccs` searches user and assistant messages, tool calls and tool results, thinking blocks, image, document and attachment references, rendered slash commands, and project, branch, provider, source, timestamp and message count metadata. Results are grouped by transcript, so multiple matches from the same conversation stay together.
+- **Full transcripts, not titles.** `ccs` searches user and assistant messages, tool calls and tool results, thinking blocks and rendered slash commands. A query matches as one exact phrase, ignoring case; turn on regex (`Ctrl+R` or `--regex`) for anything looser. Results are grouped by transcript, so multiple matches from the same conversation stay together, and each row in the TUI shows the project, branch, provider, source, timestamp and message count.
 - **Resume a Claude Code session from any point.** Tree view shows conversation branches, fork points, latest-chain markers, and compaction boundaries. Resuming from a non-latest tree message creates a forked JSONL transcript and resumes that branch. Opencode sessions always open at their latest point, Codex sessions have no tree, and for Claude Desktop sessions `Enter` only opens the app on macOS.
-- **Search by description.** Press `Ctrl+G` and describe the session in your own words, in any language. A `claude -p` agent tries several phrasings over your whole history and returns up to five sessions, each with a short reason.
+- **Search by description.** Press `Ctrl+G` and describe the session in your own words, in any language. A `claude -p` agent tries several phrasings over your whole history, Opencode sessions aside, and returns up to five sessions, each with a short reason.
 - **Other machines too.** With [remote hosts](https://github.com/materkey/ccfullsearch/blob/main/docs/remote-hosts.md) configured, search, recent sessions, preview, tree and resume work over ssh next to your local sessions.
 
 ## Main keys
@@ -85,7 +85,7 @@ If Claude, Codex or Opencode fails to start the session, `ccs` shows the error; 
 | --- | --- |
 | `Up` / `Down` | Move through sessions or messages |
 | `Enter` | Resume the selected session or tree message |
-| `Tab` / `Ctrl+V` | Show or hide the preview pane |
+| `Tab` / `Ctrl+V` | Show or hide the preview of a search result (in the tree: `Tab`) |
 | `Ctrl+B` | Open the conversation tree |
 | `Ctrl+G` | Find a session by describing it (AI search) |
 | `Ctrl+A` | Toggle current-project filtering |
