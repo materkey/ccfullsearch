@@ -261,28 +261,28 @@ impl HostsState {
 }
 
 fn status_word(status: &HostStatus) -> Option<String> {
-    let word = match &status.state {
-        HostState::Connecting => return None,
-        HostState::Down { reason } if reason == "ccs не найден" => reason.clone(),
-        HostState::Down { .. } => "недоступен".to_string(),
-        HostState::Incompatible { .. } => "обнови ccs".to_string(),
-        HostState::Ready if status.waiting => "…".to_string(),
+    match &status.state {
+        HostState::Connecting => None,
+        HostState::Down { reason } if reason == "ccs не найден" => Some(reason.clone()),
+        HostState::Down { .. } => Some("недоступен".to_string()),
+        HostState::Incompatible { .. } => Some("обнови ccs".to_string()),
+        HostState::Ready => ready_word(status),
+    }
+}
+
+fn ready_word(status: &HostStatus) -> Option<String> {
+    let word = if status.waiting {
+        "…".to_string()
+    } else if let Some(error) = &status.last_error {
         // A failed request leaves the host up, but its answer is missing.
-        HostState::Ready if status.last_error.is_some() => {
-            let error: String = status
-                .last_error
-                .as_deref()
-                .unwrap_or_default()
-                .chars()
-                .take(40)
-                .collect();
-            format!("ошибка ({error})")
-        }
-        HostState::Ready => status.results?.to_string(),
+        let error: String = error.chars().take(40).collect();
+        format!("ошибка ({error})")
+    } else {
+        status.results?.to_string()
     };
     Some(match &status.other_version {
-        Some(v) if status.state == HostState::Ready => format!("{word} (ccs {v})"),
-        _ => word,
+        Some(v) => format!("{word} (ccs {v})"),
+        None => word,
     })
 }
 
@@ -1179,6 +1179,10 @@ mod tests {
         };
         assert_eq!(hosts.status_texts(), vec!["Z: недоступен".to_string()]);
         assert_eq!(hosts.down_reasons(), vec!["Z: no route".to_string()]);
+        status_of(&mut hosts).state = HostState::Down {
+            reason: "ccs не найден".into(),
+        };
+        assert_eq!(hosts.status_texts(), vec!["Z: ccs не найден".to_string()]);
         hosts.status.get_mut("Z").unwrap().state = HostState::Incompatible { version: None };
         assert_eq!(hosts.status_texts(), vec!["Z: обнови ccs".to_string()]);
         let status = hosts.status.get_mut("Z").unwrap();
