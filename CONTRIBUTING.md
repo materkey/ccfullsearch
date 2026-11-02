@@ -34,8 +34,37 @@ expectations for AI-assisted PRs.
 ## Documentation
 
 Update `README.md` when user-facing behavior changes (new CLI flags, new
-session locations, new keys, new install instructions).
+session locations, new keys, new install instructions). Details live in
+`docs/tui.md`, `docs/cli.md` and `docs/remote-hosts.md`.
 
 Update `CLAUDE.md` when internal architecture changes (new module, new data
 flow, new error model). It is the source of truth for contributors and for
 AI assistants used on the project.
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+## Release
+
+1. Bump `version` in `Cargo.toml`.
+2. Update `CHANGELOG.md`.
+3. Commit and push to `main`.
+4. Publish to crates.io:
+
+   ```bash
+   cargo publish
+   ```
+
+5. Tag and push:
+
+   ```bash
+   git tag v<VERSION>
+   git push origin v<VERSION>
+   ```
+
+The tag push triggers cargo-dist, which builds release archives, shell installers, checksums, a GitHub Release, and the Homebrew formula in `materkey/homebrew-ccs`.

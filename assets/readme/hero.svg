@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="530" viewBox="0 0 1200 530" role="img" aria-labelledby="title desc">
+  <title id="title">ccs: find the agent session you half remember</title>
+  <desc id="desc">The ccs search screen, drawn from its real layout and colors with sample data: the query connection pool timeout finds three sessions from Claude Code, Codex and Opencode, with the matching words highlighted in yellow.</desc>
+  <rect width="1200" height="530" rx="16" fill="#050606"/>
+  <g id="title-block">
+    <text x="56" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="112" font-weight="700" fill="#E5E7EB" textLength="186" lengthAdjust="spacingAndGlyphs">ccs</text>
+    <rect x="250" y="44" width="16" height="88" fill="#D24FD6"/>
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-weight="600" font-size="42">
+      <text x="306" y="78" fill="#E5E7EB" textLength="436" lengthAdjust="spacingAndGlyphs">Find the agent session</text>
+      <text x="306" y="130" fill="#E5E7EB" textLength="76" lengthAdjust="spacingAndGlyphs">you</text>
+      <rect x="390" y="94" width="278" height="50" fill="#E6E22E"/>
+      <text x="398" y="130" fill="#000000" textLength="262" lengthAdjust="spacingAndGlyphs">half remember</text>
+    </g>
+  </g>
+  <g id="search-box" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">
+    <rect x="56" y="178" width="1088" height="50" rx="3" fill="none" stroke="#D24FD6" stroke-width="2"/>
+    <rect x="72" y="166" width="84" height="24" fill="#050606"/>
+    <text x="78" y="185" font-size="20" fill="#D24FD6" textLength="72" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Search</text>
+    <text x="76" y="211" font-size="20" fill="#E5E7EB" textLength="276" lengthAdjust="spacingAndGlyphs" xml:space="preserve">connection pool timeout</text>
+    <rect x="354" y="193" width="11" height="23" fill="#E5E7EB"/>
+    <text x="56" y="262" font-size="20" fill="#6B7180" textLength="348" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Found 5 matches in 3 sessions</text>
+  </g>
+  <g id="results" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">
+    <rect x="48" y="276" width="1104" height="60" fill="#4B0082"/>
+    <path d="M58 283 l11 8 l-11 8 z" fill="#E6E22E"/>
+    <text x="82" y="298" font-size="20" fill="#E5E7EB" textLength="192" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2026-10-28 16:24</text>
+    <text x="274" y="298" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <rect x="310" y="280.8" width="144" height="23.2" fill="#5E2482"/>
+    <text x="310" y="298" font-size="20" fill="#C9C9FF" textLength="144" lengthAdjust="spacingAndGlyphs" xml:space="preserve">payments-api</text>
+    <text x="454" y="298" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="490" y="298" font-size="20" fill="#56C2FF" textLength="48" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+    <text x="538" y="298" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="574" y="298" font-size="20" fill="#9CA3AF" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">a1b2c3d4</text>
+    <text x="670" y="298" font-size="20" fill="#4EC94E" textLength="180" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> (3/42 matches)</text>
+    <text x="1048" y="298" font-size="20" fill="#FF8C5A" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">CC · cli</text>
+    <text x="82" y="327" font-size="20" fill="#9CA3AF" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Claude: </text>
+    <text x="178" y="327" font-size="20" fill="#E5E7EB" textLength="132" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Raised the </text>
+    <rect x="310" y="309.8" width="276" height="23.2" fill="#E6E22E"/>
+    <text x="310" y="327" font-size="20" fill="#000000" textLength="276" lengthAdjust="spacingAndGlyphs" xml:space="preserve">connection pool timeout</text>
+    <text x="586" y="327" font-size="20" fill="#E5E7EB" textLength="312" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> to 30 s and added a retry</text>
+    <text x="82" y="364" font-size="20" fill="#9CA3AF" textLength="192" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2026-10-21 11:07</text>
+    <text x="274" y="364" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <rect x="310" y="346.8" width="132" height="23.2" fill="#1B1F27"/>
+    <text x="310" y="364" font-size="20" fill="#8A8AFF" textLength="132" lengthAdjust="spacingAndGlyphs" xml:space="preserve">http-server</text>
+    <text x="442" y="364" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="478" y="364" font-size="20" fill="#56C2FF" textLength="12" lengthAdjust="spacingAndGlyphs" xml:space="preserve">-</text>
+    <text x="490" y="364" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="526" y="364" font-size="20" fill="#6B7180" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">f6a7b8c9</text>
+    <text x="622" y="364" font-size="20" fill="#4EC94E" textLength="180" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> (1/18 matches)</text>
+    <text x="1048" y="364" font-size="20" fill="#7AA7FF" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">CX · cli</text>
+    <text x="82" y="393" font-size="20" fill="#9CA3AF" textLength="72" lengthAdjust="spacingAndGlyphs" xml:space="preserve">User: </text>
+    <text x="154" y="393" font-size="20" fill="#9CA3AF" textLength="192" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Why do we hit a </text>
+    <rect x="346" y="375.8" width="276" height="23.2" fill="#E6E22E"/>
+    <text x="346" y="393" font-size="20" fill="#000000" textLength="276" lengthAdjust="spacingAndGlyphs" xml:space="preserve">connection pool timeout</text>
+    <text x="622" y="393" font-size="20" fill="#9CA3AF" textLength="144" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> under load?</text>
+    <text x="82" y="430" font-size="20" fill="#9CA3AF" textLength="192" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2026-09-30 09:42</text>
+    <text x="274" y="430" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <rect x="310" y="412.8" width="96" height="23.2" fill="#1B1F27"/>
+    <text x="310" y="430" font-size="20" fill="#8A8AFF" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">todo-api</text>
+    <text x="406" y="430" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="442" y="430" font-size="20" fill="#56C2FF" textLength="12" lengthAdjust="spacingAndGlyphs" xml:space="preserve">-</text>
+    <text x="454" y="430" font-size="20" fill="#6B7180" textLength="36" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
+    <text x="490" y="430" font-size="20" fill="#6B7180" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">33445566</text>
+    <text x="586" y="430" font-size="20" fill="#4EC94E" textLength="168" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> (1/9 matches)</text>
+    <text x="1048" y="430" font-size="20" fill="#AA82FF" textLength="96" lengthAdjust="spacingAndGlyphs" xml:space="preserve">OC · cli</text>
+    <text x="82" y="459" font-size="20" fill="#9CA3AF" textLength="72" lengthAdjust="spacingAndGlyphs" xml:space="preserve">User: </text>
+    <text x="154" y="459" font-size="20" fill="#9CA3AF" textLength="84" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Is the </text>
+    <rect x="238" y="441.8" width="276" height="23.2" fill="#E6E22E"/>
+    <text x="238" y="459" font-size="20" fill="#000000" textLength="276" lengthAdjust="spacingAndGlyphs" xml:space="preserve">connection pool timeout</text>
+    <text x="514" y="459" font-size="20" fill="#9CA3AF" textLength="180" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> still too low?</text>
+  </g>
+  <g id="hints" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">
+    <text x="56" y="506" font-size="20" fill="#6B7180" textLength="1056" lengthAdjust="spacingAndGlyphs" xml:space="preserve">[Enter] Resume  [Ctrl+B] Tree  [Ctrl+G] AI  [Ctrl+A] Project  [Ctrl+R] Regex  [Esc] Quit</text>
+  </g>
+</svg>

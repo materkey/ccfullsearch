@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+  <title id="title">How ccs works: find, inspect, resume</title>
+  <desc id="desc">Three steps. Find a session by an exact phrase, a regex or a description given to an agent. Inspect its messages and the conversation tree with forks; Codex sessions have no tree. Resume it in claude, codex or opencode; in the tree, any Claude Code message but the latest resumes as a fork.</desc>
+  <rect width="1200" height="440" rx="16" fill="#050606"/>
+  <g id="panels">
+    <rect x="40" y="28" width="360" height="384" rx="6" fill="#0F1216"/>
+    <text x="64" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#E5E7EB">Find</text>
+    <rect x="420" y="28" width="360" height="384" rx="6" fill="#0F1216"/>
+    <text x="444" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#E5E7EB">Inspect</text>
+    <rect x="800" y="28" width="360" height="384" rx="6" fill="#0F1216"/>
+    <text x="824" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#E5E7EB">Resume</text>
+    <path d="M392 220 h16 m-7 -7 l7 7 l-7 7" fill="none" stroke="#D24FD6" stroke-width="2.5"/>
+    <path d="M772 220 h16 m-7 -7 l7 7 l-7 7" fill="none" stroke="#D24FD6" stroke-width="2.5"/>
+  </g>
+  <g id="find" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">
+    <rect x="64" y="100" width="312" height="44" rx="3" fill="none" stroke="#D24FD6" stroke-width="2"/>
+    <rect x="78" y="112" width="144" height="23" fill="#E6E22E"/><text x="78" y="129" font-size="20" fill="#000000" textLength="144" lengthAdjust="spacingAndGlyphs" xml:space="preserve">pool timeout</text>
+    <text x="64" y="186" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">An exact phrase, or a regex.</text>
+    <rect x="64" y="226" width="312" height="44" rx="3" fill="none" stroke="#D24FD6" stroke-width="2"/>
+    <text x="78" y="255" font-size="20" fill="#E5E7EB" textLength="240" lengthAdjust="spacingAndGlyphs" xml:space="preserve">the Friday retry bug</text>
+    <text x="64" y="312" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">Or press Ctrl+G and describe it.</text>
+    <text x="64" y="340" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">An agent searches for you.</text>
+    </g>
+  <g id="tree">
+    <path d="M460 160 C460 182 486 178 486 258 V292" stroke="#6B7180" stroke-width="2.5" fill="none"/>
+    <path d="M460 116 V248" stroke="#4EC94E" stroke-width="2.5" fill="none"/>
+    <rect x="500" y="270" width="256" height="40" fill="#4B0082"/>
+    <circle cx="460" cy="116" r="7" fill="#4EC94E"/>
+    <text x="512" y="123" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="20" fill="#E5E7EB">Add retries</text>
+    <circle cx="460" cy="160" r="7" fill="#4EC94E"/>
+    <text x="512" y="167" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="20" fill="#E5E7EB">Use backoff</text>
+    <circle cx="460" cy="204" r="7" fill="#4EC94E"/>
+    <text x="512" y="211" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="20" fill="#E5E7EB">Cap at 5 tries</text>
+    <circle cx="460" cy="248" r="7" fill="#4EC94E"/>
+    <text x="512" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="20" fill="#E5E7EB">Ship it</text>
+    <circle cx="486" cy="292" r="7" fill="#E6E22E"/>
+    <text x="512" y="299" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="20" fill="#E5E7EB">Try a breaker</text>
+    <text x="444" y="336" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">Read any message. See forks</text>
+    <text x="444" y="364" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">and the latest branch (green).</text>
+    <text x="444" y="392" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">Codex sessions have no tree.</text>
+    </g>
+  <g id="resume" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">
+    <text x="824" y="118" font-size="20" fill="#FF8C5A" textLength="180" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude --resume</text>
+    <text x="824" y="154" font-size="20" fill="#7AA7FF" textLength="144" lengthAdjust="spacingAndGlyphs" xml:space="preserve">codex resume</text>
+    <text x="824" y="190" font-size="20" fill="#AA82FF" textLength="216" lengthAdjust="spacingAndGlyphs" xml:space="preserve">opencode --session</text>
+    </g>
+    <g id="resume-notes" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#9CA3AF">
+    <text x="824" y="240">Enter runs the matching one in</text>
+    <text x="824" y="268">the session's project directory.</text>
+    <text x="824" y="322">In the tree, any Claude Code</text>
+    <text x="824" y="350">message but the latest resumes</text>
+    <text x="824" y="378">as a fork, from that point.</text>
+    </g>
+</svg>
