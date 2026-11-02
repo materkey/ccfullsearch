@@ -16,10 +16,10 @@
 #   GIF             — output path (default ./demo.gif)
 #   FPS             — frames per second sampled from the recording (default 10)
 #   COLS, ROWS      — terminal columns/rows (default 120 x 35)
-#   GIF_WIDTH       — output GIF width in px (default 720)
+#   GIF_WIDTH       — output GIF width in px (default 960)
 #   DEMO_DURATION   — length of the recording in seconds (default 20). Must
 #                     exceed the sum of scene `sleep`s (~18 s) plus the time the
-#                     `kitty @` calls take; the rest is a hold on the last scene.
+#                     `kitty @` calls take.
 
 set -euo pipefail
 
@@ -87,7 +87,9 @@ rm -f "$GIF" "$MOV" "$PALETTE"
 # brittle because shell prompt indicators (fish ⠹ spinner) prepend chars.
 # PATH is critical: ccs spawns rg, and kitty launch does not inherit our shell's
 # PATH (only the env it was started with). Force /opt/homebrew/bin (and friends).
-WIN_ID=$($KITTY launch --type=os-window --title="$TITLE" --keep-focus \
+# The padding keeps text clear of the rounded window corner, which otherwise cuts
+# into the first character on screen ("Branch Tree" reads as "8ranch Tree").
+WIN_ID=$($KITTY launch --type=os-window --title="$TITLE" --keep-focus --spacing=padding=6 \
     --env "CCFS_SEARCH_PATH=$DEMO_DATA" \
     --env "CCS_DEMO=1" \
     --env "PATH=$RG_DIR:$PATH" \
@@ -193,13 +195,16 @@ echo "recorded $(du -h "$MOV" | cut -f1)"
 
 # ----- Convert mov → gif via single-pass palette -----
 # split[a][b]; [a]→palettegen; [b]→paletteuse — one decode + one fps/scale pass
-# instead of two. 64-color palette + no dithering keeps the file ~400 KB while
-# ratatui's flat color blocks survive cleanly (no dither artifacts).
+# instead of two. 64-color palette + no dithering keeps ratatui's flat color
+# blocks clean (no dither artifacts). mpdecimate drops frames that differ only by
+# the video's compression noise (about 160 of 200), which is what keeps 960 px
+# under 800 KB; a real change, even one glyph, stays. It drops the static tail too,
+# so -final_delay (centiseconds) holds the last scene before the loop restarts.
 echo "encoding GIF…"
-GIF_WIDTH="${GIF_WIDTH:-720}"
+GIF_WIDTH="${GIF_WIDTH:-960}"
 ffmpeg -y -i "$MOV" -filter_complex \
-    "fps=$FPS,scale=$GIF_WIDTH:-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" \
-    "$GIF" 2>/dev/null
+    "fps=$FPS,scale=$GIF_WIDTH:-2:flags=lanczos,mpdecimate=hi=512:lo=256:frac=0.1,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" \
+    -final_delay 300 "$GIF" 2>/dev/null
 
 SIZE=$(du -h "$GIF" | cut -f1)
 echo "Done! $GIF ($SIZE)"
