@@ -2292,10 +2292,10 @@ impl App {
     }
 
     fn submit_ai_query(&mut self) {
-        if self.ai.query.is_empty() || self.ai.searching() {
+        let query = self.ai.query.text().trim().to_string();
+        if query.is_empty() || self.ai.searching() {
             return;
         }
-        let query = self.ai.query.text().to_string();
         match crate::config::load_default_config() {
             Ok(config) => {
                 let claude = which::which("claude")
@@ -5196,6 +5196,17 @@ mod tests {
 
         assert!(app.ai.active);
         assert!(app.ai.query.is_empty());
+        assert!(!app.ai.searching());
+        assert!(app.ai.error.is_none());
+    }
+
+    #[test]
+    fn ai_input_with_only_spaces_when_enter_then_no_agent_started() {
+        let mut app = ai_app();
+        app.ai.query.set_text("   ");
+
+        app.handle_action(KeyAction::Enter);
+
         assert!(!app.ai.searching());
         assert!(app.ai.error.is_none());
     }
