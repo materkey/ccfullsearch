@@ -2278,6 +2278,14 @@ impl App {
         self.preview_mode = false;
     }
 
+    /// Open the app in AI search (`ccs ai [query]`): the AI input holds the
+    /// trimmed query, and a non-empty one starts the agent right away.
+    pub fn start_in_ai_mode(&mut self, query: &str) {
+        self.enter_ai_mode();
+        self.ai.query.set_text(query.trim());
+        self.submit_ai_query();
+    }
+
     pub fn exit_ai_mode(&mut self) {
         self.ai.active = false;
         self.ai.reset_search();
@@ -5166,6 +5174,30 @@ mod tests {
         assert!(!app.ai.searching());
         assert!(app.ai.hits.is_none());
         assert!(app.ai.active);
+    }
+
+    #[test]
+    fn fresh_app_start_in_ai_mode_with_empty_query_then_ai_input_active_and_no_agent() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        app.start_in_ai_mode("");
+
+        assert!(app.ai.active);
+        assert!(app.ai.query.is_empty());
+        assert!(!app.ai.searching());
+        assert!(app.ai.error.is_none());
+    }
+
+    #[test]
+    fn fresh_app_start_in_ai_mode_with_blank_query_then_input_empty_and_no_agent() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        app.start_in_ai_mode("   ");
+
+        assert!(app.ai.active);
+        assert!(app.ai.query.is_empty());
+        assert!(!app.ai.searching());
+        assert!(app.ai.error.is_none());
     }
 
     #[test]
