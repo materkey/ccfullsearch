@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.18.1 - 2026-11-07
+
+### Fixed
+- `ccs ai` takes a query without quotes (`ccs ai flaky docker build`), accepts `--overlay` after `ai`, and starts the search once the screen is up.
+- `--tree` with a subcommand is an error instead of being ignored.
+- A Ctrl+G query made only of spaces no longer starts a search.
+
+### Changed
+- Release builds use cargo-dist 0.34.0.
+
 ## v0.18.0 - 2026-11-07
 
 ### New Features
