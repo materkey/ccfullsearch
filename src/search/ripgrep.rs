@@ -2569,139 +2569,58 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_search_watchdog_cancels_when_no_matches_emitted() {
-        // Regression for a stuck-cancel bug: when `rg` is busy scanning a
-        // corpus that produces *no* matches, the per-line cancel check
-        // inside `BufReader::lines()` never fires because `read_line()`
-        // blocks waiting for output that never comes. Without the 50 ms
-        // watchdog the user would see "Searching…" until rg exits
-        // naturally even after cancelling — wasted work and battery.
+    fn rg_blocked_with_no_output_when_cancelled_then_search_returns_cancelled_promptly() {
+        // Regression for a stuck-cancel bug: while `rg` prints nothing, the
+        // per-line cancel check never runs because `read_line()` blocks, so
+        // only the 50 ms watchdog can kill rg after a cancel.
         //
-        // The contract this test pins: after `cancel.store(true)`, the
-        // worker thread must return *promptly* (≪ natural scan time)
-        // with Err("cancelled"). The Err vs Ok distinction alone is not
-        // enough to validate the watchdog (the post-loop cancel check
-        // in `search_single_path` would convert a natural-completion
-        // Ok into Err("cancelled") even without the watchdog) — the
-        // *responsiveness* assertion is what proves the watchdog
-        // actually killed rg mid-scan.
-        //
-        // Determinism strategy: instead of a multi-GB fixture (which is
-        // brittle on slow disks and slow CI), we exploit per-file `open`
-        // overhead by creating many tiny files and forcing single-thread
-        // rg. With ~10000 small files, file traversal dominates rg's
-        // wall-clock and reliably pushes probe_elapsed past 100 ms even
-        // on fast hardware (M-series), without burning gigabytes of
-        // disk space. Throughput-based slowdown is unreliable because rg
-        // scans hundreds of MB/s even with --threads 1 on hot pages.
+        // rg given a FIFO with no writer blocks in open() forever and prints
+        // nothing, on any machine. A scan that merely takes long depends on
+        // disk and CPU speed: a large fixture of small files once finished
+        // in 95 ms on a fast CI runner and the test could not tell a working
+        // watchdog from a broken one. Here a broken watchdog means the
+        // search never returns, which the timeout below turns into a failure.
+        use std::os::unix::ffi::OsStrExt;
+
         let temp_dir = TempDir::new().unwrap();
-        const FILE_COUNT: usize = 20_000;
-        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"haystack line"}]},"sessionId":"sess1","timestamp":"2025-01-09T10:00:00Z"}"#;
-        // ~120 bytes per file × 20k = ~2.4 MB content + filesystem
-        // block overhead (~80 MB on common filesystems with 4 KB blocks).
-        for f in 0..FILE_COUNT {
-            create_test_session(&temp_dir, &format!("nomatch_{:05}.jsonl", f), line);
-        }
+        let fifo = temp_dir.path().join("blocked.jsonl");
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `fifo_c` is a valid NUL-terminated path that outlives the call.
+        let rc = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
 
-        // Force single-threaded rg so per-file overhead dominates and
-        // timing is reproducible across hosts.
-        let extra_args: Vec<String> = vec!["--threads".to_string(), "1".to_string()];
-
-        // Warm up the directory entry cache so the probe and the
-        // cancellation run are both hot — eliminates cold-vs-hot timing
-        // skew that would otherwise make the cancel run appear faster
-        // than the watchdog actually achieved.
-        let warmup_cancel = Arc::new(AtomicBool::new(false));
-        let _ = search_multiple_paths_with_extra_args(
-            "ZZZ_NEVER_MATCHES_ZZZ",
-            &[temp_dir.path().to_str().unwrap().to_string()],
-            false,
-            &warmup_cancel,
-            &extra_args,
-        );
-
-        // Probe natural scan time on hot pages.
-        let probe_cancel = Arc::new(AtomicBool::new(false));
-        let probe_start = std::time::Instant::now();
-        let probe = search_multiple_paths_with_extra_args(
-            "ZZZ_NEVER_MATCHES_ZZZ",
-            &[temp_dir.path().to_str().unwrap().to_string()],
-            false,
-            &probe_cancel,
-            &extra_args,
-        )
-        .expect("probe should succeed (no matches is success)");
-        let probe_elapsed = probe_start.elapsed();
-        assert!(
-            probe.matches.is_empty(),
-            "fixture should produce no matches"
-        );
-        assert!(
-            probe_elapsed >= std::time::Duration::from_millis(100),
-            "fixture is too small: probe_elapsed={:?} (need ≥ 100 ms for the responsiveness assertion to discriminate). \
-             Increase FILE_COUNT.",
-            probe_elapsed
-        );
-
-        // Run the cancellation experiment. Cancel-after = 20 ms is a
-        // small fraction of expected scan time even on fast hosts.
-        let cancel_after = std::time::Duration::from_millis(20);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_worker = cancel.clone();
-        let path = temp_dir.path().to_str().unwrap().to_string();
-        let extra_for_worker = extra_args.clone();
-
-        let spawn_start = std::time::Instant::now();
-        let handle = std::thread::spawn(move || {
-            search_multiple_paths_with_extra_args(
+        let path = fifo.to_str().unwrap().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = search_multiple_paths_with_extra_args(
                 "ZZZ_NEVER_MATCHES_ZZZ",
                 &[path],
                 false,
                 &cancel_for_worker,
-                &extra_for_worker,
-            )
+                &[],
+            );
+            let _ = tx.send(result);
         });
 
-        std::thread::sleep(cancel_after);
+        std::thread::sleep(Duration::from_millis(20));
         cancel.store(true, Ordering::Relaxed);
 
-        let result = handle.join().expect("worker thread panicked");
-        let total_elapsed = spawn_start.elapsed();
-
-        // Contract: result must be Err("cancelled"). This is enforced
-        // by the post-loop cancel check regardless of whether the
-        // watchdog fired, but it pins the contract that cancellation
-        // does not silently drop into Ok.
-        match &result {
-            Err(msg) => assert_eq!(
-                msg, "cancelled",
-                "expected Err(\"cancelled\"), got: {}",
-                msg
-            ),
-            Ok(_) => {
-                panic!("watchdog regression: cancel returned Ok instead of Err(\"cancelled\")")
+        let result = match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(_) => {
+                // Release rg (and with it the worker) before failing, so a
+                // broken watchdog does not leave a process blocked forever.
+                drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+                let _ = worker.join();
+                panic!("cancelled search did not return within 2 s: the watchdog did not kill rg");
             }
-        }
-
-        // Responsiveness contract: total wall-clock must be substantially
-        // below the natural probe time. If the watchdog were absent and
-        // the per-line cancel check never fired (the bug scenario),
-        // `total_elapsed` would be ≈ probe_elapsed because the worker
-        // would have to wait for natural rg completion. We require
-        // total_elapsed < probe_elapsed / 2 — strict enough to catch a
-        // broken watchdog (which would push total ≈ probe), tolerant of
-        // the 50 ms watchdog poll cadence + 20 ms cancel_after sleep.
-        let max_total = probe_elapsed / 2;
-        assert!(
-            total_elapsed < max_total,
-            "Cancelled search took {:?}, expected < {:?} (probe_elapsed={:?}, cancel_after={:?}); \
-             watchdog likely did not observe the cancel flag in time — search ran to natural completion",
-            total_elapsed,
-            max_total,
-            probe_elapsed,
-            cancel_after
-        );
+        };
+        worker.join().expect("worker thread panicked");
+        assert_eq!(result.err().as_deref(), Some("cancelled"));
     }
 
     /// Probe the actual pipe buffer size on Linux via `F_GETPIPE_SZ` so
