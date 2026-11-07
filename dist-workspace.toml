@@ -27,3 +27,7 @@ install-updater = false
 # Runtime dependencies for Homebrew formula
 [dist.dependencies.homebrew]
 ripgrep = { stage = ["run"] }
+
+# GitHub retired the macos-14 runner that dist 0.31.0 picks for Apple Silicon
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
