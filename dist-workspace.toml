@@ -23,6 +23,8 @@ unix-archive = ".tar.gz"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# TEMPORARY: build every target on this PR without publishing
+pr-run-mode = "upload"
 
 # Runtime dependencies for Homebrew formula
 [dist.dependencies.homebrew]
