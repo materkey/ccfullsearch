@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.18.0 - 2026-11-07
+
+### New Features
+- `ccs ai [query]` opens the picker straight in AI search; with a query the search starts at once. Handy where Ctrl shortcuts are awkward, such as a terminal on a phone.
+
+### Changed
+- A remote host appears in the status line only during a search or when something is wrong, not on every start.
+- The README is a short landing page; the full reference moved to `docs/`.
+
 ## v0.17.2 - 2026-10-27
 
 ### New Features
