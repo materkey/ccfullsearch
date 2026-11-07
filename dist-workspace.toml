@@ -28,6 +28,7 @@ install-updater = false
 [dist.dependencies.homebrew]
 ripgrep = { stage = ["run"] }
 
-# GitHub retired the macos-14 runner that dist 0.31.0 picks for Apple Silicon
+# GitHub retired the macos-14 runner that dist 0.31.0 picks for Apple Silicon.
+# Drop this table once an upgraded dist defaults to a supported runner.
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
