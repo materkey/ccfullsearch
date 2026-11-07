@@ -82,6 +82,15 @@ Example:
 ccs list --limit 20
 ```
 
+## `ccs ai`
+
+`ccs ai` opens the TUI already in AI search, as if you had pressed `Ctrl+G`. With a query it starts the search right away. It helps where `Ctrl` shortcuts are awkward, such as a terminal on a phone.
+
+```bash
+ccs ai
+ccs ai "where I fixed the flaky docker build"
+```
+
 ## `ccs pick`
 
 `ccs pick` opens the same TUI, but prints the selected session as key-value output. It exits with code `0` after a selection and `1` on cancel. The TUI draws on stdout, so a script that captures the output needs `--output`.

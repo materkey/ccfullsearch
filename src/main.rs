@@ -83,6 +83,11 @@ enum Commands {
         #[arg(long, default_value = "local")]
         host: String,
     },
+    /// Open the TUI in AI search (Ctrl+G), starting it right away when a query is given
+    Ai {
+        /// Describe the session in your own words
+        query: Option<String>,
+    },
     /// Pick a session interactively and output its info
     Pick {
         /// Optional initial search query
@@ -363,7 +368,7 @@ fn main() -> io::Result<()> {
     }
 
     match cli.command {
-        Some(cmd) => run_subcommand(cmd),
+        Some(cmd) => run_subcommand(cmd, cli.overlay),
         None => run_tui_mode(cli.tree, cli.resume_uuid, cli.overlay),
     }
 }
@@ -379,7 +384,7 @@ fn install_panic_hook() {
 }
 
 /// Handle CLI subcommands (non-TUI entry points, plus the pick picker).
-fn run_subcommand(cmd: Commands) -> io::Result<()> {
+fn run_subcommand(cmd: Commands, overlay: bool) -> io::Result<()> {
     match cmd {
         Commands::Search {
             query,
@@ -431,6 +436,12 @@ fn run_subcommand(cmd: Commands) -> io::Result<()> {
             );
             Ok(())
         }
+        Commands::Ai { query } => run_tui_loop(
+            ccs::get_search_paths(),
+            None,
+            overlay,
+            Some(query.unwrap_or_default()),
+        ),
         Commands::Pick {
             query,
             output,
@@ -590,7 +601,7 @@ fn run_tui_mode(
         return run_direct_resume(target, uuid, &search_paths, overlay);
     }
 
-    run_tui_loop(search_paths, tree_target, overlay)
+    run_tui_loop(search_paths, tree_target, overlay, None)
 }
 
 /// Resume a session directly (no TUI) from the given `--tree` target and
@@ -619,17 +630,27 @@ fn run_direct_resume(
 
 /// Return to the TUI after an overlay session, a quick exit from a resumed
 /// session, or a failed launch. The same app comes back each time, so the
-/// picker reopens in the state it was left in.
+/// picker reopens in the state it was left in. `ai_query` set opens it in AI
+/// search (`ccs ai`).
 fn run_tui_loop(
     search_paths: Vec<String>,
     tree_target: Option<String>,
     overlay: bool,
+    ai_query: Option<String>,
 ) -> io::Result<()> {
     let mut app = init_app(search_paths, tree_target, false, None);
+    open_ai_if_asked(&mut app, ai_query);
     while handle_outcome(run_tui(&mut app)?, overlay, &mut app) {
         discard_pending_events();
     }
     Ok(())
+}
+
+/// Open AI search when `ccs ai` asked for it; `None` leaves the picker as is.
+fn open_ai_if_asked(app: &mut ccs::tui::App, ai_query: Option<String>) {
+    if let Some(query) = ai_query {
+        app.start_in_ai_mode(&query);
+    }
 }
 
 /// Drop key events crossterm read ahead before the session took the terminal.
@@ -894,6 +915,42 @@ mod tests {
         let cli = Cli::parse_from(["ccs", "--overlay", "--tree", "some-id"]);
         assert!(cli.overlay);
         assert_eq!(cli.tree.as_deref(), Some("some-id"));
+    }
+
+    #[test]
+    fn ccs_ai_without_query_when_parsed_then_ai_command_has_no_query() {
+        let cli = Cli::parse_from(["ccs", "ai"]);
+        assert!(matches!(cli.command, Some(Commands::Ai { query: None })));
+    }
+
+    #[test]
+    fn ccs_ai_with_query_when_parsed_then_query_is_kept() {
+        let cli = Cli::parse_from(["ccs", "ai", "docker build fix"]);
+        assert!(
+            matches!(cli.command, Some(Commands::Ai { query: Some(ref q) }) if q == "docker build fix")
+        );
+    }
+
+    #[test]
+    fn ccs_overlay_ai_when_parsed_then_overlay_and_query_are_set() {
+        let cli = Cli::parse_from(["ccs", "--overlay", "ai", "q"]);
+        assert!(cli.overlay);
+        assert!(matches!(cli.command, Some(Commands::Ai { query: Some(ref q) }) if q == "q"));
+    }
+
+    #[test]
+    fn plain_ccs_when_no_ai_query_then_picker_stays_in_search() {
+        let mut app = ccs::tui::App::new(vec![]);
+        open_ai_if_asked(&mut app, None);
+        assert!(!app.ai.active);
+    }
+
+    #[test]
+    fn ccs_ai_when_empty_query_then_picker_opens_in_ai_input() {
+        let mut app = ccs::tui::App::new(vec![]);
+        open_ai_if_asked(&mut app, Some(String::new()));
+        assert!(app.ai.active);
+        assert!(!app.ai.searching());
     }
 
     #[test]

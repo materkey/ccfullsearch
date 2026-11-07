@@ -104,6 +104,7 @@ ccs search "OOM|OutOfMemory" --regex --limit 20
 ccs show /path/to/session.jsonl --line 381      # messages around a match
 ccs list --limit 20                             # recent sessions as JSONL
 ccs pick "docker" --output /tmp/choice.txt      # interactive picker, writes the choice to a file
+ccs ai "flaky docker build fix"                 # TUI opened in AI search, agent already running
 ```
 
 Output fields are in the [CLI reference](https://github.com/materkey/ccfullsearch/blob/main/docs/cli.md). It also covers `--tree`, `--resume-uuid` and overlay mode: `ccs --overlay` keeps the picker open after a session ends.

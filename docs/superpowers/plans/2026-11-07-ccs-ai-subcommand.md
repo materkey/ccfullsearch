@@ -50,7 +50,7 @@
 - `Commands::Ai { query: Option<String> }` with doc "Open the TUI in AI search (Ctrl+G), optionally starting it with a query".
 - `run_tui_loop(search_paths, tree_target, overlay, ai_query: Option<String>)`: `Some(q)` → `app.start_in_ai_mode(&q)` after `init_app`. `run_subcommand(cmd, overlay)` takes `cli.overlay` and routes `Commands::Ai { query }` to `run_tui_loop(get_search_paths(), None, overlay, Some(query.unwrap_or_default()))`.
 
-- [ ] Write failing parse tests: `ccs ai - parse - ai command without query`; `ccs ai "sauna" - parse - query is sauna`; `ccs --overlay ai q - parse - overlay set and query q`.
+- [ ] Write failing parse tests: `ccs ai - parse - ai command without query`; `ccs ai "docker build fix" - parse - query is kept`; `ccs --overlay ai q - parse - overlay set and query q`.
 - [ ] Run → fails to compile. Implement. Run → pass.
 - [ ] Docs lines. fmt, clippy, full `cargo test`.
-- [ ] Manual check: `cargo run -- ai` opens AI input; `cargo run -- ai "сауна"` starts the agent. Commit.
+- [ ] Manual check: `cargo run -- ai` opens AI input; `cargo run -- ai "docker build fix"` starts the agent. Commit.
