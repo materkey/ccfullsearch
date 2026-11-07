@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use crossterm::{
     cursor,
     event::{self, Event, KeyEventKind},
@@ -23,7 +23,7 @@ struct Cli {
     tree: Option<String>,
 
     /// Overlay mode: resume sessions as child processes and return to TUI after exit
-    #[arg(long)]
+    #[arg(long, global = true)]
     overlay: bool,
 
     /// Message UUID to resume from (for branch-aware resume, used with --tree)
@@ -85,8 +85,8 @@ enum Commands {
     },
     /// Open the TUI in AI search (Ctrl+G), starting it right away when a query is given
     Ai {
-        /// Describe the session in your own words
-        query: Option<String>,
+        /// Describe the session in your own words; quotes are optional
+        query: Vec<String>,
     },
     /// Pick a session interactively and output its info
     Pick {
@@ -361,6 +361,9 @@ fn handle_event(app: &mut ccs::tui::App, event: Event) {
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+    if let Err(e) = reject_tree_with_subcommand(&cli) {
+        e.exit();
+    }
     // `serve` speaks a protocol on stdout; the hook's terminal escapes
     // would corrupt it, and it never draws a TUI.
     if !matches!(cli.command, Some(Commands::Serve { .. })) {
@@ -368,9 +371,28 @@ fn main() -> io::Result<()> {
     }
 
     match cli.command {
-        Some(cmd) => run_subcommand(cmd, cli.overlay),
+        Some(Commands::Ai { query }) => run_tui_loop(
+            ccs::get_search_paths(),
+            None,
+            cli.overlay,
+            TuiStart::Ai(query.join(" ")),
+        ),
+        Some(cmd) => run_subcommand(cmd),
         None => run_tui_mode(cli.tree, cli.resume_uuid, cli.overlay),
     }
+}
+
+/// `--tree` (and `--resume-uuid`, which needs it) only applies to plain `ccs`;
+/// a subcommand would drop it silently. clap's own subcommand conflict would
+/// also reject the global `--overlay`, so this check is separate.
+fn reject_tree_with_subcommand(cli: &Cli) -> Result<(), clap::Error> {
+    if cli.tree.is_some() && cli.command.is_some() {
+        return Err(Cli::command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--tree cannot be used with a subcommand",
+        ));
+    }
+    Ok(())
 }
 
 /// Set panic hook to restore terminal on unexpected crashes.
@@ -384,7 +406,8 @@ fn install_panic_hook() {
 }
 
 /// Handle CLI subcommands (non-TUI entry points, plus the pick picker).
-fn run_subcommand(cmd: Commands, overlay: bool) -> io::Result<()> {
+/// `ccs ai` is a TUI mode like plain `ccs` and runs from `main`.
+fn run_subcommand(cmd: Commands) -> io::Result<()> {
     match cmd {
         Commands::Search {
             query,
@@ -436,12 +459,7 @@ fn run_subcommand(cmd: Commands, overlay: bool) -> io::Result<()> {
             );
             Ok(())
         }
-        Commands::Ai { query } => run_tui_loop(
-            ccs::get_search_paths(),
-            None,
-            overlay,
-            Some(query.unwrap_or_default()),
-        ),
+        Commands::Ai { .. } => unreachable!("main runs ccs ai as a TUI mode"),
         Commands::Pick {
             query,
             output,
@@ -601,7 +619,7 @@ fn run_tui_mode(
         return run_direct_resume(target, uuid, &search_paths, overlay);
     }
 
-    run_tui_loop(search_paths, tree_target, overlay, None)
+    run_tui_loop(search_paths, tree_target, overlay, TuiStart::Picker)
 }
 
 /// Resume a session directly (no TUI) from the given `--tree` target and
@@ -630,26 +648,34 @@ fn run_direct_resume(
 
 /// Return to the TUI after an overlay session, a quick exit from a resumed
 /// session, or a failed launch. The same app comes back each time, so the
-/// picker reopens in the state it was left in. `ai_query` set opens it in AI
-/// search (`ccs ai`).
+/// picker reopens in the state it was left in.
 fn run_tui_loop(
     search_paths: Vec<String>,
     tree_target: Option<String>,
     overlay: bool,
-    ai_query: Option<String>,
+    start: TuiStart,
 ) -> io::Result<()> {
     let mut app = init_app(search_paths, tree_target, false, None);
-    open_ai_if_asked(&mut app, ai_query);
+    start.apply_to(&mut app);
     while handle_outcome(run_tui(&mut app)?, overlay, &mut app) {
         discard_pending_events();
     }
     Ok(())
 }
 
-/// Open AI search when `ccs ai` asked for it; `None` leaves the picker as is.
-fn open_ai_if_asked(app: &mut ccs::tui::App, ai_query: Option<String>) {
-    if let Some(query) = ai_query {
-        app.start_in_ai_mode(&query);
+/// What the TUI shows first.
+enum TuiStart {
+    /// The session picker (plain `ccs`).
+    Picker,
+    /// AI search with this query in its input (`ccs ai`); empty waits for one.
+    Ai(String),
+}
+
+impl TuiStart {
+    fn apply_to(self, app: &mut ccs::tui::App) {
+        if let TuiStart::Ai(query) = self {
+            app.start_in_ai_mode(&query);
+        }
     }
 }
 
@@ -918,38 +944,59 @@ mod tests {
     }
 
     #[test]
-    fn ccs_ai_without_query_when_parsed_then_ai_command_has_no_query() {
+    fn ccs_ai_without_query_when_parsed_then_query_has_no_words() {
         let cli = Cli::parse_from(["ccs", "ai"]);
-        assert!(matches!(cli.command, Some(Commands::Ai { query: None })));
+        assert!(matches!(cli.command, Some(Commands::Ai { query }) if query.is_empty()));
     }
 
     #[test]
-    fn ccs_ai_with_query_when_parsed_then_query_is_kept() {
-        let cli = Cli::parse_from(["ccs", "ai", "docker build fix"]);
+    fn ccs_ai_with_unquoted_words_when_parsed_then_every_word_is_kept() {
+        let cli = Cli::parse_from(["ccs", "ai", "flaky", "docker", "build"]);
         assert!(
-            matches!(cli.command, Some(Commands::Ai { query: Some(ref q) }) if q == "docker build fix")
+            matches!(cli.command, Some(Commands::Ai { query }) if query == ["flaky", "docker", "build"])
         );
     }
 
     #[test]
-    fn ccs_overlay_ai_when_parsed_then_overlay_and_query_are_set() {
-        let cli = Cli::parse_from(["ccs", "--overlay", "ai", "q"]);
+    fn ccs_ai_with_overlay_after_query_when_parsed_then_overlay_is_set() {
+        let cli = Cli::parse_from(["ccs", "ai", "q", "--overlay"]);
         assert!(cli.overlay);
-        assert!(matches!(cli.command, Some(Commands::Ai { query: Some(ref q) }) if q == "q"));
+        assert!(matches!(cli.command, Some(Commands::Ai { query }) if query == ["q"]));
     }
 
     #[test]
-    fn plain_ccs_when_no_ai_query_then_picker_stays_in_search() {
+    fn ccs_overlay_before_ai_when_parsed_then_overlay_and_query_are_set() {
+        let cli = Cli::parse_from(["ccs", "--overlay", "ai", "q"]);
+        assert!(cli.overlay);
+        assert!(matches!(cli.command, Some(Commands::Ai { query }) if query == ["q"]));
+    }
+
+    #[test]
+    fn ccs_tree_with_ai_when_checked_then_conflict_error() {
+        let cli = Cli::parse_from(["ccs", "--tree", "/path/s.jsonl", "ai"]);
+        let err = reject_tree_with_subcommand(&cli).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn ccs_tree_alone_when_checked_then_accepted() {
+        let cli = Cli::parse_from(["ccs", "--tree", "/path/s.jsonl"]);
+        assert!(reject_tree_with_subcommand(&cli).is_ok());
+    }
+
+    #[test]
+    fn picker_start_when_applied_then_app_stays_in_search() {
         let mut app = ccs::tui::App::new(vec![]);
-        open_ai_if_asked(&mut app, None);
+        TuiStart::Picker.apply_to(&mut app);
         assert!(!app.ai.active);
     }
 
     #[test]
-    fn ccs_ai_when_empty_query_then_picker_opens_in_ai_input() {
+    fn ai_start_with_query_when_applied_then_ai_input_holds_query_and_agent_waits_for_tui() {
         let mut app = ccs::tui::App::new(vec![]);
-        open_ai_if_asked(&mut app, Some(String::new()));
+        TuiStart::Ai("docker build".into()).apply_to(&mut app);
         assert!(app.ai.active);
+        assert_eq!(app.ai.query.text(), "docker build");
         assert!(!app.ai.searching());
     }
 

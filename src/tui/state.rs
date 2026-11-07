@@ -892,6 +892,9 @@ pub struct AiState {
     pub hits: Option<Vec<FoundSession>>,
     pub hit_cursor: usize,
     pub error: Option<String>,
+    /// Submit the query on the next tick: `ccs ai "<query>"` starts the
+    /// agent only once the TUI is up and drawn.
+    submit_pending: bool,
 }
 
 impl AiState {
@@ -910,6 +913,7 @@ impl AiState {
         self.hits = None;
         self.hit_cursor = 0;
         self.error = None;
+        self.submit_pending = false;
     }
 }
 
@@ -1086,6 +1090,7 @@ impl App {
                 hits: None,
                 hit_cursor: 0,
                 error: None,
+                submit_pending: false,
             },
             ccs_path: crate::agent_search::resolve_ccs_path(),
             picker_mode: false,
@@ -1545,6 +1550,7 @@ impl App {
         self.poll_recent_loads();
         self.poll_tree_load();
         self.poll_message_counts();
+        self.submit_pending_ai_query();
         self.poll_ai_result();
         self.poll_hosts();
         self.request_preview_if_needed();
@@ -2279,11 +2285,17 @@ impl App {
     }
 
     /// Open the app in AI search (`ccs ai [query]`): the AI input holds the
-    /// trimmed query, and a non-empty one starts the agent right away.
+    /// query, and the first tick submits it as if Enter were pressed.
     pub fn start_in_ai_mode(&mut self, query: &str) {
         self.enter_ai_mode();
-        self.ai.query.set_text(query.trim());
-        self.submit_ai_query();
+        self.ai.query.set_text(query);
+        self.ai.submit_pending = true;
+    }
+
+    fn submit_pending_ai_query(&mut self) {
+        if std::mem::take(&mut self.ai.submit_pending) {
+            self.submit_ai_query();
+        }
     }
 
     pub fn exit_ai_mode(&mut self) {
@@ -5177,10 +5189,11 @@ mod tests {
     }
 
     #[test]
-    fn fresh_app_start_in_ai_mode_with_empty_query_then_ai_input_active_and_no_agent() {
+    fn fresh_app_when_started_in_ai_mode_with_empty_query_then_ai_input_active_and_no_agent() {
         let mut app = App::new(vec!["/test".to_string()]);
 
         app.start_in_ai_mode("");
+        app.tick();
 
         assert!(app.ai.active);
         assert!(app.ai.query.is_empty());
@@ -5189,13 +5202,25 @@ mod tests {
     }
 
     #[test]
-    fn fresh_app_start_in_ai_mode_with_blank_query_then_input_empty_and_no_agent() {
+    fn fresh_app_when_started_in_ai_mode_with_blank_query_then_no_agent_after_tick() {
         let mut app = App::new(vec!["/test".to_string()]);
 
         app.start_in_ai_mode("   ");
+        app.tick();
 
         assert!(app.ai.active);
-        assert!(app.ai.query.is_empty());
+        assert!(!app.ai.searching());
+        assert!(app.ai.error.is_none());
+    }
+
+    #[test]
+    fn fresh_app_when_started_in_ai_mode_with_query_then_agent_waits_for_first_tick() {
+        let mut app = App::new(vec!["/test".to_string()]);
+
+        app.start_in_ai_mode("docker build");
+
+        assert!(app.ai.active);
+        assert_eq!(app.ai.query.text(), "docker build");
         assert!(!app.ai.searching());
         assert!(app.ai.error.is_none());
     }

@@ -84,11 +84,12 @@ ccs list --limit 20
 
 ## `ccs ai`
 
-`ccs ai` opens the TUI already in AI search, as if you had pressed `Ctrl+G`. With a query it starts the search right away. It helps where `Ctrl` shortcuts are awkward, such as a terminal on a phone.
+`ccs ai` opens the TUI already in AI search, as if you had pressed `Ctrl+G`. With a query it starts the search as soon as the TUI is up. It helps where `Ctrl` shortcuts are awkward, such as a terminal on a phone. Quotes around the query are optional, and `--overlay` works before or after `ai`.
 
 ```bash
 ccs ai
-ccs ai "where I fixed the flaky docker build"
+ccs ai where I fixed the flaky docker build
+ccs ai --overlay
 ```
 
 ## `ccs pick`
