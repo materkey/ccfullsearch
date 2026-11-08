@@ -1386,7 +1386,18 @@ impl App {
             // No preview in AI mode: one opened before the hits arrive would
             // cover them, and Enter would open a hit the user cannot see.
             KeyAction::Tab | KeyAction::TogglePreview => {}
-            _ if self.ai.hits.is_none() => return false,
+            _ => return self.handle_ai_hit_action(action),
+        }
+        true
+    }
+
+    /// List keys with the agent's hits on screen: they move through the hits
+    /// and open the selected one's tree. Returns false without hits.
+    fn handle_ai_hit_action(&mut self, action: &KeyAction) -> bool {
+        if self.ai.hits.is_none() {
+            return false;
+        }
+        match action {
             KeyAction::EnterTreeMode | KeyAction::EnterTreeModeRecent | KeyAction::Right => {
                 self.enter_tree_mode_for_hit()
             }
