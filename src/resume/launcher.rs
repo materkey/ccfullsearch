@@ -1412,6 +1412,22 @@ mod tests {
         ensure_session_in_index("corrupt-index", &path, &analysis);
 
         assert!(is_session_in_index(dir.path(), "corrupt-index"));
+        let index: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+        assert_eq!(index["version"], 1);
+        assert_eq!(index["originalPath"], "");
+    }
+
+    #[test]
+    fn index_entry_when_session_file_is_gone_then_mtime_zero() {
+        let (dir, path, analysis) = index_test_session("gone-file");
+        fs::remove_file(&path).unwrap();
+        drop(dir);
+
+        let entry = index_entry("gone-file", &path, &analysis);
+
+        assert_eq!(entry["fileMtime"], 0);
+        assert_eq!(entry["sessionId"], "gone-file");
     }
 
     #[test]
