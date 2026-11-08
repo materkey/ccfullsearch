@@ -96,22 +96,36 @@ pub fn classify_key(key: KeyEvent, ctx: &KeyContext) -> KeyAction {
     classify_search_key(key, ctx)
 }
 
+/// The letter of a Ctrl+letter chord, or `None` for any other key.
+fn ctrl_char(key: KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => Some(c),
+        _ => None,
+    }
+}
+
 fn classify_tree_key(key: KeyEvent) -> KeyAction {
     // Ctrl+C always exits tree mode
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+    if ctrl_char(key) == Some('c') {
         return KeyAction::ExitTreeMode;
     }
 
     match key.code {
-        KeyCode::Esc => KeyAction::ExitTreeMode,
+        KeyCode::Esc | KeyCode::Char('b') => KeyAction::ExitTreeMode,
+        KeyCode::Char('q') => KeyAction::Quit,
+        _ => classify_tree_nav(key),
+    }
+}
+
+/// Tree mode: moving through the DAG and acting on the selected row.
+fn classify_tree_nav(key: KeyEvent) -> KeyAction {
+    match key.code {
         KeyCode::Up => KeyAction::TreeUp,
         KeyCode::Down => KeyAction::TreeDown,
         KeyCode::Left => KeyAction::TreeLeft,
         KeyCode::Right => KeyAction::TreeRight,
         KeyCode::Tab => KeyAction::TreeTab,
         KeyCode::Enter => KeyAction::TreeEnter,
-        KeyCode::Char('b') => KeyAction::ExitTreeMode,
-        KeyCode::Char('q') => KeyAction::Quit,
         _ => KeyAction::Noop,
     }
 }
@@ -228,46 +242,41 @@ fn classify_word_delete(key: KeyEvent) -> Option<KeyAction> {
     None
 }
 
-fn classify_search_toggle(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> {
+/// Toggle chords whose action does not depend on the context.
+const CTRL_TOGGLES: [(char, KeyAction); 3] = [
     // Ctrl+A -> toggle project filter
-    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(KeyAction::ToggleProjectFilter);
-    }
+    ('a', KeyAction::ToggleProjectFilter),
+    // Ctrl+V -> toggle preview (same as Tab)
+    ('v', KeyAction::TogglePreview),
+    // Ctrl+E -> move cursor to end
+    ('e', KeyAction::MoveEnd),
+];
 
-    // Ctrl+L -> cycle the host filter (only with remote hosts configured)
-    if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(if ctx.has_remote_hosts {
-            KeyAction::CycleHostFilter
-        } else {
-            KeyAction::Noop
-        });
-    }
-
+fn classify_search_toggle(key: KeyEvent, ctx: &KeyContext) -> Option<KeyAction> {
     // Ctrl+H / Ctrl+Backspace -> toggle automation filter
     if is_ctrl_h(key) {
         return Some(KeyAction::ToggleAutomationFilter);
     }
 
-    // Ctrl+V -> toggle preview (same as Tab)
-    if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(KeyAction::TogglePreview);
-    }
-
-    // Ctrl+E -> move cursor to end
-    if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(KeyAction::MoveEnd);
-    }
-
-    // Ctrl+G -> toggle AI search mode
-    if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(if ctx.ai_mode {
+    let c = ctrl_char(key)?;
+    match c {
+        // Ctrl+L -> cycle the host filter (only with remote hosts configured)
+        'l' => Some(if ctx.has_remote_hosts {
+            KeyAction::CycleHostFilter
+        } else {
+            KeyAction::Noop
+        }),
+        // Ctrl+G -> toggle AI search mode
+        'g' => Some(if ctx.ai_mode {
             KeyAction::ExitAiMode
         } else {
             KeyAction::EnterAiMode
-        });
+        }),
+        _ => CTRL_TOGGLES
+            .iter()
+            .find(|(chord, _)| *chord == c)
+            .map(|(_, action)| action.clone()),
     }
-
-    None
 }
 
 fn classify_search_esc(ctx: &KeyContext) -> KeyAction {
