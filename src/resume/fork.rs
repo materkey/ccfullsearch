@@ -77,29 +77,10 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
         .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
-    let mut forked_lines = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let mut json: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if is_sidechain(&json) {
-            continue;
-        }
-        if let Some(uuid) = session::extract_uuid(&json) {
-            if branch_uuids.contains(uuid.as_str()) {
-                replace_session_id_in_value(&mut json, &new_session_id);
-                if let Ok(s) = serde_json::to_string(&json) {
-                    forked_lines.push(s);
-                }
-            }
-        }
-    }
+    let forked_lines: Vec<String> = content
+        .lines()
+        .filter_map(|line| forked_line(line, &branch_uuids, &new_session_id))
+        .collect();
 
     // Write forked file in the same directory
     let parent_dir = Path::new(file_path)
@@ -113,6 +94,26 @@ pub fn create_fork(file_path: &str, target_uuid: &str) -> Result<(String, String
         .map_err(|e| format!("Failed to write fork {}: {}", new_file_path_str, e))?;
 
     Ok((new_session_id, new_file_path_str))
+}
+
+/// One line of the fork: the record re-labelled with `new_session_id` when it
+/// is on the branch, `None` for blank, unparsable, sidechain, uuid-less and
+/// off-branch lines.
+fn forked_line(line: &str, branch_uuids: &HashSet<String>, new_session_id: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut json: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if is_sidechain(&json) {
+        return None;
+    }
+    let uuid = session::extract_uuid(&json)?;
+    if !branch_uuids.contains(uuid.as_str()) {
+        return None;
+    }
+    replace_session_id_in_value(&mut json, new_session_id);
+    serde_json::to_string(&json).ok()
 }
 
 /// Replace sessionId/session_id in an already-parsed JSON value.
@@ -630,5 +631,32 @@ mod tests {
             should_fork_for_resume(path.to_str().unwrap(), "u1"),
             "older messages should fork even when they are ancestors of the latest message"
         );
+    }
+
+    #[test]
+    fn forked_line_when_record_on_branch_then_both_session_id_keys_relabelled() {
+        let branch: HashSet<String> = ["u1".to_string()].into();
+        let line = r#"  {"uuid":"u1","sessionId":"old","session_id":"old","n":1}  "#;
+
+        let forked = forked_line(line, &branch, "new").expect("on-branch record kept");
+        let json: serde_json::Value = serde_json::from_str(&forked).unwrap();
+
+        assert_eq!(json["sessionId"], "new");
+        assert_eq!(json["session_id"], "new");
+        assert_eq!(json["n"], 1);
+    }
+
+    #[test]
+    fn forked_line_when_line_is_not_a_branch_record_then_dropped() {
+        let branch: HashSet<String> = ["u1".to_string()].into();
+        for line in [
+            "   ",
+            "{not json",
+            r#"{"uuid":"u1","isSidechain":true,"sessionId":"old"}"#,
+            r#"{"type":"summary","sessionId":"old"}"#,
+            r#"{"uuid":"u2","sessionId":"old"}"#,
+        ] {
+            assert_eq!(forked_line(line, &branch, "new"), None, "{line}");
+        }
     }
 }
