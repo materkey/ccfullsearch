@@ -38,26 +38,13 @@ impl Message {
         file_path: Option<&str>,
     ) -> Option<Self> {
         use crate::session;
-        use crate::session::record::{ContentMode, MessageRole, SessionRecord};
+        use crate::session::record::{ContentMode, SessionRecord};
 
         let json: serde_json::Value = serde_json::from_str(line).ok()?;
 
         // Use SessionRecord for type classification and content parsing
-        let record = SessionRecord::from_value(&json)?;
-        let (role, content_blocks) = match record {
-            SessionRecord::Message {
-                role,
-                content_blocks,
-                ..
-            } => {
-                let role_str = match role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                };
-                (role_str.to_string(), content_blocks)
-            }
-            _ => return None,
-        };
+        let (role, content_blocks) = role_and_blocks(SessionRecord::from_value(&json)?)?;
+        let role = role.to_string();
 
         let content = SessionRecord::render_content(&content_blocks, &ContentMode::Full);
         let text_content = SessionRecord::render_content(&content_blocks, &ContentMode::TextOnly);
@@ -98,6 +85,28 @@ impl Message {
         let blocks = parse_content_blocks(raw);
         SessionRecord::render_content(&blocks, &ContentMode::Full)
     }
+}
+
+/// The role name and content blocks of a user/assistant message record;
+/// `None` for any other record.
+fn role_and_blocks(
+    record: crate::session::record::SessionRecord,
+) -> Option<(&'static str, Vec<crate::session::record::ContentBlock>)> {
+    use crate::session::record::{MessageRole, SessionRecord};
+
+    let SessionRecord::Message {
+        role,
+        content_blocks,
+        ..
+    } = record
+    else {
+        return None;
+    };
+    let role = match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+    };
+    Some((role, content_blocks))
 }
 
 #[cfg(test)]
@@ -177,6 +186,13 @@ mod tests {
         let msg = Message::from_jsonl(jsonl, 1);
 
         assert!(msg.is_none(), "Should skip invalid JSON");
+    }
+
+    #[test]
+    fn from_jsonl_when_content_only_whitespace_then_none() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"  \n "},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+
+        assert!(Message::from_jsonl(jsonl, 1).is_none());
     }
 
     #[test]
