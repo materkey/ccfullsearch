@@ -1220,4 +1220,44 @@ mod tests {
     fn status_of(hosts: &mut HostsState) -> &mut HostStatus {
         hosts.status.get_mut("Z").unwrap()
     }
+
+    #[test]
+    fn remote_tree_preview_when_show_replies_then_text_lands_in_the_tree_row() {
+        let link = FakeLink::new("Z", HostState::Connecting);
+        let mut app = app_with(&link);
+        connected(&link, &mut app);
+        reply_recent(&link, &mut app, vec![wire_recent("r1", 23)]);
+        app.recent.cursor = app
+            .recent
+            .filtered
+            .iter()
+            .position(|s| s.session_id == "r1")
+            .unwrap();
+        app.enter_tree_mode_recent();
+        let (id, _) = link.last_sent().unwrap();
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Tree(wire_tree("r1"))),
+        });
+        app.poll_hosts();
+        app.preview_mode = true;
+
+        app.request_preview_if_needed();
+        let (id, req) = link.last_sent().unwrap();
+        assert!(matches!(req, Request::Show(_)), "{req:?}");
+        link.push(ClientEvent::Reply {
+            id,
+            result: Ok(Reply::Show(crate::remote::wire::WireShow {
+                content: "full text of u1".into(),
+                text_content: "full text of u1".into(),
+            })),
+        });
+        app.poll_hosts();
+
+        let tree = app.tree.session_tree.as_ref().unwrap();
+        assert_eq!(
+            tree.get_full_content("u1").as_deref(),
+            Some("full text of u1")
+        );
+    }
 }

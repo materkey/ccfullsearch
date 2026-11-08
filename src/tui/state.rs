@@ -2863,6 +2863,30 @@ mod tests {
     }
 
     #[test]
+    fn apply_filter_when_project_paths_without_cwd_then_only_project_sessions() {
+        let claude = claude_session_in_project();
+        let elsewhere = make_recent_session("/elsewhere/-Users-x-z/other.jsonl");
+
+        let mut state = RecentState::new(vec!["/test".to_string()]);
+        state.all = vec![claude.clone(), elsewhere];
+        state.project = Some(vec![claude]);
+
+        state.apply_filter(
+            true,
+            &["/proj/-Users-x-y".to_string()],
+            None,
+            &AutomationFilter::All,
+        );
+
+        let ids: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["claude-1"]);
+    }
+
+    #[test]
     fn test_apply_filter_drops_codex_with_unrelated_cwd() {
         let codex = codex_session_with_cwd("codex-1", "/other-proj");
 
