@@ -997,7 +997,6 @@ fn render_session_header_line(
 ) -> Line<'static> {
     let row_bg = base_style.bg;
     let base = base_style;
-    let provider = provider_badge_style(p.provider, selected, base);
     let project = if selected {
         Style::default()
             .fg(Color::Yellow)
@@ -1023,16 +1022,7 @@ fn render_session_header_line(
     } else {
         Style::default().fg(BRANCH_FG)
     };
-    let count = if selected {
-        base
-    } else {
-        Style::default().fg(Color::Green)
-    };
-    let right_meta = if selected {
-        base
-    } else {
-        Style::default().fg(DIM_FG)
-    };
+    let count = header_meta_style(selected, base, Color::Green);
 
     let mut spans = vec![
         Span::styled(prefix.to_string(), base),
@@ -1064,11 +1054,7 @@ fn render_session_header_line(
     ]);
 
     if p.has_automation {
-        let automation = if selected {
-            base
-        } else {
-            Style::default().fg(Color::Yellow)
-        };
+        let automation = header_meta_style(selected, base, Color::Yellow);
         spans.push(Span::styled(
             " [A]".to_string(),
             style_with_bg(automation, row_bg),
@@ -1076,34 +1062,55 @@ fn render_session_header_line(
     }
 
     if p.opened {
-        let opened = if selected {
-            base
-        } else {
-            Style::default().fg(DIM_FG)
-        };
+        let opened = header_meta_style(selected, base, DIM_FG);
         spans.push(Span::styled(
             OPENED_TAG.to_string(),
             style_with_bg(opened, row_bg),
         ));
     }
 
-    let badge = right_badge_text(p.provider, p.source);
-    let left_width = spans_width(&spans);
-    let badge_width = badge.chars().count();
-    if available_width > left_width + badge_width + 1 {
-        let gap = available_width - left_width - badge_width;
-        spans.push(Span::styled(" ".repeat(gap), base));
-        spans.push(Span::styled(
-            provider_badge_label(p.provider).to_string(),
-            style_with_bg(provider, row_bg),
-        ));
-        spans.push(Span::styled(
-            format!(" · {}", p.source.to_ascii_lowercase()),
-            style_with_bg(right_meta, row_bg),
-        ));
-    }
-
+    push_provider_badge(&mut spans, &p, base, selected, available_width);
     Line::from(spans)
+}
+
+/// Style of a small header field (count, tags, right-edge meta): the row's
+/// own style on the selected row, `fg` on the default background otherwise.
+fn header_meta_style(selected: bool, base: Style, fg: Color) -> Style {
+    if selected {
+        base
+    } else {
+        Style::default().fg(fg)
+    }
+}
+
+/// Right-align the `provider · source` badge after the header's left part,
+/// when the row has room for it plus a one-cell gap; otherwise leave it out.
+fn push_provider_badge(
+    spans: &mut Vec<Span<'static>>,
+    p: &SessionHeaderParts<'_>,
+    base: Style,
+    selected: bool,
+    available_width: usize,
+) {
+    let badge = right_badge_text(p.provider, p.source);
+    let left_width = spans_width(spans);
+    let badge_width = badge.chars().count();
+    if available_width <= left_width + badge_width + 1 {
+        return;
+    }
+    let row_bg = base.bg;
+    let provider = provider_badge_style(p.provider, selected, base);
+    let right_meta = header_meta_style(selected, base, DIM_FG);
+    let gap = available_width - left_width - badge_width;
+    spans.push(Span::styled(" ".repeat(gap), base));
+    spans.push(Span::styled(
+        provider_badge_label(p.provider).to_string(),
+        style_with_bg(provider, row_bg),
+    ));
+    spans.push(Span::styled(
+        format!(" · {}", p.source.to_ascii_lowercase()),
+        style_with_bg(right_meta, row_bg),
+    ));
 }
 
 /// Recent-session header text. Uses `▶` (non-expandable) and a `N msgs` tail.
