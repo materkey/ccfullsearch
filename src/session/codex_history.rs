@@ -32,19 +32,8 @@ impl RolloutName {
     pub fn parse(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?;
         let rest = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-        if rest.len() <= 20 || rest.as_bytes().get(19) != Some(&b'-') {
-            return None;
-        }
-        let timestamp = NaiveDateTime::parse_from_str(&rest[..19], "%Y-%m-%dT%H-%M-%S").ok()?;
-        let id = &rest[20..];
-        let (thread_id, rollout_id) = match id.split_once('_') {
-            Some((thread, rollout)) if !thread.is_empty() && !rollout.is_empty() => {
-                (thread, rollout)
-            }
-            Some(_) => return None,
-            None if id.is_empty() => return None,
-            None => (id, id),
-        };
+        let (timestamp, id) = split_name_timestamp(rest)?;
+        let (thread_id, rollout_id) = split_rollout_ids(id)?;
         Some(RolloutName {
             timestamp,
             thread_id: thread_id.to_string(),
@@ -56,6 +45,29 @@ impl RolloutName {
     /// (UUIDv7) for files created within the same second, as Codex does.
     pub fn order_key(&self) -> (NaiveDateTime, &str) {
         (self.timestamp, &self.rollout_id)
+    }
+}
+
+/// `<YYYY-MM-DDThh-mm-ss>-<id>` of a rollout name into its timestamp and a
+/// non-empty id part.
+fn split_name_timestamp(rest: &str) -> Option<(NaiveDateTime, &str)> {
+    if rest.len() <= 20 || rest.as_bytes().get(19) != Some(&b'-') {
+        return None;
+    }
+    let timestamp = NaiveDateTime::parse_from_str(&rest[..19], "%Y-%m-%dT%H-%M-%S").ok()?;
+    Some((timestamp, &rest[20..]))
+}
+
+/// `<thread>[_<rollout>]` into `(thread id, rollout id)`; without the suffix
+/// both are the thread id. An empty part on either side of `_` is rejected;
+/// `id` itself is non-empty ([`split_name_timestamp`] guarantees it).
+fn split_rollout_ids(id: &str) -> Option<(&str, &str)> {
+    match id.split_once('_') {
+        Some((thread, rollout)) if !thread.is_empty() && !rollout.is_empty() => {
+            Some((thread, rollout))
+        }
+        Some(_) => None,
+        None => Some((id, id)),
     }
 }
 
@@ -313,7 +325,12 @@ fn read_history_base(path: &Path) -> Option<(String, u64)> {
     if json.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
         return None;
     }
-    let base = json.get("payload")?.get("history_base")?;
+    history_base_fields(json.get("payload")?.get("history_base")?)
+}
+
+/// `(thread_id, end_byte_offset)` of a `history_base` object; `None` when
+/// either is missing or has the wrong type.
+fn history_base_fields(base: &serde_json::Value) -> Option<(String, u64)> {
     Some((
         base.get("thread_id")?.as_str()?.to_string(),
         base.get("end_byte_offset")?.as_u64()?,
@@ -479,6 +496,26 @@ mod tests {
     }
 
     #[test]
+    fn rollout_name_when_timestamp_not_followed_by_dash_then_none() {
+        assert!(RolloutName::parse(Path::new(&format!(
+            "rollout-2026-10-26T18-35-27_{ROOT}.jsonl"
+        )))
+        .is_none());
+    }
+
+    #[test]
+    fn rollout_name_when_empty_side_of_underscore_then_none() {
+        assert!(RolloutName::parse(Path::new(&format!(
+            "rollout-2026-10-26T18-35-27-_{REVERT}.jsonl"
+        )))
+        .is_none());
+        assert!(RolloutName::parse(Path::new(&format!(
+            "rollout-2026-10-26T18-35-27-{ROOT}_.jsonl"
+        )))
+        .is_none());
+    }
+
+    #[test]
     fn codex_home_when_under_sessions_or_archive_then_common_root() {
         assert_eq!(
             codex_home(Path::new("/h/.codex/sessions/2026/10/26/r.jsonl")),
@@ -623,6 +660,20 @@ mod tests {
             2,
         );
         assert_eq!(resolve_segments(&cont).len(), 1);
+    }
+
+    #[test]
+    fn read_history_base_when_first_record_not_session_meta_then_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.jsonl");
+        let mut record: serde_json::Value =
+            serde_json::from_str(&meta(FORK1, Some((ROOT, 3, 10)))).unwrap();
+        record["type"] = serde_json::json!("response_item");
+        std::fs::write(&path, format!("{record}\n")).unwrap();
+        assert_eq!(read_history_base(&path), None);
+        record["type"] = serde_json::json!("session_meta");
+        std::fs::write(&path, format!("{record}\n")).unwrap();
+        assert_eq!(read_history_base(&path), Some((ROOT.to_string(), 10)));
     }
 
     #[test]
