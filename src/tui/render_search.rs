@@ -4533,4 +4533,85 @@ mod tests {
         assert!(text.contains("[A] X"));
         assert!(text.contains("[B] Y"));
     }
+
+    fn hint(text: &'static str, min_width: u16) -> HintItem<'static> {
+        HintItem {
+            spans: vec![Span::raw(text)],
+            min_width,
+        }
+    }
+
+    #[test]
+    fn help_line_when_first_hint_is_the_widest_optional_then_it_goes_first() {
+        // 19 + 2 + 7 + 2 + 10 = 40 cells, 35 available: one hint must go.
+        let hints = [
+            hint("[F] First hint long", 30),
+            hint("[E] Ess", 0),
+            hint("[S] Second", 20),
+        ];
+        let text = line_to_string(&build_help_line(&hints, 35));
+        assert_eq!(text, "[E] Ess  [S] Second");
+    }
+
+    #[test]
+    fn help_line_when_optional_hints_tie_then_the_first_one_goes() {
+        let hints = [
+            hint("[E] Ess", 0),
+            hint("[A] Alpha long", 20),
+            hint("[B] Beta", 20),
+        ];
+        let text = line_to_string(&build_help_line(&hints, 25));
+        assert_eq!(text, "[E] Ess  [B] Beta");
+    }
+
+    #[test]
+    fn help_line_when_hint_has_lowest_optional_width_then_it_still_can_go() {
+        let hints = [hint("[E] Essential", 0), hint("[O] Optional one", 1)];
+        let text = line_to_string(&build_help_line(&hints, 15));
+        assert_eq!(text, "[E] Essential");
+    }
+
+    #[test]
+    fn help_line_when_only_essentials_overflow_then_all_of_them_stay() {
+        let hints = [hint("[E] Essential", 0), hint("[Q] Quit", 0)];
+        let text = line_to_string(&build_help_line(&hints, 10));
+        assert_eq!(text, "[E] Essential  [Q] Quit");
+    }
+
+    fn header_line_at(width: usize) -> Line<'static> {
+        render_session_header_line(
+            "  ",
+            SessionHeaderParts {
+                caret: "▶",
+                provider: SessionProvider::Claude,
+                source: "CLI",
+                date: "2026-01-02 03:04",
+                host: None,
+                project: "proj",
+                branch: "main",
+                session_id: "abcdef12",
+                count: "3 msgs",
+                has_automation: false,
+                opened: false,
+            },
+            Style::default(),
+            false,
+            width,
+        )
+    }
+
+    #[test]
+    fn header_badge_when_row_leaves_a_two_cell_gap_then_shown_at_the_right_edge() {
+        let left = spans_width(&header_line_at(0).spans);
+        let badge = right_badge_text(SessionProvider::Claude, "CLI")
+            .chars()
+            .count();
+
+        let narrow = header_line_at(left + badge + 1);
+        let wide = header_line_at(left + badge + 2);
+
+        assert_eq!(spans_width(&narrow.spans), left, "no room: badge left out");
+        assert_eq!(spans_width(&wide.spans), left + badge + 2);
+        assert!(line_to_string(&wide).ends_with("CC · cli"));
+    }
 }
