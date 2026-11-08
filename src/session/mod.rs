@@ -1581,4 +1581,19 @@ mod tests {
             Some(opencode::synthetic_session_path(&db, "ses_default"))
         );
     }
+
+    #[test]
+    fn find_session_file_in_paths_when_rollout_name_lies_outside_codex_dirs_then_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let project = dir.path().join("projects").join("-p");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("rollout-2026-05-01T12-00-00-thread1.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let search_paths = vec![dir.path().join("projects").to_string_lossy().to_string()];
+
+        assert_eq!(find_session_file_in_paths("thread1", &search_paths), None);
+    }
 }

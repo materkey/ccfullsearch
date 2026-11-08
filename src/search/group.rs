@@ -743,4 +743,25 @@ mod tests {
         let (count, _) = count_session_messages(&synthetic_missing);
         assert_eq!(count, 0);
     }
+
+    #[test]
+    fn count_session_messages_when_codex_has_developer_and_tool_items_then_only_user_and_assistant_count(
+    ) {
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        for line in [
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","role":"assistant","name":"shell"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#,
+        ] {
+            writeln!(f, "{line}").unwrap();
+        }
+
+        assert_eq!(
+            count_session_messages(f.path().to_str().unwrap()),
+            (2, false)
+        );
+    }
 }

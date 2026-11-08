@@ -1243,4 +1243,25 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn session_metadata_when_trailing_records_lack_session_id_then_first_id_is_kept() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"hi"},"uuid":"u1","sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"renamed"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let meta = extract_session_metadata(&path).expect("metadata");
+
+        assert_eq!(meta.session_id, "s1");
+        assert_eq!(meta.last_active, "2025-01-01T00:00:00+00:00");
+    }
 }
