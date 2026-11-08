@@ -118,13 +118,16 @@ fn is_session_in_index(project_dir: &Path, session_id: &str) -> bool {
     index
         .get("entries")
         .and_then(|e| e.as_array())
-        .is_some_and(|entries| {
-            entries.iter().any(|e| {
-                e.get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| s == session_id)
-            })
-        })
+        .is_some_and(|entries| entries_contain_session(entries, session_id))
+}
+
+/// Whether one of the index `entries` is for `session_id`.
+fn entries_contain_session(entries: &[serde_json::Value], session_id: &str) -> bool {
+    entries.iter().any(|e| {
+        e.get("sessionId")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == session_id)
+    })
 }
 
 /// Register a session in Claude CLI's sessions-index.json (if index exists and session is missing).
@@ -148,15 +151,16 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
         None => return,
     };
 
-    let already_exists = entries.iter().any(|e| {
-        e.get("sessionId")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s == session_id)
-    });
-    if already_exists {
+    if entries_contain_session(entries, session_id) {
         return;
     }
 
+    entries.push(index_entry(session_id, file_path, analysis));
+    write_index_atomically(project_dir, &index_path, &index);
+}
+
+/// The sessions-index.json entry Claude CLI keeps for one session file.
+fn index_entry(session_id: &str, file_path: &str, analysis: &SessionAnalysis) -> serde_json::Value {
     let file_mtime = fs::metadata(file_path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -166,7 +170,7 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
 
     let project_path = decode_project_path(file_path).unwrap_or_default();
 
-    entries.push(serde_json::json!({
+    serde_json::json!({
         "sessionId": session_id,
         "fullPath": file_path,
         "fileMtime": file_mtime,
@@ -178,12 +182,15 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
         "gitBranch": analysis.git_branch,
         "projectPath": project_path,
         "isSidechain": false
-    }));
+    })
+}
 
+/// Replace `index_path` with `index`; failures are reported on stderr only.
+fn write_index_atomically(project_dir: &Path, index_path: &Path, index: &serde_json::Value) {
     // Atomic write: temp file (unique per process) + rename prevents corruption on crash.
     // PID in temp name avoids temp-file collisions; lost-update race on read-modify-write
     // is accepted since the index is advisory (Claude CLI rebuilds it on next session list).
-    if let Ok(json_str) = serde_json::to_string_pretty(&index) {
+    if let Ok(json_str) = serde_json::to_string_pretty(index) {
         let tmp_path = project_dir.join(format!(
             ".{}.{}.tmp",
             SESSIONS_INDEX_FILE,
@@ -193,7 +200,7 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, analysis: &Session
             eprintln!("[ccs] failed to write session index temp file: {}", e);
             return;
         }
-        if let Err(e) = fs::rename(&tmp_path, &index_path) {
+        if let Err(e) = fs::rename(&tmp_path, index_path) {
             eprintln!("[ccs] failed to rename session index temp file: {}", e);
             // Clean up orphaned temp file
             let _ = fs::remove_file(&tmp_path);
@@ -1313,6 +1320,118 @@ mod tests {
             count, 1,
             "Session should appear exactly once in index, not duplicated"
         );
+    }
+
+    /// A one-message session file in a fresh project dir, with its analysis.
+    fn index_test_session(session_id: &str) -> (TempDir, String, SessionAnalysis) {
+        let dir = TempDir::new().unwrap();
+        let session_file = dir.path().join(format!("{}.jsonl", session_id));
+        fs::write(
+            &session_file,
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"sessionId":"{}","timestamp":"2025-01-01T00:00:00Z","gitBranch":"main"}}"#,
+                session_id
+            ),
+        )
+        .unwrap();
+        let path = session_file.to_str().unwrap().to_string();
+        let analysis = analyze_session(&path).unwrap();
+        (dir, path, analysis)
+    }
+
+    #[test]
+    fn ensure_session_in_index_when_session_missing_then_entry_carries_its_metadata() {
+        let (dir, path, analysis) = index_test_session("meta-test");
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(
+            &index_path,
+            r#"{"version":1,"entries":[],"originalPath":""}"#,
+        )
+        .unwrap();
+
+        ensure_session_in_index("meta-test", &path, &analysis);
+
+        let index: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+        let entry = &index["entries"][0];
+        assert_eq!(entry["sessionId"], "meta-test");
+        assert_eq!(entry["fullPath"], path.as_str());
+        assert_eq!(entry["firstPrompt"], "hi");
+        assert_eq!(entry["messageCount"], 1);
+        assert_eq!(entry["created"], "2025-01-01T00:00:00Z");
+        assert_eq!(entry["modified"], "2025-01-01T00:00:00Z");
+        assert_eq!(entry["gitBranch"], "main");
+        assert_eq!(entry["isSidechain"], false);
+        assert!(entry["fileMtime"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn ensure_session_in_index_when_no_index_file_then_none_created() {
+        let (dir, path, analysis) = index_test_session("no-index");
+
+        ensure_session_in_index("no-index", &path, &analysis);
+
+        assert!(!dir.path().join(SESSIONS_INDEX_FILE).exists());
+    }
+
+    #[test]
+    fn ensure_session_in_index_when_index_has_no_entries_array_then_left_as_is() {
+        let (dir, path, analysis) = index_test_session("no-entries");
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(&index_path, r#"{"version":1}"#).unwrap();
+
+        ensure_session_in_index("no-entries", &path, &analysis);
+
+        assert_eq!(fs::read_to_string(&index_path).unwrap(), r#"{"version":1}"#);
+    }
+
+    #[test]
+    fn ensure_session_in_index_when_index_is_corrupt_then_rebuilt_with_session() {
+        let (dir, path, analysis) = index_test_session("corrupt-index");
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(&index_path, "{not json").unwrap();
+
+        ensure_session_in_index("corrupt-index", &path, &analysis);
+
+        assert!(is_session_in_index(dir.path(), "corrupt-index"));
+    }
+
+    #[test]
+    fn write_index_atomically_when_temp_file_cannot_be_written_then_index_untouched() {
+        let dir = TempDir::new().unwrap();
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::write(&index_path, "old").unwrap();
+        // A directory squatting on the temp name makes the temp write fail.
+        let tmp_path = dir.path().join(format!(
+            ".{}.{}.tmp",
+            SESSIONS_INDEX_FILE,
+            std::process::id()
+        ));
+        fs::create_dir(&tmp_path).unwrap();
+
+        write_index_atomically(dir.path(), &index_path, &serde_json::json!({"entries": []}));
+
+        assert_eq!(fs::read_to_string(&index_path).unwrap(), "old");
+        assert!(tmp_path.is_dir());
+    }
+
+    #[test]
+    fn write_index_atomically_when_rename_fails_then_temp_file_removed() {
+        let dir = TempDir::new().unwrap();
+        // A non-empty directory at the index path makes the rename fail.
+        let index_path = dir.path().join(SESSIONS_INDEX_FILE);
+        fs::create_dir(&index_path).unwrap();
+        fs::write(index_path.join("keep"), "").unwrap();
+
+        write_index_atomically(dir.path(), &index_path, &serde_json::json!({"entries": []}));
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "orphaned temp file left behind");
+        assert!(index_path.join("keep").exists());
     }
 
     // NOTE: test_resume_cli_child_fails_without_claude_binary was moved to
