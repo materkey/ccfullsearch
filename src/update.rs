@@ -586,6 +586,39 @@ mod tests {
         assert_eq!(sha256_of(&file).unwrap(), HELLO_SHA256);
     }
 
+    // sha256_of falls back from one tool to the other, so each tool is
+    // checked on its own: a broken one would otherwise hide behind the other.
+    // A tool this machine does not have is skipped.
+
+    #[test]
+    fn sha256sum_when_file_exists_then_hash_is_read_and_when_missing_then_none() {
+        if which::which("sha256sum").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("payload");
+        std::fs::write(&file, b"hello\n").unwrap();
+
+        assert_eq!(sha256_via_sha256sum(&file).as_deref(), Some(HELLO_SHA256));
+        assert_eq!(sha256_via_sha256sum(&tmp.path().join("missing")), None);
+    }
+
+    #[test]
+    fn shasum_when_file_exists_then_hash_is_read_and_when_missing_then_error() {
+        if which::which("shasum").is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("payload");
+        std::fs::write(&file, b"hello\n").unwrap();
+
+        assert_eq!(sha256_via_shasum(&file).unwrap(), HELLO_SHA256);
+        assert_eq!(
+            sha256_via_shasum(&tmp.path().join("missing")).unwrap_err(),
+            "Checksum command failed"
+        );
+    }
+
     #[test]
     fn sha256_of_fails_for_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
