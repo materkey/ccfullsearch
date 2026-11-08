@@ -1932,17 +1932,15 @@ impl App {
     }
 
     fn on_host_reply(&mut self, name: &str, kind: PendingKind, result: Result<Reply, String>) {
-        let status = self.hosts.status.get_mut(name);
-        match (kind, result) {
-            (PendingKind::Search { seq }, Ok(Reply::Search(found))) => {
-                if let Some(status) = status {
-                    status.waiting = false;
-                    status.results = Some(found.groups.len());
-                    status.last_error = None;
-                }
-                self.apply_remote_search(name, seq, found);
+        let reply = match result {
+            Ok(reply) => reply,
+            Err(e) => return self.on_host_error(name, kind, e),
+        };
+        match (kind, reply) {
+            (PendingKind::Search { seq }, Reply::Search(found)) => {
+                self.on_remote_search_reply(name, seq, found);
             }
-            (PendingKind::Recent, Ok(Reply::Recent(rows))) => {
+            (PendingKind::Recent, Reply::Recent(rows)) => {
                 let host = Host::Remote(name.to_string());
                 let rows = rows
                     .into_iter()
@@ -1951,28 +1949,52 @@ impl App {
                 self.recent.remote.insert(name.to_string(), rows);
                 self.apply_recent_sessions_filter();
             }
-            (PendingKind::Recent, Err(e)) => {
-                if let Some(status) = status {
-                    status.last_error = Some(e);
-                }
-            }
-            (PendingKind::Show { target, tree }, Ok(Reply::Show(shown))) => {
+            (PendingKind::Show { target, tree }, Reply::Show(shown)) => {
                 self.apply_remote_show(target, tree, shown.content);
             }
-            (PendingKind::Tree(session), Ok(Reply::Tree(tree))) => {
+            (PendingKind::Tree(session), Reply::Tree(tree)) => {
                 self.apply_remote_tree(session, Ok(tree));
             }
-            (PendingKind::Tree(session), Err(e)) => self.apply_remote_tree(session, Err(e)),
-            (PendingKind::Show { target, .. }, Err(_)) => {
-                self.search.failed_shows.insert(target);
-            }
-            (_, Ok(_)) => {}
-            (PendingKind::Search { .. }, Err(e)) => {
+            // A reply of another kind than the request: nothing to apply.
+            _ => {}
+        }
+    }
+
+    /// A host's search results: the host is no longer waiting and had no
+    /// error; the groups merge in if the search is still the current one.
+    fn on_remote_search_reply(
+        &mut self,
+        name: &str,
+        seq: u64,
+        found: crate::remote::wire::WireSearch,
+    ) {
+        if let Some(status) = self.hosts.status.get_mut(name) {
+            status.waiting = false;
+            status.results = Some(found.groups.len());
+            status.last_error = None;
+        }
+        self.apply_remote_search(name, seq, found);
+    }
+
+    /// A request the host failed to answer.
+    fn on_host_error(&mut self, name: &str, kind: PendingKind, e: String) {
+        let status = self.hosts.status.get_mut(name);
+        match kind {
+            PendingKind::Search { .. } => {
                 if let Some(status) = status {
                     status.waiting = false;
                     status.last_error = Some(e);
                 }
             }
+            PendingKind::Recent => {
+                if let Some(status) = status {
+                    status.last_error = Some(e);
+                }
+            }
+            PendingKind::Show { target, .. } => {
+                self.search.failed_shows.insert(target);
+            }
+            PendingKind::Tree(session) => self.apply_remote_tree(session, Err(e)),
         }
     }
 
