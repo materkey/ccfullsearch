@@ -98,7 +98,15 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
 
 /// Read the config from its default location.
 pub fn load_default_config() -> Result<Config, String> {
-    match config_path(std::env::var("XDG_CONFIG_HOME").ok(), dirs::home_dir()) {
+    load_config_or_default(config_path(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        dirs::home_dir(),
+    ))
+}
+
+/// Read the config at `path`; no location at all gives the defaults.
+fn load_config_or_default(path: Option<PathBuf>) -> Result<Config, String> {
+    match path {
         Some(path) => load_config(&path),
         None => Ok(Config::default()),
     }
@@ -142,6 +150,18 @@ mod tests {
         let cfg = load_config(&dir.path().join("config.toml")).unwrap();
         assert_eq!(cfg.agent_search.model, "claude-haiku-5-5");
         assert_eq!(cfg.agent_search.effort, None);
+    }
+
+    #[test]
+    fn load_config_or_default_when_no_path_then_defaults() {
+        assert_eq!(load_config_or_default(None), Ok(Config::default()));
+    }
+
+    #[test]
+    fn load_config_or_default_when_path_given_then_reads_that_file() {
+        let (_dir, path) = write_config("[agent_search]\neffort = \"low\"\n");
+        let cfg = load_config_or_default(Some(path)).unwrap();
+        assert_eq!(cfg.agent_search.effort, Some(Effort::Low));
     }
 
     #[test]
