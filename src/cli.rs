@@ -1026,25 +1026,7 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
     let provider = SessionProvider::from_path(path_str);
     let source = SessionSource::from_path(path_str);
 
-    let mut session_id: Option<String> = None;
-    let mut last_timestamp: Option<DateTime<Utc>> = None;
-
-    for line in crate::session::codex_history::history_lines(path) {
-        let json: serde_json::Value = match serde_json::from_str(line.raw.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if session_id.is_none() && &*line.path == path {
-            session_id = crate::session::extract_session_id(&json)
-                .or_else(|| crate::session::extract_codex_session_id_from_path(path_str));
-        }
-        if let Some(ts) = crate::session::extract_timestamp(&json) {
-            if last_timestamp.is_none_or(|t| ts > t) {
-                last_timestamp = Some(ts);
-            }
-        }
-    }
+    let (session_id, last_timestamp) = scan_session_id_and_last_timestamp(path, path_str);
 
     let message_count = crate::search::count_session_messages(path_str).0;
 
@@ -1061,6 +1043,32 @@ fn extract_session_metadata(path: &Path) -> Option<ListResult> {
         last_active,
         message_count,
     })
+}
+
+/// Walk a session's history for its session id and newest timestamp. The id
+/// comes from the first line of `path` itself that carries one (lines inherited
+/// from a Codex base file are skipped), falling back to the Codex rollout name.
+fn scan_session_id_and_last_timestamp(
+    path: &Path,
+    path_str: &str,
+) -> (Option<String>, Option<DateTime<Utc>>) {
+    let mut session_id: Option<String> = None;
+    let mut last_timestamp: Option<DateTime<Utc>> = None;
+
+    for line in crate::session::codex_history::history_lines(path) {
+        let json: serde_json::Value = match serde_json::from_str(line.raw.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if session_id.is_none() && &*line.path == path {
+            session_id = crate::session::extract_session_id(&json)
+                .or_else(|| crate::session::extract_codex_session_id_from_path(path_str));
+        }
+        last_timestamp = crate::recent::fold_max_timestamp(last_timestamp, &json);
+    }
+
+    (session_id, last_timestamp)
 }
 
 #[cfg(test)]

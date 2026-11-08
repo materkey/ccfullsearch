@@ -160,7 +160,7 @@ fn summary_is_on_latest_chain(
 }
 
 /// Fold a record's timestamp (if any) into the running maximum.
-fn fold_max_timestamp(
+pub(crate) fn fold_max_timestamp(
     current: Option<DateTime<Utc>>,
     json: &serde_json::Value,
 ) -> Option<DateTime<Utc>> {
