@@ -507,51 +507,12 @@ impl RecentState {
         current_cwd: Option<&str>,
         automation_filter: &AutomationFilter,
     ) {
-        let project_filtered: Vec<_> = if project_filter
-            && (!project_paths.is_empty() || current_cwd.is_some())
-        {
-            // When the project-specific load has resolved, take its
-            // Claude sessions verbatim and merge in any Codex sessions
-            // from the global pool (start_project_load scans only
-            // Claude paths). When the load hasn't resolved yet, fall
-            // back to the global pool so Ctrl+A doesn't blank the
-            // list while the background scan is in flight.
-            let (mut source, seen): (Vec<RecentSession>, HashSet<String>) =
-                match self.project.as_ref() {
-                    Some(project) => {
-                        let seen = project.iter().map(|s| s.session_id.clone()).collect();
-                        (project.clone(), seen)
-                    }
-                    None => (self.all.clone(), HashSet::new()),
-                };
-            if self.project.is_some() {
-                // `start_project_load` only scans Claude paths, so Codex
-                // and Opencode sessions are missing from `self.project`.
-                // Union them in from `self.all` (which has all providers)
-                // before the per-session project-match filter runs.
-                source.extend(
-                    self.all
-                        .iter()
-                        .filter(|s| {
-                            let provider = SessionProvider::from_path(&s.file_path);
-                            matches!(provider, SessionProvider::Codex | SessionProvider::Opencode)
-                                && !seen.contains(&s.session_id)
-                        })
-                        .cloned(),
-                );
-            }
-            let mut filtered: Vec<RecentSession> = source
-                .into_iter()
-                .filter(|s| session_matches_project(s, project_paths, current_cwd))
-                .collect();
-            // Concatenating two already-sorted slices does not preserve order; re-sort
-            // the filtered union with the shared helper so the view matches the
-            // unfiltered ordering.
-            crate::recent::sort_recent_sessions_desc(&mut filtered);
-            filtered
-        } else {
-            self.all.clone()
-        };
+        let project_filtered: Vec<_> =
+            if project_filter && (!project_paths.is_empty() || current_cwd.is_some()) {
+                self.project_sessions(project_paths, current_cwd)
+            } else {
+                self.all.clone()
+            };
 
         self.filtered = match automation_filter {
             AutomationFilter::All => project_filtered,
@@ -570,6 +531,53 @@ impl RecentState {
         } else {
             self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
         }
+    }
+
+    /// The sessions of the current project, newest first, for Ctrl+A.
+    fn project_sessions(
+        &self,
+        project_paths: &[String],
+        current_cwd: Option<&str>,
+    ) -> Vec<RecentSession> {
+        // When the project-specific load has resolved, take its
+        // Claude sessions verbatim and merge in any Codex sessions
+        // from the global pool (start_project_load scans only
+        // Claude paths). When the load hasn't resolved yet, fall
+        // back to the global pool so Ctrl+A doesn't blank the
+        // list while the background scan is in flight.
+        let (mut source, seen): (Vec<RecentSession>, HashSet<String>) = match self.project.as_ref()
+        {
+            Some(project) => {
+                let seen = project.iter().map(|s| s.session_id.clone()).collect();
+                (project.clone(), seen)
+            }
+            None => (self.all.clone(), HashSet::new()),
+        };
+        if self.project.is_some() {
+            // `start_project_load` only scans Claude paths, so Codex
+            // and Opencode sessions are missing from `self.project`.
+            // Union them in from `self.all` (which has all providers)
+            // before the per-session project-match filter runs.
+            source.extend(
+                self.all
+                    .iter()
+                    .filter(|s| {
+                        let provider = SessionProvider::from_path(&s.file_path);
+                        matches!(provider, SessionProvider::Codex | SessionProvider::Opencode)
+                            && !seen.contains(&s.session_id)
+                    })
+                    .cloned(),
+            );
+        }
+        let mut filtered: Vec<RecentSession> = source
+            .into_iter()
+            .filter(|s| session_matches_project(s, project_paths, current_cwd))
+            .collect();
+        // Concatenating two already-sorted slices does not preserve order; re-sort
+        // the filtered union with the shared helper so the view matches the
+        // unfiltered ordering.
+        crate::recent::sort_recent_sessions_desc(&mut filtered);
+        filtered
     }
 
     /// Add the remote hosts' rows to `filtered`. Their project scope was
