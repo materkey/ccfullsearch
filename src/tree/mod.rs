@@ -264,14 +264,8 @@ impl SessionTree {
         }
 
         let node = self.nodes.get(uuid)?;
-        let file = fs::File::open(&self.file_path).ok()?;
-        let reader = BufReader::new(file);
-
-        let line = reader.lines().nth(node.line_index)?.ok()?;
-        let json: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-        let content_raw = json.get("message")?.get("content")?;
-        let blocks = parse_content_blocks(content_raw);
-        let content = SessionRecord::render_content(&blocks, &ContentMode::Full);
+        let line = read_nth_line(&self.file_path, node.line_index)?;
+        let content = message_content_text(&line)?;
 
         // Cache the result (keep cache bounded to avoid unbounded memory growth)
         let mut cache = self.content_cache.borrow_mut();
@@ -626,6 +620,21 @@ fn render_full_text(blocks: &[ContentBlock]) -> String {
     SessionRecord::render_content(blocks, &ContentMode::Full)
 }
 
+/// Line `index` (0-based) of the file at `path`; `None` when the file or the
+/// line cannot be read.
+fn read_nth_line(path: &str, index: usize) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    BufReader::new(file).lines().nth(index)?.ok()
+}
+
+/// The full text of a JSONL record's `message.content`; `None` when the line
+/// is not JSON or has no message content.
+fn message_content_text(line: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let content_raw = json.get("message")?.get("content")?;
+    Some(render_full_text(&parse_content_blocks(content_raw)))
+}
+
 /// Build the graph gutter string for a row.
 fn build_graph_symbols(prefix_lanes: &[bool], connector: Option<bool>) -> String {
     let mut result = String::new();
@@ -977,6 +986,33 @@ mod tests {
 
         let content = tree.get_full_content("u1").unwrap();
         assert_eq!(content, "Hello");
+    }
+
+    #[test]
+    fn get_full_content_when_more_messages_than_cache_holds_then_each_read_back() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("long.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        for i in 0..70 {
+            let parent = if i == 0 {
+                String::new()
+            } else {
+                format!(r#","parentUuid":"m{}""#, i - 1)
+            };
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"text {i}"}},"uuid":"m{i}"{parent},"sessionId":"s1","timestamp":"2025-01-01T00:00:{:02}Z"}}"#, i % 60).unwrap();
+        }
+        drop(f);
+        let tree = SessionTree::from_file(path.to_str().unwrap()).unwrap();
+
+        for i in 0..70 {
+            assert_eq!(
+                tree.get_full_content(&format!("m{i}")).as_deref(),
+                Some(format!("text {i}").as_str())
+            );
+        }
+        assert!(tree.content_cache.borrow().len() <= 64);
+        assert_eq!(tree.get_full_content("m0").as_deref(), Some("text 0"));
+        assert_eq!(tree.get_full_content("missing"), None);
     }
 
     #[test]
