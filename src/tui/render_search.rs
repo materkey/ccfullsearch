@@ -104,22 +104,32 @@ pub(crate) fn build_help_line<'a>(hints: &[HintItem<'a>], available_width: u16) 
 
     // Phase 2: if selected hints overflow, drop optional hints (highest min_width first)
     while kept_line_width(&keep, &widths, sep_len) > width {
-        let mut best: Option<usize> = None;
-        for i in 0..hints.len() {
-            if keep[i]
-                && hints[i].min_width > 0
-                && best.is_none_or(|b| hints[i].min_width > hints[b].min_width)
-            {
-                best = Some(i);
-            }
-        }
-        match best {
+        match optional_hint_to_drop(hints, &keep) {
             Some(idx) => keep[idx] = false,
             None => break, // only essentials remain
         }
     }
 
-    // Build final spans
+    join_kept_hints(hints, &keep, separator)
+}
+
+/// The kept optional hint (`min_width > 0`) with the highest `min_width`;
+/// the first one wins a tie. `None` when only essentials remain.
+fn optional_hint_to_drop(hints: &[HintItem<'_>], keep: &[bool]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for i in 0..hints.len() {
+        if keep[i]
+            && hints[i].min_width > 0
+            && best.is_none_or(|b| hints[i].min_width > hints[b].min_width)
+        {
+            best = Some(i);
+        }
+    }
+    best
+}
+
+/// The kept hints' spans in order, `separator` between them.
+fn join_kept_hints<'a>(hints: &[HintItem<'a>], keep: &[bool], separator: &'a str) -> Line<'a> {
     let mut result_spans: Vec<Span<'a>> = Vec::new();
     let mut first = true;
     for (i, hint) in hints.iter().enumerate() {
