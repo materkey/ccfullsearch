@@ -1255,29 +1255,29 @@ fn render_recent_sessions(frame: &mut Frame, app: &AppView, area: ratatui::layou
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// Search-group header text. Uses `▶`/`▼` (collapsed vs expanded) and a
-/// `N/M matches` tail (with `+` suffix for compacted sessions).
-#[cfg(test)]
-pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> String {
-    let first_match = group.first_match();
-    let (date_str, branch, source) = if let Some(m) = first_match {
-        let source = m.source.display_name();
-        if let Some(ref msg) = m.message {
-            let date = msg
-                .timestamp
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string();
-            let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
-            (date, branch, source)
-        } else {
-            ("-".to_string(), "-".to_string(), source)
-        }
-    } else {
-        ("-".to_string(), "-".to_string(), "CLI")
+/// Date, branch and source of a search group's header, taken from its
+/// first match; `-` (and `CLI`) where the match does not carry them.
+fn group_header_fields(group: &SessionGroup) -> (String, String, &'static str) {
+    let Some(m) = group.first_match() else {
+        return ("-".to_string(), "-".to_string(), "CLI");
     };
+    let source = m.source.display_name();
+    let Some(ref msg) = m.message else {
+        return ("-".to_string(), "-".to_string(), source);
+    };
+    let date = msg
+        .timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
+    (date, branch, source)
+}
 
-    let count_str = match group.message_count {
+/// `N/M matches` tail of a search group's header (`+` after `M` for a
+/// compacted session), or `N matches` while the total is unknown.
+fn group_match_count_text(group: &SessionGroup) -> String {
+    match group.message_count {
         Some(total) => {
             let suffix = if group.message_count_compacted {
                 "+"
@@ -1287,7 +1287,15 @@ pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> S
             format!("{}/{}{} matches", group.matches.len(), total, suffix)
         }
         None => format!("{} matches", group.matches.len()),
-    };
+    }
+}
+
+/// Search-group header text. Uses `▶`/`▼` (collapsed vs expanded) and a
+/// `N/M matches` tail (with `+` suffix for compacted sessions).
+#[cfg(test)]
+pub(crate) fn build_group_header_text(group: &SessionGroup, expanded: bool) -> String {
+    let (date_str, branch, source) = group_header_fields(group);
+    let count_str = group_match_count_text(group);
 
     format_session_header_line(SessionHeaderParts {
         caret: if expanded { "▼" } else { "▶" },
@@ -1322,35 +1330,8 @@ fn render_group_header<'a>(
     };
 
     let prefix = if selected { "> " } else { "  " };
-    let first_match = group.first_match();
-    let (date_str, branch, source) = if let Some(m) = first_match {
-        let source = m.source.display_name();
-        if let Some(ref msg) = m.message {
-            let date = msg
-                .timestamp
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string();
-            let branch = msg.branch.clone().unwrap_or_else(|| "-".to_string());
-            (date, branch, source)
-        } else {
-            ("-".to_string(), "-".to_string(), source)
-        }
-    } else {
-        ("-".to_string(), "-".to_string(), "CLI")
-    };
-
-    let count_str = match group.message_count {
-        Some(total) => {
-            let suffix = if group.message_count_compacted {
-                "+"
-            } else {
-                ""
-            };
-            format!("{}/{}{} matches", group.matches.len(), total, suffix)
-        }
-        None => format!("{} matches", group.matches.len()),
-    };
+    let (date_str, branch, source) = group_header_fields(group);
+    let count_str = group_match_count_text(group);
 
     let project = group_project(group);
     let header = render_session_header_line(
