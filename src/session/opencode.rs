@@ -862,29 +862,32 @@ pub fn render_part_text(json: &Value) -> Option<String> {
             .get("text")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        "tool" => {
-            let state = json.get("state")?;
-            let mut out = String::new();
-            if let Some(input) = state.get("input") {
-                let rendered = match input.as_str() {
-                    Some(s) => s.to_string(),
-                    None => serde_json::to_string(input).unwrap_or_default(),
-                };
-                out.push_str(&rendered);
-            }
-            if let Some(output) = state.get("output") {
-                let rendered = match output.as_str() {
-                    Some(s) => s.to_string(),
-                    None => serde_json::to_string(output).unwrap_or_default(),
-                };
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&rendered);
-            }
-            (!out.is_empty()).then_some(out)
-        }
+        "tool" => render_tool_state(json.get("state")?),
         _ => None,
+    }
+}
+
+/// A tool part's `input` and `output`, one per line; `None` when both are
+/// missing or render empty.
+fn render_tool_state(state: &Value) -> Option<String> {
+    let mut out = String::new();
+    if let Some(input) = state.get("input") {
+        out.push_str(&tool_value_text(input));
+    }
+    if let Some(output) = state.get("output") {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&tool_value_text(output));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A string as is, any other JSON value serialized.
+fn tool_value_text(value: &Value) -> String {
+    match value.as_str() {
+        Some(s) => s.to_string(),
+        None => serde_json::to_string(value).unwrap_or_default(),
     }
 }
 
@@ -1621,5 +1624,29 @@ mod tests {
             ControlFlow::Continue(())
         });
         assert_eq!(err.err().as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn render_part_text_when_tool_input_and_output_then_one_per_line() {
+        let part = serde_json::json!({
+            "type": "tool",
+            "state": {"input": {"pattern": "foo"}, "output": ["a", 1]}
+        });
+        assert_eq!(
+            render_part_text(&part).as_deref(),
+            Some("{\"pattern\":\"foo\"}\n[\"a\",1]")
+        );
+        let output_only = serde_json::json!({"type": "tool", "state": {"output": "done"}});
+        assert_eq!(render_part_text(&output_only).as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn render_part_text_when_tool_state_empty_or_structural_part_then_none() {
+        let empty = serde_json::json!({"type": "tool", "state": {}});
+        assert_eq!(render_part_text(&empty), None);
+        let no_state = serde_json::json!({"type": "tool"});
+        assert_eq!(render_part_text(&no_state), None);
+        let step = serde_json::json!({"type": "step-start"});
+        assert_eq!(render_part_text(&step), None);
     }
 }
