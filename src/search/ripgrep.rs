@@ -225,26 +225,12 @@ fn search_multiple_paths_inner(
             return Err(CANCELLED_ERR.into());
         }
 
-        if search_path.is_empty() {
-            continue;
-        }
-
+        // An empty path does not exist either.
         if !std::path::Path::new(search_path).exists() {
             continue;
         }
 
-        // Opencode storage roots are not JSONL-shaped — dispatch to a
-        // separate scanner that streams matches from the SQLite database
-        // via a single JOIN query (no per-hit metadata lookups).
-        if is_opencode_storage_path(search_path) {
-            let (results, truncated) =
-                search_opencode_storage(query, search_path, regex_matcher.as_ref(), cancel)?;
-            all_results.extend(results);
-            any_truncated |= truncated;
-            continue;
-        }
-
-        let (results, truncated) = search_single_path(
+        let (results, truncated) = search_existing_path(
             query,
             search_path,
             use_regex,
@@ -260,6 +246,32 @@ fn search_multiple_paths_inner(
         matches: all_results,
         truncated: any_truncated,
     })
+}
+
+/// Matches under one existing search path and whether any file hit the
+/// per-file match limit.
+fn search_existing_path(
+    query: &str,
+    search_path: &str,
+    use_regex: bool,
+    regex_matcher: Option<&regex::Regex>,
+    cancel: &Arc<AtomicBool>,
+    extra_args: &[String],
+) -> Result<(Vec<RipgrepMatch>, bool), String> {
+    // Opencode storage roots are not JSONL-shaped — dispatch to a
+    // separate scanner that streams matches from the SQLite database
+    // via a single JOIN query (no per-hit metadata lookups).
+    if is_opencode_storage_path(search_path) {
+        return search_opencode_storage(query, search_path, regex_matcher, cancel);
+    }
+    search_single_path(
+        query,
+        search_path,
+        use_regex,
+        regex_matcher,
+        cancel,
+        extra_args,
+    )
 }
 
 const MAX_COUNT_PER_FILE: usize = 1000;
@@ -1336,6 +1348,33 @@ mod tests {
 
         assert!(!results.is_empty(), "Should find matches");
         assert!(results.iter().any(|r| r.message.is_some()));
+    }
+
+    #[test]
+    fn search_multiple_paths_when_empty_or_missing_path_then_skipped() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello Claude"}]},"sessionId":"abc123","timestamp":"2025-01-09T10:00:00Z"}"#;
+        create_test_session(&temp_dir, "session.jsonl", session_content);
+        let missing = temp_dir
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        let paths = [
+            String::new(),
+            missing,
+            temp_dir.path().to_string_lossy().into_owned(),
+        ];
+
+        let result =
+            search_multiple_paths("Hello", &paths, false, &Arc::new(AtomicBool::new(false)))
+                .expect("empty and missing paths are skipped, not errors");
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(
+            result.matches[0].message.as_ref().unwrap().session_id,
+            "abc123"
+        );
     }
 
     #[test]
