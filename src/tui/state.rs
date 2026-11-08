@@ -2095,22 +2095,34 @@ impl App {
     /// The remote message the preview needs and has not got.
     fn preview_request(&self) -> Option<(crate::tui::hosts_state::ShowTarget, bool, Request)> {
         if self.tree_mode {
-            let tree = self.tree.session_tree.as_ref()?;
-            if tree.host.is_local() {
-                return None;
-            }
-            let row = tree.rows.get(self.tree.tree_cursor)?;
-            if tree.get_full_content(&row.uuid).is_some() {
-                return None;
-            }
-            let session = SessionRef::new(tree.host.clone(), tree.file_path.clone());
-            let request = Request::Show(crate::remote::wire::ShowParams {
-                file_path: tree.file_path.clone(),
-                line: None,
-                uuid: Some(row.uuid.clone()),
-            });
-            return Some(((session, ShowKey::Uuid(row.uuid.clone())), true, request));
+            return self.tree_preview_request();
         }
+        self.search_preview_request()
+    }
+
+    /// The remote tree row under the cursor, while its full text is missing.
+    fn tree_preview_request(&self) -> Option<(crate::tui::hosts_state::ShowTarget, bool, Request)> {
+        let tree = self.tree.session_tree.as_ref()?;
+        if tree.host.is_local() {
+            return None;
+        }
+        let row = tree.rows.get(self.tree.tree_cursor)?;
+        if tree.get_full_content(&row.uuid).is_some() {
+            return None;
+        }
+        let session = SessionRef::new(tree.host.clone(), tree.file_path.clone());
+        let request = Request::Show(crate::remote::wire::ShowParams {
+            file_path: tree.file_path.clone(),
+            line: None,
+            uuid: Some(row.uuid.clone()),
+        });
+        Some(((session, ShowKey::Uuid(row.uuid.clone())), true, request))
+    }
+
+    /// The selected search match, when it is a remote one cut short.
+    fn search_preview_request(
+        &self,
+    ) -> Option<(crate::tui::hosts_state::ShowTarget, bool, Request)> {
         let group = self.selected_group()?;
         let m = self.selected_match()?;
         let msg = m.message.as_ref()?;
