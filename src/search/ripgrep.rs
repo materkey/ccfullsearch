@@ -838,14 +838,9 @@ fn is_agent_or_subagent_path(path: &str) -> bool {
 pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
     let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
 
-    let msg_type = parsed.get("type")?.as_str()?;
-    if msg_type != "match" {
-        return None;
-    }
-
-    let data = parsed.get("data")?;
-    let file_path = data.get("path")?.get("text")?.as_str()?.to_string();
-    let line_text = data.get("lines")?.get("text")?.as_str()?;
+    let data = match_event_data(&parsed)?;
+    let file_path = rg_data_text(data, "path")?.to_string();
+    let line_text = rg_data_text(data, "lines")?;
     let line_number = data.get("line_number")?.as_u64()? as usize;
 
     let message = Message::from_jsonl_with_path(line_text.trim(), line_number, Some(&file_path));
@@ -857,6 +852,21 @@ pub fn parse_ripgrep_json(json: &str) -> Option<RipgrepMatch> {
         message,
         source,
     })
+}
+
+/// The `data` of an `rg --json` `match` event; `None` for every other event
+/// (`begin`, `end`, `context`, `summary`).
+fn match_event_data(parsed: &serde_json::Value) -> Option<&serde_json::Value> {
+    if parsed.get("type")?.as_str()? != "match" {
+        return None;
+    }
+    parsed.get("data")
+}
+
+/// The UTF-8 `text` of the `rg --json` data object under `key` (`path`,
+/// `lines`); `None` when it is missing or given as non-UTF-8 `bytes`.
+fn rg_data_text<'a>(data: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    data.get(key)?.get("text")?.as_str()
 }
 
 /// Decode an encoded directory name into a short readable project label.
@@ -1528,6 +1538,25 @@ mod tests {
         let result = parse_ripgrep_json(rg_json);
 
         assert!(result.is_none(), "Should skip non-match types");
+    }
+
+    #[test]
+    fn parse_ripgrep_json_when_path_is_bytes_or_line_number_missing_then_none() {
+        let line = r#"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"sessionId\":\"s\",\"timestamp\":\"2025-01-09T10:00:00Z\"}"#;
+        let bytes_path = format!(
+            r#"{{"type":"match","data":{{"path":{{"bytes":"L3A="}},"lines":{{"text":"{line}"}},"line_number":7}}}}"#
+        );
+        assert!(parse_ripgrep_json(&bytes_path).is_none());
+        let no_line_number = format!(
+            r#"{{"type":"match","data":{{"path":{{"text":"/p/s.jsonl"}},"lines":{{"text":"{line}"}}}}}}"#
+        );
+        assert!(parse_ripgrep_json(&no_line_number).is_none());
+
+        let ok = format!(
+            r#"{{"type":"match","data":{{"path":{{"text":"/p/s.jsonl"}},"lines":{{"text":"{line}"}},"line_number":7}}}}"#
+        );
+        let m = parse_ripgrep_json(&ok).expect("a full match event parses");
+        assert_eq!(m.message.unwrap().line_number, 7);
     }
 
     #[test]
