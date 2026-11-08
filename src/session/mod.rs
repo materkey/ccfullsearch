@@ -425,19 +425,8 @@ fn is_session_file(path: &Path) -> bool {
 /// Prefers an exact `<session_id>.jsonl` match, but also supports Claude Desktop
 /// `audit.jsonl` files whose content carries the session ID.
 pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-
-    // Opencode session IDs start with `ses_` and live in a SQLite DB. Resolve
-    // them against the caller's `search_paths` first so explicit DBs (e.g.
-    // `CCFS_SEARCH_PATH=/path/to/side.db`) win over the default database;
-    // `opencode_databases_for_search_paths` already falls back to the default
-    // when no explicit DB entries are present.
-    if session_id.starts_with("ses_") {
-        for db in crate::recent::opencode_databases_for_search_paths(search_paths) {
-            if opencode::OpencodeSession::from_db(&db, session_id).is_some() {
-                return Some(opencode::synthetic_session_path(&db, session_id));
-            }
-        }
+    if let Some(found) = find_opencode_session_in_paths(session_id, search_paths) {
+        return Some(found);
     }
 
     let target_filename = format!("{}.jsonl", session_id);
@@ -453,28 +442,11 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
         if name == target_filename {
             return Some(path.to_string_lossy().to_string());
         }
-        if is_codex_session_path(&path.to_string_lossy())
-            && codex_history::RolloutName::parse(&path).is_some_and(|r| r.thread_id == session_id)
-        {
+        if is_codex_rollout_of_thread(&path, session_id) {
             codex_matches.push(path);
             continue;
         }
-
-        if name != "audit.jsonl" {
-            continue;
-        }
-
-        let file = match std::fs::File::open(&path) {
-            Ok(file) => file,
-            Err(_) => continue,
-        };
-        let reader = BufReader::new(file);
-        let found = reader
-            .lines()
-            .take(50)
-            .flatten()
-            .any(|line| line.contains(session_id));
-        if found {
+        if name == "audit.jsonl" && audit_file_mentions(&path, session_id) {
             audit_match = Some(path.to_string_lossy().to_string());
         }
     }
@@ -482,6 +454,45 @@ pub fn find_session_file_in_paths(session_id: &str, search_paths: &[String]) -> 
     codex_history::current_rollout_among(codex_matches, session_id)
         .map(|path| path.to_string_lossy().to_string())
         .or(audit_match)
+}
+
+/// The synthetic path of an Opencode `ses_` session in the first database that
+/// has it.
+///
+/// Opencode session IDs start with `ses_` and live in a SQLite DB. Resolve
+/// them against the caller's `search_paths` first so explicit DBs (e.g.
+/// `CCFS_SEARCH_PATH=/path/to/side.db`) win over the default database;
+/// `opencode_databases_for_search_paths` already falls back to the default
+/// when no explicit DB entries are present.
+fn find_opencode_session_in_paths(session_id: &str, search_paths: &[String]) -> Option<String> {
+    if !session_id.starts_with("ses_") {
+        return None;
+    }
+    for db in crate::recent::opencode_databases_for_search_paths(search_paths) {
+        if opencode::OpencodeSession::from_db(&db, session_id).is_some() {
+            return Some(opencode::synthetic_session_path(&db, session_id));
+        }
+    }
+    None
+}
+
+/// A Codex rollout file of thread `session_id` (any of its revert rollouts).
+fn is_codex_rollout_of_thread(path: &Path, session_id: &str) -> bool {
+    is_codex_session_path(&path.to_string_lossy())
+        && codex_history::RolloutName::parse(path).is_some_and(|r| r.thread_id == session_id)
+}
+
+/// Whether one of the first 50 lines of a Claude Desktop `audit.jsonl`
+/// carries `session_id`; an unreadable file does not.
+fn audit_file_mentions(path: &Path, session_id: &str) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    BufReader::new(file)
+        .lines()
+        .take(50)
+        .flatten()
+        .any(|line| line.contains(session_id))
 }
 
 /// Resolve the correct session ID and file path for `claude --resume`.
@@ -1432,6 +1443,31 @@ mod tests {
             find_session_file_in_paths("desktop-123", &[dir.path().to_string_lossy().to_string()]);
 
         assert_eq!(found, Some(audit.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn find_session_file_in_paths_when_audit_lacks_id_then_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("local-agent-mode-sessions").join("local_1");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("audit.jsonl"), r#"{"session_id":"other"}"#).unwrap();
+        std::fs::write(nested.join("unrelated.jsonl"), r#"{"session_id":"wanted"}"#).unwrap();
+
+        let found =
+            find_session_file_in_paths("wanted", &[dir.path().to_string_lossy().into_owned()]);
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_session_file_in_paths_when_opencode_id_not_in_db_then_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("opencode.db");
+        build_opencode_db_with_session(&db, "ses_present");
+
+        let found = find_session_file_in_paths("ses_absent", &[db.to_string_lossy().into_owned()]);
+
+        assert_eq!(found, None);
     }
 
     fn build_opencode_db_with_session(db_path: &Path, session_id: &str) {
