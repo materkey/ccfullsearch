@@ -647,77 +647,69 @@ fn normalize_command_markup(text: &str) -> Cow<'_, str> {
         output.push_str(&rest[..tag_start]);
         rest = &rest[tag_start..];
 
-        match tag_kind {
-            CommandTag::Message => {
-                let Some((value, after_message)) =
-                    parse_tag_at(rest, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE)
-                else {
-                    output.push_str(rest);
-                    return Cow::Owned(output);
-                };
-
-                // Claude Code emits <command-message>name</command-message> and
-                // <command-name>/name</command-name> as a pair for one slash
-                // invocation (processSlashCommand.tsx). Swallow the trailing
-                // <command-name> so the preview doesn't render "/foo /foo".
-                let after_gap = after_message.trim_start();
-                let after_message = if after_gap.starts_with(COMMAND_NAME_OPEN) {
-                    match parse_tag_at(after_gap, COMMAND_NAME_OPEN, COMMAND_NAME_CLOSE) {
-                        Some((_, after_name)) => after_name,
-                        None => after_message,
-                    }
-                } else {
-                    after_message
-                };
-
-                let (rendered, after_args) =
-                    render_command_with_optional_args(value, after_message);
-                output.push_str(&rendered);
-                rest = after_args;
-            }
-            CommandTag::Name => {
-                let Some((name, after_name)) =
-                    parse_tag_at(rest, COMMAND_NAME_OPEN, COMMAND_NAME_CLOSE)
-                else {
-                    output.push_str(rest);
-                    return Cow::Owned(output);
-                };
-
-                let after_gap = after_name.trim_start();
-                if after_gap.starts_with(COMMAND_MESSAGE_OPEN) {
-                    let Some((message, after_message)) =
-                        parse_tag_at(after_gap, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE)
-                    else {
-                        output.push_str(&slash_command(name));
-                        rest = after_name;
-                        continue;
-                    };
-                    let (rendered, after_args) =
-                        render_command_with_optional_args(message, after_message);
-                    output.push_str(&rendered);
-                    rest = after_args;
-                } else {
-                    let (rendered, after_args) =
-                        render_command_with_optional_args(name, after_name);
-                    output.push_str(&rendered);
-                    rest = after_args;
-                }
-            }
-            CommandTag::Args => {
-                let Some((args, after_args)) =
-                    parse_tag_at(rest, COMMAND_ARGS_OPEN, COMMAND_ARGS_CLOSE)
-                else {
-                    output.push_str(rest);
-                    return Cow::Owned(output);
-                };
-                output.push_str(args.trim());
-                rest = after_args;
-            }
-        }
+        let Some((rendered, after_tag)) = render_command_tag(rest, tag_kind) else {
+            output.push_str(rest);
+            return Cow::Owned(output);
+        };
+        output.push_str(&rendered);
+        rest = after_tag;
     }
 
     output.push_str(rest);
     Cow::Owned(output)
+}
+
+/// Renders the `tag_kind` tag at the start of `text` (with the tags that
+/// belong to it) and returns the rendering and the text after it; `None` when
+/// the tag is not closed.
+fn render_command_tag(text: &str, tag_kind: CommandTag) -> Option<(String, &str)> {
+    match tag_kind {
+        CommandTag::Message => render_command_message_tag(text),
+        CommandTag::Name => render_command_name_tag(text),
+        CommandTag::Args => {
+            let (args, after_args) = parse_tag_at(text, COMMAND_ARGS_OPEN, COMMAND_ARGS_CLOSE)?;
+            Some((args.trim().to_string(), after_args))
+        }
+    }
+}
+
+/// `<command-message>`, swallowing the `<command-name>` paired with it, then
+/// optional `<command-args>`.
+fn render_command_message_tag(text: &str) -> Option<(String, &str)> {
+    let (value, after_message) = parse_tag_at(text, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE)?;
+
+    // Claude Code emits <command-message>name</command-message> and
+    // <command-name>/name</command-name> as a pair for one slash
+    // invocation (processSlashCommand.tsx). Swallow the trailing
+    // <command-name> so the preview doesn't render "/foo /foo".
+    let after_message = match parse_tag_at(
+        after_message.trim_start(),
+        COMMAND_NAME_OPEN,
+        COMMAND_NAME_CLOSE,
+    ) {
+        Some((_, after_name)) => after_name,
+        None => after_message,
+    };
+
+    Some(render_command_with_optional_args(value, after_message))
+}
+
+/// `<command-name>`, or the `<command-message>` right after it when there is
+/// one, then optional `<command-args>`.
+fn render_command_name_tag(text: &str) -> Option<(String, &str)> {
+    let (name, after_name) = parse_tag_at(text, COMMAND_NAME_OPEN, COMMAND_NAME_CLOSE)?;
+
+    let after_gap = after_name.trim_start();
+    if !after_gap.starts_with(COMMAND_MESSAGE_OPEN) {
+        return Some(render_command_with_optional_args(name, after_name));
+    }
+    match parse_tag_at(after_gap, COMMAND_MESSAGE_OPEN, COMMAND_MESSAGE_CLOSE) {
+        Some((message, after_message)) => {
+            Some(render_command_with_optional_args(message, after_message))
+        }
+        // An unclosed message after the name: render the name, keep the rest.
+        None => Some((slash_command(name), after_name)),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1235,6 +1227,23 @@ mod tests {
         assert_eq!(
             SessionRecord::render_content(&blocks, &ContentMode::Full),
             "<command-message>revdiff"
+        );
+    }
+
+    #[test]
+    fn render_command_markup_when_paired_tag_unclosed_then_kept_as_text() {
+        let render = |text: &str| {
+            SessionRecord::render_content(&[ContentBlock::Text(text.into())], &ContentMode::Full)
+        };
+
+        assert_eq!(render("say <command-name>foo"), "say <command-name>foo");
+        assert_eq!(
+            render("<command-message>foo</command-message> <command-name>/foo"),
+            "/foo <command-name>/foo"
+        );
+        assert_eq!(
+            render("<command-name>foo</command-name><command-message>bar"),
+            "/foo<command-message>bar"
         );
     }
 
