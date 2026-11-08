@@ -131,27 +131,45 @@ pub fn count_session_messages(file_path: &str) -> (usize, bool) {
     for line in
         crate::session::codex_history::history_lines(std::path::Path::new(file_path)).map(|l| l.raw)
     {
-        let json: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
         };
-        match json.get("type").and_then(|v| v.as_str()) {
-            Some("user") | Some("assistant") => count += 1,
-            Some("summary") | Some("compaction") | Some("compact_boundary") | Some("compacted") => {
-                compacted = true
-            }
-            Some("response_item") => {
-                let payload = json.get("payload");
-                let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
-                let role = payload.and_then(|p| p.get("role")).and_then(|v| v.as_str());
-                if payload_type == Some("message") && matches!(role, Some("user" | "assistant")) {
-                    count += 1;
-                }
-            }
-            _ => {}
+        match counted_line(&json) {
+            CountedLine::Message => count += 1,
+            CountedLine::Compaction => compacted = true,
+            CountedLine::Other => {}
         }
     }
     (count, compacted)
+}
+
+/// What one session record adds to [`count_session_messages`].
+enum CountedLine {
+    Message,
+    Compaction,
+    Other,
+}
+
+/// A Claude user/assistant record or a Codex chat `response_item` is a
+/// message; summary and compaction records mark the session compacted.
+fn counted_line(json: &serde_json::Value) -> CountedLine {
+    match json.get("type").and_then(|v| v.as_str()) {
+        Some("user") | Some("assistant") => CountedLine::Message,
+        Some("summary") | Some("compaction") | Some("compact_boundary") | Some("compacted") => {
+            CountedLine::Compaction
+        }
+        Some("response_item") => {
+            let payload = json.get("payload");
+            let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
+            let role = payload.and_then(|p| p.get("role")).and_then(|v| v.as_str());
+            if payload_type == Some("message") && matches!(role, Some("user" | "assistant")) {
+                CountedLine::Message
+            } else {
+                CountedLine::Other
+            }
+        }
+        _ => CountedLine::Other,
+    }
 }
 
 /// Count messages on an Opencode session by querying the `message` table.
@@ -660,6 +678,29 @@ mod tests {
         let (count, compacted) = count_session_messages(f.path().to_str().unwrap());
         assert_eq!(count, 2);
         assert!(compacted);
+    }
+
+    #[test]
+    fn count_session_messages_when_line_not_json_then_skipped() {
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","message":{{"role":"user","content":"q1"}}}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"a1"}}}}"#
+        )
+        .unwrap();
+
+        assert_eq!(
+            count_session_messages(f.path().to_str().unwrap()),
+            (2, false)
+        );
     }
 
     #[test]
