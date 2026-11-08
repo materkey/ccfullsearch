@@ -382,10 +382,26 @@ fn codex_resume_invocation(
     session_id: &str,
     file_path: &str,
 ) -> Result<(String, String, PathBuf), String> {
-    let (working_dir, resume_arg) = build_codex_resume_command(session_id, file_path)?;
-    let codex_path =
-        which::which("codex").map_err(|_| "Codex binary not found in PATH".to_string())?;
-    Ok((working_dir, resume_arg, codex_path))
+    resume_invocation(
+        build_codex_resume_command(session_id, file_path),
+        "codex",
+        "Codex",
+        which::which,
+    )
+}
+
+/// Join a built `(working_dir, resume_arg)` command with the agent binary
+/// that `find` locates as `program`; `label` names the agent when it is
+/// missing. A failed command is passed on without looking for the binary.
+fn resume_invocation(
+    command: Result<(String, String), String>,
+    program: &'static str,
+    label: &str,
+    find: impl FnOnce(&'static str) -> Result<PathBuf, which::Error>,
+) -> Result<(String, String, PathBuf), String> {
+    let (working_dir, resume_arg) = command?;
+    let binary = find(program).map_err(|_| format!("{label} binary not found in PATH"))?;
+    Ok((working_dir, resume_arg, binary))
 }
 
 /// Resume a Codex CLI session as a child process. Used outside overlay mode
@@ -496,10 +512,12 @@ fn opencode_resume_invocation(
     session_id: &str,
     file_path: &str,
 ) -> Result<(String, String, PathBuf), String> {
-    let (working_dir, resume_arg) = build_opencode_resume_command(session_id, file_path)?;
-    let opencode_path =
-        which::which("opencode").map_err(|_| "opencode binary not found in PATH".to_string())?;
-    Ok((working_dir, resume_arg, opencode_path))
+    resume_invocation(
+        build_opencode_resume_command(session_id, file_path),
+        "opencode",
+        "opencode",
+        which::which,
+    )
 }
 
 /// Resume an Opencode session using exec.
@@ -1432,6 +1450,63 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "orphaned temp file left behind");
         assert!(index_path.join("keep").exists());
+    }
+
+    #[test]
+    fn resume_invocation_when_binary_found_then_command_and_binary_path() {
+        let command = Ok(("/work".to_string(), "ses_1".to_string()));
+        let mut asked = None;
+        let invocation = resume_invocation(command, "opencode", "opencode", |program| {
+            asked = Some(program.to_string());
+            Ok(PathBuf::from("/bin/opencode"))
+        });
+
+        assert_eq!(
+            invocation,
+            Ok((
+                "/work".to_string(),
+                "ses_1".to_string(),
+                PathBuf::from("/bin/opencode")
+            ))
+        );
+        assert_eq!(asked.as_deref(), Some("opencode"));
+    }
+
+    #[test]
+    fn resume_invocation_when_binary_missing_then_error_names_the_agent() {
+        let command = Ok(("/work".to_string(), "ses_1".to_string()));
+        let invocation = resume_invocation(command, "codex", "Codex", |_| {
+            Err(which::Error::CannotFindBinaryPath)
+        });
+
+        assert_eq!(
+            invocation,
+            Err("Codex binary not found in PATH".to_string())
+        );
+    }
+
+    #[test]
+    fn resume_invocation_when_command_failed_then_its_error_without_lookup() {
+        let invocation = resume_invocation(Err("no cwd".to_string()), "codex", "Codex", |_| {
+            panic!("binary looked up for a failed command")
+        });
+
+        assert_eq!(invocation, Err("no cwd".to_string()));
+    }
+
+    #[test]
+    fn opencode_resume_invocation_when_session_db_missing_then_fallback_dir_or_missing_binary() {
+        let dir = TempDir::new().unwrap();
+        let synthetic = format!("{}#ses_X", dir.path().join("opencode.db").display());
+
+        match opencode_resume_invocation("ses_X", &synthetic) {
+            Ok((working_dir, resume_arg, binary)) => {
+                assert!(Path::new(&working_dir).exists());
+                assert_eq!(resume_arg, "ses_X");
+                assert!(binary.ends_with("opencode"));
+            }
+            Err(e) => assert_eq!(e, "opencode binary not found in PATH"),
+        }
     }
 
     // NOTE: test_resume_cli_child_fails_without_claude_binary was moved to
