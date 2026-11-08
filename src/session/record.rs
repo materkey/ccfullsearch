@@ -465,10 +465,18 @@ fn parse_content_block_item(item: &serde_json::Value) -> Option<ContentBlock> {
         "tool_use" => Some(parse_tool_use_block(item)),
         "tool_result" => Some(parse_tool_result_block(item)),
         "thinking" => parse_thinking_block(item),
+        "server_tool_use" => Some(parse_server_tool_use_block(item)),
+        _ => placeholder_block(item_type),
+    }
+}
+
+/// The fixed placeholder for a block whose payload is not text (images,
+/// documents, redacted thinking); `None` for unknown block types.
+fn placeholder_block(item_type: &str) -> Option<ContentBlock> {
+    match item_type {
         "image" | "input_image" => Some(ContentBlock::Text("[image]".to_string())),
         "document" => Some(ContentBlock::Text("[document]".to_string())),
         "redacted_thinking" => Some(ContentBlock::Thinking("[redacted]".to_string())),
-        "server_tool_use" => Some(parse_server_tool_use_block(item)),
         _ => None,
     }
 }
@@ -1518,6 +1526,17 @@ mod tests {
         let blocks = parse_content_blocks(&raw);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0], ContentBlock::Thinking("[redacted]".to_string()));
+    }
+
+    #[test]
+    fn parse_content_blocks_when_unknown_or_untyped_item_then_skipped() {
+        let raw: serde_json::Value = serde_json::json!([
+            {"type": "future_block", "text": "hidden"},
+            {"text": "no type"},
+            {"type": "text", "text": "kept"}
+        ]);
+        let blocks = parse_content_blocks(&raw);
+        assert_eq!(blocks, vec![ContentBlock::Text("kept".to_string())]);
     }
 
     #[test]
