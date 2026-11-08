@@ -6,6 +6,24 @@ const REPO: &str = "materkey/ccfullsearch";
 const BIN_NAME: &str = "ccs";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Where releases come from: GitHub for `ccs update`, a local directory of
+/// `file://` URLs in tests (curl reads both).
+struct ReleaseSource {
+    /// URL of the JSON whose `tag_name` is the latest release.
+    latest_url: String,
+    /// URL that `v{version}/{asset}` is appended to for a release asset.
+    download_base: String,
+}
+
+impl ReleaseSource {
+    fn github() -> Self {
+        Self {
+            latest_url: format!("https://api.github.com/repos/{REPO}/releases/latest"),
+            download_base: format!("https://github.com/{REPO}/releases/download"),
+        }
+    }
+}
+
 /// Map OS/arch to cargo-dist release artifact target triple.
 fn target_triple() -> Result<&'static str, String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -75,8 +93,8 @@ fn parse_latest_tag(body: &[u8]) -> Result<String, String> {
     Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
 }
 
-/// Fetch the latest release tag from GitHub API using curl.
-fn fetch_latest_version() -> Result<String, String> {
+/// Fetch the latest release tag from the GitHub API response at `url` using curl.
+fn fetch_latest_version(url: &str) -> Result<String, String> {
     // Same retry knobs as download() — defensive against transient api.github.com failures.
     let output = Command::new("curl")
         .args([
@@ -90,7 +108,7 @@ fn fetch_latest_version() -> Result<String, String> {
             "--retry-connrefused",
             "--retry-delay",
             "1",
-            &format!("https://api.github.com/repos/{REPO}/releases/latest"),
+            url,
         ])
         .output()
         .map_err(|e| format!("Failed to run curl: {e}"))?;
@@ -211,8 +229,12 @@ fn verify_downloaded(tar_path: &Path, sha_path: &Path) -> Result<(), String> {
 }
 
 /// URLs for the release tarball and its checksum file.
-fn release_asset_urls(latest_version: &str, artifact_name: &str) -> (String, String) {
-    let base_url = format!("https://github.com/{REPO}/releases/download/v{latest_version}");
+fn release_asset_urls(
+    download_base: &str,
+    latest_version: &str,
+    artifact_name: &str,
+) -> (String, String) {
+    let base_url = format!("{download_base}/v{latest_version}");
     (
         format!("{base_url}/{artifact_name}.tar.gz"),
         format!("{base_url}/{artifact_name}.tar.gz.sha256"),
@@ -221,13 +243,15 @@ fn release_asset_urls(latest_version: &str, artifact_name: &str) -> (String, Str
 
 /// Download the release tarball and its checksum file into a temp directory.
 fn download_release(
+    source: &ReleaseSource,
     latest_version: &str,
     artifact_name: &str,
     tmp_dir: &Path,
 ) -> Result<(PathBuf, PathBuf), String> {
     let tar_path = tmp_dir.join(format!("{artifact_name}.tar.gz"));
     let sha_path = tmp_dir.join(format!("{artifact_name}.tar.gz.sha256"));
-    let (tar_url, sha_url) = release_asset_urls(latest_version, artifact_name);
+    let (tar_url, sha_url) =
+        release_asset_urls(&source.download_base, latest_version, artifact_name);
 
     download(&tar_url, &tar_path)?;
     download(&sha_url, &sha_path)?;
@@ -265,11 +289,12 @@ fn extract_and_locate(
 
 /// Download, verify, and extract the release; returns the path of the new binary.
 fn fetch_and_verify(
+    source: &ReleaseSource,
     latest_version: &str,
     artifact_name: &str,
     tmp_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let (tar_path, sha_path) = download_release(latest_version, artifact_name, tmp_dir)?;
+    let (tar_path, sha_path) = download_release(source, latest_version, artifact_name, tmp_dir)?;
 
     eprintln!("Verifying checksum...");
     verify_downloaded(&tar_path, &sha_path)?;
@@ -280,12 +305,13 @@ fn fetch_and_verify(
 
 /// Download the release into a temp directory and swap the binary in place.
 fn download_and_install(
+    source: &ReleaseSource,
     latest_version: &str,
     artifact_name: &str,
     current_exe: &Path,
 ) -> Result<(), String> {
     let tmp = tempfile::tempdir().map_err(|e| format!("Failed to create temp directory: {e}"))?;
-    let new_binary = fetch_and_verify(latest_version, artifact_name, tmp.path())?;
+    let new_binary = fetch_and_verify(source, latest_version, artifact_name, tmp.path())?;
     replace_binary(&new_binary, current_exe)
 }
 
@@ -357,35 +383,51 @@ fn decide_update(current: &str, latest: &str) -> Result<UpdateAction, String> {
 
 /// Perform the actual upgrade to the given release version.
 fn perform_upgrade(
+    source: &ReleaseSource,
     latest_version: &str,
     artifact_name: &str,
     current_exe: &Path,
 ) -> Result<(), String> {
     eprintln!("Downloading v{latest_version}...");
-    download_and_install(latest_version, artifact_name, current_exe)?;
+    download_and_install(source, latest_version, artifact_name, current_exe)?;
     eprintln!("Updated ccs v{CURRENT_VERSION} -> v{latest_version}");
     Ok(())
 }
 
 /// Either report why no update is needed or upgrade to the latest release.
-fn update_to(latest_version: &str, artifact_name: &str, current_exe: &Path) -> Result<(), String> {
+fn update_to(
+    source: &ReleaseSource,
+    latest_version: &str,
+    artifact_name: &str,
+    current_exe: &Path,
+) -> Result<(), String> {
     match decide_update(CURRENT_VERSION, latest_version)? {
         UpdateAction::Skip(message) => {
             eprintln!("{message}");
             Ok(())
         }
-        UpdateAction::Upgrade => perform_upgrade(latest_version, artifact_name, current_exe),
+        UpdateAction::Upgrade => {
+            perform_upgrade(source, latest_version, artifact_name, current_exe)
+        }
     }
 }
 
 /// Run the self-update process.
 pub fn run() -> Result<(), String> {
     let (canonical_exe, artifact_name) = preflight()?;
+    check_and_update(&ReleaseSource::github(), &artifact_name, &canonical_exe)
+}
 
+/// Look up the latest release in `source` and upgrade `current_exe` to it if it is newer.
+fn check_and_update(
+    source: &ReleaseSource,
+    artifact_name: &str,
+    current_exe: &Path,
+) -> Result<(), String> {
     eprintln!("Checking for updates...");
-    let latest_version = fetch_latest_version()?;
+    let latest_version = fetch_latest_version(&source.latest_url)?;
 
-    update_to(&latest_version, &artifact_name, &canonical_exe)
+    update_to(source, &latest_version, artifact_name, current_exe)
 }
 
 #[cfg(test)]
@@ -603,7 +645,11 @@ mod tests {
 
     #[test]
     fn release_asset_urls_point_at_github_release() {
-        let (tar_url, sha_url) = release_asset_urls("1.2.3", "ccfullsearch-x86_64-apple-darwin");
+        let (tar_url, sha_url) = release_asset_urls(
+            &ReleaseSource::github().download_base,
+            "1.2.3",
+            "ccfullsearch-x86_64-apple-darwin",
+        );
         assert_eq!(
             tar_url,
             "https://github.com/materkey/ccfullsearch/releases/download/v1.2.3/ccfullsearch-x86_64-apple-darwin.tar.gz"
@@ -752,12 +798,189 @@ mod tests {
     fn update_to_skips_when_already_current() {
         // Equal versions short-circuit before any network access.
         let exe = std::env::current_exe().unwrap();
-        update_to(CURRENT_VERSION, "ccfullsearch-test", &exe).unwrap();
+        update_to(
+            &ReleaseSource::github(),
+            CURRENT_VERSION,
+            "ccfullsearch-test",
+            &exe,
+        )
+        .unwrap();
     }
 
     #[test]
     fn update_to_rejects_invalid_latest_version() {
         let exe = std::env::current_exe().unwrap();
-        assert!(update_to("not-a-version", "ccfullsearch-test", &exe).is_err());
+        assert!(update_to(
+            &ReleaseSource::github(),
+            "not-a-version",
+            "ccfullsearch-test",
+            &exe
+        )
+        .is_err());
+    }
+
+    const TEST_ARTIFACT: &str = "ccfullsearch-test";
+
+    fn file_url(path: &Path) -> String {
+        format!("file://{}", path.display())
+    }
+
+    /// A release laid out like GitHub's under `root`: `latest.json` names the
+    /// tag, `v{version}/` holds the tarball (nested cargo-dist layout) and its
+    /// checksum file.
+    fn fake_release(root: &Path, version: &str, binary: &[u8]) -> ReleaseSource {
+        let stage = root.join("stage");
+        std::fs::create_dir_all(stage.join(TEST_ARTIFACT)).unwrap();
+        std::fs::write(stage.join(TEST_ARTIFACT).join(BIN_NAME), binary).unwrap();
+
+        let assets = root.join(format!("v{version}"));
+        std::fs::create_dir_all(&assets).unwrap();
+        let tar_path = assets.join(format!("{TEST_ARTIFACT}.tar.gz"));
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&tar_path)
+            .arg("-C")
+            .arg(&stage)
+            .arg(TEST_ARTIFACT)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let hash = sha256_of(&tar_path).unwrap();
+        std::fs::write(
+            assets.join(format!("{TEST_ARTIFACT}.tar.gz.sha256")),
+            format!("{hash}  {TEST_ARTIFACT}.tar.gz\n"),
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("latest.json"),
+            format!(r#"{{"tag_name":"v{version}"}}"#),
+        )
+        .unwrap();
+        ReleaseSource {
+            latest_url: file_url(&root.join("latest.json")),
+            download_base: file_url(root),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_latest_version_when_url_serves_release_then_returns_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_release(tmp.path(), "1.2.3", b"bin");
+        assert_eq!(fetch_latest_version(&source.latest_url).unwrap(), "1.2.3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_latest_version_when_url_is_missing_then_reports_curl_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = fetch_latest_version(&file_url(&tmp.path().join("nope.json"))).unwrap_err();
+        assert!(
+            err.contains("Failed to fetch latest release"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_when_url_is_missing_then_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = file_url(&tmp.path().join("nope.tar.gz"));
+        let err = download(&url, &tmp.path().join("out")).unwrap_err();
+        assert_eq!(err, format!("Download failed: {url}"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_tar_when_file_is_not_an_archive_then_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("broken.tar.gz");
+        std::fs::write(&archive, b"not a tarball").unwrap();
+        assert_eq!(
+            extract_tar(&archive, tmp.path()).unwrap_err(),
+            "Failed to extract archive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_and_verify_when_release_is_intact_then_returns_extracted_binary() {
+        let release = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let source = fake_release(release.path(), "1.2.3", b"new-binary");
+
+        let binary = fetch_and_verify(&source, "1.2.3", TEST_ARTIFACT, work.path()).unwrap();
+
+        assert_eq!(
+            binary,
+            work.path()
+                .join("extract")
+                .join(TEST_ARTIFACT)
+                .join(BIN_NAME)
+        );
+        assert_eq!(std::fs::read(&binary).unwrap(), b"new-binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_and_verify_when_checksum_differs_then_rejects_release() {
+        let release = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let source = fake_release(release.path(), "1.2.3", b"new-binary");
+        std::fs::write(
+            release
+                .path()
+                .join("v1.2.3")
+                .join(format!("{TEST_ARTIFACT}.tar.gz.sha256")),
+            format!("{HELLO_SHA256}  {TEST_ARTIFACT}.tar.gz\n"),
+        )
+        .unwrap();
+
+        let err = fetch_and_verify(&source, "1.2.3", TEST_ARTIFACT, work.path()).unwrap_err();
+
+        assert!(err.contains("Checksum mismatch"), "Unexpected error: {err}");
+        assert!(!work.path().join("extract").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_and_update_when_release_is_newer_then_replaces_binary() {
+        let release = tempfile::tempdir().unwrap();
+        let exe_dir = tempfile::tempdir().unwrap();
+        let current_exe = exe_dir.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old-binary").unwrap();
+        let source = fake_release(release.path(), "999.0.0", b"new-binary");
+
+        check_and_update(&source, TEST_ARTIFACT, &current_exe).unwrap();
+
+        assert_eq!(std::fs::read(&current_exe).unwrap(), b"new-binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_and_update_when_release_is_current_then_keeps_binary() {
+        let release = tempfile::tempdir().unwrap();
+        let exe_dir = tempfile::tempdir().unwrap();
+        let current_exe = exe_dir.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old-binary").unwrap();
+        let source = fake_release(release.path(), CURRENT_VERSION, b"new-binary");
+
+        check_and_update(&source, TEST_ARTIFACT, &current_exe).unwrap();
+
+        assert_eq!(std::fs::read(&current_exe).unwrap(), b"old-binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_and_update_when_latest_release_is_unreachable_then_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = ReleaseSource {
+            latest_url: file_url(&tmp.path().join("nope.json")),
+            download_base: file_url(tmp.path()),
+        };
+        let current_exe = tmp.path().join(BIN_NAME);
+
+        assert!(check_and_update(&source, TEST_ARTIFACT, &current_exe).is_err());
     }
 }
