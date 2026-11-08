@@ -340,10 +340,13 @@ fn read_tail_lines(path: &Path, max_bytes: u64) -> Option<String> {
     Some(String::from_utf8_lossy(data).into_owned())
 }
 
-/// Trim `text` and truncate to 100 chars; `None` when trimming leaves nothing.
-fn non_empty_truncated(text: &str) -> Option<String> {
+/// Store `text` trimmed and truncated to 100 chars in `slot`; text that trims
+/// to nothing leaves `slot` as it was.
+fn set_non_empty_truncated(slot: &mut Option<String>, text: &str) {
     let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| truncate_summary(trimmed, 100))
+    if !trimmed.is_empty() {
+        *slot = Some(truncate_summary(trimmed, 100));
+    }
 }
 
 /// Record a tail `type=summary` line: keep it as the last summary (with the
@@ -386,28 +389,13 @@ fn apply_tail_record(
         } => {
             apply_tail_summary(scan, json, &text, leaf_uuid.as_deref(), latest_chain);
         }
-        SessionRecord::CustomTitle(t) => {
-            if let Some(title) = non_empty_truncated(&t) {
-                scan.custom_title = Some(title);
-            }
-        }
-        SessionRecord::AiTitle(t) => {
-            if let Some(title) = non_empty_truncated(&t) {
-                scan.ai_title = Some(title);
-            }
-        }
-        SessionRecord::AgentName(name) => {
-            if let Some(name) = non_empty_truncated(&name) {
-                scan.agent_name = Some(name);
-            }
-        }
-        SessionRecord::LastPrompt(prompt) => {
-            if let Some(prompt) =
-                non_empty_truncated(strip_leading_recog_automation_marker(&prompt))
-            {
-                scan.last_prompt = Some(prompt);
-            }
-        }
+        SessionRecord::CustomTitle(t) => set_non_empty_truncated(&mut scan.custom_title, &t),
+        SessionRecord::AiTitle(t) => set_non_empty_truncated(&mut scan.ai_title, &t),
+        SessionRecord::AgentName(name) => set_non_empty_truncated(&mut scan.agent_name, &name),
+        SessionRecord::LastPrompt(prompt) => set_non_empty_truncated(
+            &mut scan.last_prompt,
+            strip_leading_recog_automation_marker(&prompt),
+        ),
         _ => {}
     }
 }
@@ -710,20 +698,20 @@ pub(crate) fn detect_session_automation(path: &Path) -> Option<String> {
             Err(_) => continue,
         };
 
-        let json: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // Check both user and assistant messages for automation markers
-        if let Some(text) = extract_text_for_automation(&json) {
-            if let Some(tool) = session::detect_automation(&text) {
-                return Some(tool.to_string());
-            }
+        if let Some(tool) = automation_in_line(&line) {
+            return Some(tool.to_string());
         }
     }
 
     None
+}
+
+/// The automation tool a JSONL line's message text marks, if any. Both user
+/// and assistant messages are checked; unparsable lines mark nothing.
+fn automation_in_line(line: &str) -> Option<&'static str> {
+    let json: serde_json::Value = serde_json::from_str(line).ok()?;
+    let text = extract_text_for_automation(&json)?;
+    session::detect_automation(&text)
 }
 
 /// Extract a `RecentSession` from a JSONL session file.
@@ -3091,5 +3079,115 @@ mod tests {
 
         let result = extract_summary(f.path()).unwrap();
         assert_eq!(result.summary, "Only user message");
+    }
+
+    #[test]
+    fn apply_tail_record_when_metadata_records_then_each_lands_trimmed_in_its_slot() {
+        let mut scan = TailSummaryScan::default();
+        let json = serde_json::json!({});
+        let records = [
+            SessionRecord::CustomTitle("  custom  ".into()),
+            SessionRecord::AiTitle("ai".into()),
+            SessionRecord::AgentName("agent".into()),
+            SessionRecord::LastPrompt(format!(
+                "{} x -->\n  real prompt",
+                session::RECOG_AUTOMATION_MARKER_PREFIX
+            )),
+        ];
+        for record in records {
+            apply_tail_record(&mut scan, record, &json, None);
+        }
+
+        assert_eq!(scan.custom_title.as_deref(), Some("custom"));
+        assert_eq!(scan.ai_title.as_deref(), Some("ai"));
+        assert_eq!(scan.agent_name.as_deref(), Some("agent"));
+        assert_eq!(scan.last_prompt.as_deref(), Some("real prompt"));
+    }
+
+    #[test]
+    fn apply_tail_record_when_metadata_text_is_blank_then_earlier_value_kept() {
+        let mut scan = TailSummaryScan::default();
+        let json = serde_json::json!({});
+        apply_tail_record(
+            &mut scan,
+            SessionRecord::CustomTitle("first".into()),
+            &json,
+            None,
+        );
+        apply_tail_record(
+            &mut scan,
+            SessionRecord::CustomTitle("   ".into()),
+            &json,
+            None,
+        );
+        apply_tail_record(
+            &mut scan,
+            SessionRecord::LastPrompt(" \n ".into()),
+            &json,
+            None,
+        );
+
+        assert_eq!(scan.custom_title.as_deref(), Some("first"));
+        assert_eq!(scan.last_prompt, None);
+    }
+
+    #[test]
+    fn apply_tail_record_when_title_is_long_then_truncated_to_100_chars() {
+        let mut scan = TailSummaryScan::default();
+        let long = "t".repeat(150);
+        apply_tail_record(
+            &mut scan,
+            SessionRecord::AiTitle(long),
+            &serde_json::json!({}),
+            None,
+        );
+
+        let title = scan.ai_title.unwrap();
+        assert_eq!(title.chars().count(), 100);
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn detect_session_automation_when_marker_follows_unreadable_lines_then_found() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"\xff\xfe not utf-8\n").unwrap();
+        writeln!(f, "not json").unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"When done output <<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"s","timestamp":"2026-03-28T08:00:00Z"}}"#).unwrap();
+
+        assert_eq!(
+            detect_session_automation(f.path()),
+            Some("ralphex".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_session_automation_when_marker_after_first_50_lines_then_none() {
+        let mut f = NamedTempFile::new().unwrap();
+        for _ in 0..50 {
+            writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"hello"}}]}},"sessionId":"s"}}"#).unwrap();
+        }
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}]}},"sessionId":"s"}}"#).unwrap();
+
+        assert_eq!(detect_session_automation(f.path()), None);
+    }
+
+    #[test]
+    fn detect_session_automation_when_file_missing_then_none() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            detect_session_automation(&dir.path().join("gone.jsonl")),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_session_automation_when_observer_path_then_found_without_reading() {
+        let path = Path::new(
+            "/Users/u/.claude/projects/-Users-u--claude-mem-observer-sessions/missing.jsonl",
+        );
+        assert_eq!(
+            detect_session_automation(path),
+            Some("claude-mem".to_string())
+        );
     }
 }
