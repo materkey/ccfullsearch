@@ -42,11 +42,7 @@ impl App {
     pub fn on_up(&mut self) {
         // Recent sessions navigation
         if self.in_recent_sessions_mode() {
-            if !self.recent.filtered.is_empty() && self.recent.cursor > 0 {
-                self.recent.cursor -= 1;
-                self.recent
-                    .adjust_scroll(self.recent_sessions_visible_items());
-            }
+            self.on_up_recent();
             return;
         }
 
@@ -67,6 +63,15 @@ impl App {
         // Force full redraw in preview mode when selection changed
         if self.preview_mode && (self.search.group_cursor, self.search.sub_cursor) != old_cursor {
             self.needs_full_redraw = true;
+        }
+    }
+
+    /// Move the recent-sessions cursor one row up.
+    fn on_up_recent(&mut self) {
+        if !self.recent.filtered.is_empty() && self.recent.cursor > 0 {
+            self.recent.cursor -= 1;
+            self.recent
+                .adjust_scroll(self.recent_sessions_visible_items());
         }
     }
 
@@ -473,6 +478,37 @@ mod tests {
             app.needs_full_redraw,
             "advancing the sub-cursor in preview mode must force a full redraw"
         );
+    }
+
+    #[test]
+    fn on_up_when_expanded_in_preview_then_steps_sub_cursor_back_and_redraws() {
+        let mut app = App::new(vec!["/test".to_string()]);
+        app.search.groups = vec![
+            make_group_with_matches("g1", 1),
+            make_group_with_matches("g2", 2),
+        ];
+        app.search.group_cursor = 1;
+        app.search.sub_cursor = 1;
+        app.search.expanded = true;
+        app.preview_mode = true;
+        app.needs_full_redraw = false;
+
+        // Within the expanded group: step the sub-cursor back.
+        app.on_up();
+        assert_eq!((app.search.group_cursor, app.search.sub_cursor), (1, 0));
+        assert!(app.search.expanded);
+        assert!(app.needs_full_redraw);
+
+        // At the first match: move to the previous group and collapse.
+        app.on_up();
+        assert_eq!((app.search.group_cursor, app.search.sub_cursor), (0, 0));
+        assert!(!app.search.expanded);
+
+        // At the first group the selection does not change: no redraw.
+        app.needs_full_redraw = false;
+        app.on_up();
+        assert_eq!((app.search.group_cursor, app.search.sub_cursor), (0, 0));
+        assert!(!app.needs_full_redraw);
     }
 
     #[test]
