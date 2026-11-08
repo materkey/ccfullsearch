@@ -38,19 +38,26 @@ fn dispatch(
     search_paths: &[String],
     home: &str,
 ) -> Result<serde_json::Value, String> {
-    fn parse<T: serde::de::DeserializeOwned>(params: serde_json::Value) -> Result<T, String> {
-        serde_json::from_value(params).map_err(|e| format!("bad params: {e}"))
-    }
-    fn reply<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
-        serde_json::to_value(value).map_err(|e| e.to_string())
-    }
     match method {
-        "search" => reply(server::search(&parse(params)?, search_paths, home, cancel)?),
-        "recent" => reply(server::recent(&parse(params)?, search_paths, home)),
-        "show" => reply(server::show(&parse(params)?)?),
-        "tree" => reply(server::tree(&parse(params)?)?),
+        "search" => run_method(params, |p| server::search(p, search_paths, home, cancel)),
+        "recent" => run_method(params, |p| Ok(server::recent(p, search_paths, home))),
+        "show" => run_method(params, server::show),
+        "tree" => run_method(params, server::tree),
         other => Err(format!("unknown method: {other}")),
     }
+}
+
+/// Decode `params` for one method, run it and encode its answer.
+fn run_method<P, T>(
+    params: serde_json::Value,
+    method: impl FnOnce(&P) -> Result<T, String>,
+) -> Result<serde_json::Value, String>
+where
+    P: serde::de::DeserializeOwned,
+    T: serde::Serialize,
+{
+    let params: P = serde_json::from_value(params).map_err(|e| format!("bad params: {e}"))?;
+    serde_json::to_value(method(&params)?).map_err(|e| e.to_string())
 }
 
 type Registry = Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>;
@@ -281,5 +288,56 @@ mod tests {
         let out = SharedBuf::default();
         run_with(gated(input, &out, 2), out.clone(), handler);
         assert_eq!(ids(&out.lines()), vec![3]);
+    }
+
+    fn dispatch_local(
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        dispatch(method, params, &cancel, &[], "/home/nobody")
+    }
+
+    #[test]
+    fn dispatch_when_method_unknown_then_error_names_it() {
+        assert_eq!(
+            dispatch_local("delete", serde_json::json!({})),
+            Err("unknown method: delete".to_string())
+        );
+    }
+
+    #[test]
+    fn dispatch_when_params_do_not_fit_method_then_bad_params_error() {
+        for method in ["search", "recent", "show", "tree"] {
+            let err = dispatch_local(method, serde_json::json!({"nope": 1})).unwrap_err();
+            assert!(err.starts_with("bad params: "), "{method}: {err}");
+        }
+    }
+
+    #[test]
+    fn dispatch_when_tree_of_fixture_then_encoded_tree_of_that_file() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/linear_session.jsonl"
+        );
+        let value = dispatch_local("tree", serde_json::json!({ "file_path": file })).unwrap();
+        assert_eq!(value["file_path"], file);
+        assert!(!value["rows"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dispatch_when_show_of_missing_file_then_server_error_passed_on() {
+        let err = dispatch_local(
+            "show",
+            serde_json::json!({"file_path": "/no/such/file.jsonl", "line": 1, "uuid": null}),
+        )
+        .unwrap_err();
+        assert!(!err.starts_with("bad params"), "{err}");
+    }
+
+    #[test]
+    fn dispatch_when_recent_with_no_search_paths_then_empty_list() {
+        let value = dispatch_local("recent", serde_json::json!({"limit": 5, "project": null}));
+        assert_eq!(value, Ok(serde_json::json!([])));
     }
 }
