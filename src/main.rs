@@ -187,32 +187,57 @@ fn session_id_for_resume(file_path: &str) -> String {
 /// Terminal raw mode and alternate screen are always cleaned up, even if the
 /// event loop returns an error (e.g. from `event::poll` or `terminal.draw`).
 fn run_tui(app: &mut ccs::tui::App) -> io::Result<ccs::tui::TuiOutcome> {
-    enable_raw_mode()?;
+    in_tui_screen(&mut stdout(), enable_raw_mode, disable_raw_mode, || {
+        run_tui_inner(app)
+    })
+}
+
+/// Run `body` with the terminal in raw mode on the alternate screen, written
+/// to `out`. `enable` / `disable` switch raw mode. The terminal is restored
+/// afterwards even when `body` fails, and raw mode is left again when the
+/// screen cannot be set up.
+fn in_tui_screen<T>(
+    out: &mut impl Write,
+    enable: impl FnOnce() -> io::Result<()>,
+    disable: impl Fn() -> io::Result<()>,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    enable()?;
     if let Err(e) = execute!(
-        stdout(),
+        out,
         EnterAlternateScreen,
         Clear(ClearType::All),
         cursor::Hide
     ) {
-        let _ = disable_raw_mode();
+        let _ = disable();
         return Err(e);
     }
 
-    let result = run_tui_inner(app);
+    let result = body();
 
     // Always restore terminal, even on error — best-effort cleanup
-    let _ = disable_raw_mode();
-    let _ = execute!(stdout(), cursor::Show, LeaveAlternateScreen);
+    let _ = disable();
+    let _ = execute!(out, cursor::Show, LeaveAlternateScreen);
 
     result
 }
 
 /// Inner TUI loop, separated so that `run_tui` can guarantee terminal cleanup.
 fn run_tui_inner(app: &mut ccs::tui::App) -> io::Result<ccs::tui::TuiOutcome> {
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    run_on_backend(CrosstermBackend::new(stdout()), app, &mut poll_event)
+}
+
+/// Run the event loop on `backend` with events from `next_event` and return
+/// the outcome the app settled on.
+fn run_on_backend<B: Backend>(
+    backend: B,
+    app: &mut ccs::tui::App,
+    next_event: &mut impl FnMut() -> io::Result<Option<Event>>,
+) -> io::Result<ccs::tui::TuiOutcome> {
+    let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let result = run_event_loop(&mut terminal, app);
+    let result = run_event_loop(&mut terminal, app, next_event);
     result.map(|()| app.take_outcome())
 }
 
@@ -278,32 +303,31 @@ fn prefill_query(app: &mut ccs::tui::App, initial_query: Option<String>) {
 }
 
 /// Main draw/input/tick loop; runs until the app requests quit.
-fn run_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+fn run_event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut ccs::tui::App,
+    next_event: &mut impl FnMut() -> io::Result<Option<Event>>,
 ) -> io::Result<()> {
     while !app.should_quit {
-        tick_once(terminal, app)?;
+        tick_once(terminal, app, next_event)?;
     }
     Ok(())
 }
 
 /// One iteration of the event loop: draw, handle input, poll background work.
-fn tick_once(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+fn tick_once<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut ccs::tui::App,
+    next_event: &mut impl FnMut() -> io::Result<Option<Event>>,
 ) -> io::Result<()> {
     draw_frame(terminal, app)?;
-    poll_and_handle_key(app)?;
+    poll_and_handle_key(app, next_event)?;
     app.tick();
     Ok(())
 }
 
 /// Clear the terminal when a full redraw was requested, then render a frame.
-fn draw_frame(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut ccs::tui::App,
-) -> io::Result<()> {
+fn draw_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut ccs::tui::App) -> io::Result<()> {
     if app.needs_full_redraw {
         terminal.clear()?;
         app.needs_full_redraw = false;
@@ -312,10 +336,7 @@ fn draw_frame(
 }
 
 /// Render one frame and record the visible list height for scroll math.
-fn render_frame(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut ccs::tui::App,
-) -> io::Result<()> {
+fn render_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut ccs::tui::App) -> io::Result<()> {
     let completed = terminal.draw(|frame| ccs::tui::render(frame, &app.view()))?;
     app.last_tree_visible_height = visible_height(app.tree_mode, completed.area.height as usize);
     Ok(())
@@ -332,15 +353,27 @@ fn visible_height(tree_mode: bool, frame_height: usize) -> usize {
 
 /// Poll for a terminal event with a 100 ms timeout.
 fn poll_event() -> io::Result<Option<Event>> {
-    if event::poll(Duration::from_millis(100))? {
-        return event::read().map(Some);
+    next_event_with(event::poll, event::read)
+}
+
+/// The event `read` returns once `poll` reports one within 100 ms; `None`
+/// when none arrived.
+fn next_event_with(
+    poll: impl FnOnce(Duration) -> io::Result<bool>,
+    read: impl FnOnce() -> io::Result<Event>,
+) -> io::Result<Option<Event>> {
+    if poll(Duration::from_millis(100))? {
+        return read().map(Some);
     }
     Ok(None)
 }
 
-/// Poll for one terminal event and dispatch it to the app.
-fn poll_and_handle_key(app: &mut ccs::tui::App) -> io::Result<()> {
-    if let Some(event) = poll_event()? {
+/// Take one event from `next_event` and dispatch it to the app.
+fn poll_and_handle_key(
+    app: &mut ccs::tui::App,
+    next_event: &mut impl FnMut() -> io::Result<Option<Event>>,
+) -> io::Result<()> {
+    if let Some(event) = next_event()? {
         handle_event(app, event);
     }
     Ok(())
@@ -657,8 +690,19 @@ fn run_tui_loop(
 ) -> io::Result<()> {
     let mut app = init_app(search_paths, tree_target, false, None);
     start.apply_to(&mut app);
-    while handle_outcome(run_tui(&mut app)?, overlay, &mut app) {
-        discard_pending_events();
+    drive_tui(&mut app, overlay, run_tui, discard_pending_events)
+}
+
+/// Run the TUI with `run` and handle each outcome until one ends the loop;
+/// `between` runs before the picker is shown again.
+fn drive_tui(
+    app: &mut ccs::tui::App,
+    overlay: bool,
+    mut run: impl FnMut(&mut ccs::tui::App) -> io::Result<ccs::tui::TuiOutcome>,
+    mut between: impl FnMut(),
+) -> io::Result<()> {
+    while handle_outcome(run(app)?, overlay, app) {
+        between();
     }
     Ok(())
 }
@@ -684,7 +728,15 @@ impl TuiStart {
 /// reopen the same session as soon as the picker comes back. A failed poll
 /// or read only ends the drain early.
 fn discard_pending_events() {
-    while matches!(event::poll(Duration::ZERO), Ok(true)) && event::read().is_ok() {}
+    drain_events(event::poll, event::read);
+}
+
+/// Read events while `poll` reports one ready without waiting.
+fn drain_events(
+    mut poll: impl FnMut(Duration) -> io::Result<bool>,
+    mut read: impl FnMut() -> io::Result<Event>,
+) {
+    while matches!(poll(Duration::ZERO), Ok(true)) && read().is_ok() {}
 }
 
 /// What follows a resume attempt.
@@ -846,6 +898,7 @@ fn wait_for_enter(prompt: &str) -> bool {
 mod tests {
     use super::*;
     use ccs::session::SessionSource;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn successful_resume_when_deciding_next_step_then_picker_returns_in_overlay_or_after_quick_exit(
@@ -1239,5 +1292,298 @@ mod tests {
     #[test]
     fn test_pick_exit_code_quit_returns_one() {
         assert_eq!(pick_exit_code(ccs::tui::TuiOutcome::Quit, None), 1);
+    }
+
+    fn press(code: crossterm::event::KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    fn release(code: crossterm::event::KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new_with_kind(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ))
+    }
+
+    /// A writer that refuses every write, like a closed terminal.
+    struct BrokenTerminal;
+
+    impl Write for BrokenTerminal {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("terminal gone"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("terminal gone"))
+        }
+    }
+
+    const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
+    const LEAVE_ALT_SCREEN: &str = "\x1b[?1049l";
+
+    #[test]
+    fn tui_screen_when_body_runs_then_screen_is_entered_and_restored() {
+        let mut out = Vec::new();
+        let disabled = std::cell::Cell::new(0);
+
+        let result = in_tui_screen(
+            &mut out,
+            || Ok(()),
+            || {
+                disabled.set(disabled.get() + 1);
+                Ok(())
+            },
+            || Ok(7),
+        );
+
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(disabled.get(), 1);
+        let out = String::from_utf8(out).unwrap();
+        let entered = out.find(ENTER_ALT_SCREEN).unwrap();
+        let left = out.find(LEAVE_ALT_SCREEN).unwrap();
+        assert!(entered < left, "screen left before it was entered: {out:?}");
+    }
+
+    #[test]
+    fn tui_screen_when_body_fails_then_terminal_is_still_restored() {
+        let mut out = Vec::new();
+        let disabled = std::cell::Cell::new(0);
+
+        let result: io::Result<()> = in_tui_screen(
+            &mut out,
+            || Ok(()),
+            || {
+                disabled.set(disabled.get() + 1);
+                Ok(())
+            },
+            || Err(io::Error::other("draw failed")),
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "draw failed");
+        assert_eq!(disabled.get(), 1);
+        assert!(String::from_utf8(out).unwrap().contains(LEAVE_ALT_SCREEN));
+    }
+
+    #[test]
+    fn tui_screen_when_raw_mode_fails_then_body_does_not_run() {
+        let mut out = Vec::new();
+        let ran = std::cell::Cell::new(false);
+
+        let result = in_tui_screen(
+            &mut out,
+            || Err(io::Error::other("not a tty")),
+            || Ok(()),
+            || {
+                ran.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "not a tty");
+        assert!(!ran.get());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tui_screen_when_screen_setup_fails_then_raw_mode_is_left() {
+        let disabled = std::cell::Cell::new(0);
+        let ran = std::cell::Cell::new(false);
+
+        let result = in_tui_screen(
+            &mut BrokenTerminal,
+            || Ok(()),
+            || {
+                disabled.set(disabled.get() + 1);
+                Ok(())
+            },
+            || {
+                ran.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(disabled.get(), 1);
+        assert!(!ran.get());
+    }
+
+    #[test]
+    fn tui_when_esc_arrives_after_idle_ticks_then_loop_ends_with_quit() {
+        let mut app = ccs::tui::App::new(vec![]);
+        app.needs_full_redraw = true;
+        let mut events = std::collections::VecDeque::from([
+            None,
+            Some(Event::Resize(80, 24)),
+            Some(release(crossterm::event::KeyCode::Esc)),
+            Some(press(crossterm::event::KeyCode::Esc)),
+        ]);
+
+        let outcome = run_on_backend(TestBackend::new(80, 24), &mut app, &mut || {
+            Ok(events.pop_front().expect("loop read past the quit key"))
+        })
+        .unwrap();
+
+        assert_eq!(outcome, ccs::tui::TuiOutcome::Quit);
+        assert!(events.is_empty());
+        assert!(!app.needs_full_redraw);
+        assert_eq!(app.last_tree_visible_height, 24 - 7);
+    }
+
+    #[test]
+    fn tui_when_event_source_fails_then_error_ends_loop() {
+        let mut app = ccs::tui::App::new(vec![]);
+
+        let result = run_on_backend(TestBackend::new(80, 24), &mut app, &mut || {
+            Err(io::Error::other("stdin closed"))
+        });
+
+        assert_eq!(result.unwrap_err().to_string(), "stdin closed");
+    }
+
+    #[test]
+    fn next_event_when_poll_reports_one_then_it_is_read() {
+        let event = next_event_with(|_| Ok(true), || Ok(Event::FocusGained)).unwrap();
+        assert_eq!(event, Some(Event::FocusGained));
+    }
+
+    #[test]
+    fn next_event_when_poll_times_out_then_none() {
+        let event = next_event_with(|_| Ok(false), || panic!("read without event")).unwrap();
+        assert_eq!(event, None);
+    }
+
+    #[test]
+    fn next_event_when_poll_fails_then_error() {
+        let result = next_event_with(
+            |_| Err(io::Error::other("poll failed")),
+            || panic!("read after failed poll"),
+        );
+        assert_eq!(result.unwrap_err().to_string(), "poll failed");
+    }
+
+    #[test]
+    fn drain_when_events_are_queued_then_all_are_read() {
+        let queue = std::cell::RefCell::new(std::collections::VecDeque::from([
+            Event::FocusGained,
+            press(crossterm::event::KeyCode::Enter),
+        ]));
+
+        drain_events(
+            |_| Ok(!queue.borrow().is_empty()),
+            || Ok(queue.borrow_mut().pop_front().unwrap()),
+        );
+
+        assert!(queue.borrow().is_empty());
+    }
+
+    #[test]
+    fn drain_when_read_fails_then_drain_stops() {
+        let reads = std::cell::Cell::new(0);
+
+        drain_events(
+            |_| Ok(true),
+            || {
+                reads.set(reads.get() + 1);
+                Err(io::Error::other("read failed"))
+            },
+        );
+
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn key_press_when_handled_then_typed_into_input() {
+        let mut app = ccs::tui::App::new(vec![]);
+        handle_event(&mut app, press(crossterm::event::KeyCode::Char('a')));
+        assert_eq!(app.input.text(), "a");
+    }
+
+    #[test]
+    fn key_release_and_other_events_when_handled_then_ignored() {
+        let mut app = ccs::tui::App::new(vec![]);
+        handle_event(&mut app, release(crossterm::event::KeyCode::Char('a')));
+        handle_event(&mut app, Event::FocusLost);
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn app_init_when_query_and_remote_only_selection_given_then_query_is_typed_and_hosts_filtered()
+    {
+        let selection = ccs::remote::HostSelection {
+            local: false,
+            remote: Vec::new(),
+        };
+
+        let app = init_app_with_hosts(vec![], None, true, Some("docker".into()), selection);
+
+        assert!(app.picker_mode);
+        assert_eq!(app.input.text(), "docker");
+        assert_eq!(app.hosts.filter, ccs::tui::hosts_state::HostFilter::Remote);
+        assert!(!app.tree_mode);
+    }
+
+    #[test]
+    fn app_init_when_tree_target_given_then_tree_mode_opens() {
+        let selection = ccs::remote::HostSelection {
+            local: true,
+            remote: Vec::new(),
+        };
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/linear_session.jsonl"
+        );
+
+        let app = init_app_with_hosts(vec![], Some(fixture.into()), false, None, selection);
+
+        assert!(app.tree_mode);
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn tui_loop_when_tui_quits_then_picker_is_not_reopened() {
+        let mut app = ccs::tui::App::new(vec![]);
+        let runs = std::cell::Cell::new(0);
+        let reopened = std::cell::Cell::new(0);
+
+        drive_tui(
+            &mut app,
+            false,
+            |_| {
+                runs.set(runs.get() + 1);
+                Ok(ccs::tui::TuiOutcome::Quit)
+            },
+            || reopened.set(reopened.get() + 1),
+        )
+        .unwrap();
+
+        assert_eq!((runs.get(), reopened.get()), (1, 0));
+    }
+
+    #[test]
+    fn tui_loop_when_tui_fails_then_error() {
+        let mut app = ccs::tui::App::new(vec![]);
+        let result = drive_tui(
+            &mut app,
+            false,
+            |_| Err(io::Error::other("no terminal")),
+            || {},
+        );
+        assert_eq!(result.unwrap_err().to_string(), "no terminal");
+    }
+
+    #[test]
+    fn resume_on_unknown_remote_host_when_started_then_error_names_host() {
+        let host = ccs::remote::Host::Remote("ccs-test-no-such-host".into());
+
+        let err =
+            start_resume(&host, "sid", "/tmp/s.jsonl", SessionSource::CLI, None, true).unwrap_err();
+
+        assert!(
+            err.contains("unknown host ccs-test-no-such-host"),
+            "unexpected error: {err}"
+        );
     }
 }
