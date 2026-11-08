@@ -1459,6 +1459,20 @@ mod tests {
         assert_eq!(found, None);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn find_session_file_in_paths_when_audit_unreadable_then_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("local-agent-mode-sessions").join("local_1");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::os::unix::fs::symlink(nested.join("gone"), nested.join("audit.jsonl")).unwrap();
+
+        let found =
+            find_session_file_in_paths("wanted", &[dir.path().to_string_lossy().into_owned()]);
+
+        assert_eq!(found, None);
+    }
+
     #[test]
     fn find_session_file_in_paths_when_opencode_id_not_in_db_then_none() {
         let dir = tempfile::TempDir::new().unwrap();
