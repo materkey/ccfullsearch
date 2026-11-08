@@ -29,11 +29,7 @@ fn walk_fs_recursive(
 ) -> Option<String> {
     if remaining_encoded.is_empty() {
         // Validate: encoding this path must produce the original target
-        let encoded = encode_path_for_claude(current_dir);
-        if encoded.strip_prefix('-') == Some(full_target) {
-            return Some(current_dir.to_string());
-        }
-        return None;
+        return round_trips(current_dir, full_target).then(|| current_dir.to_string());
     }
 
     let entries = fs::read_dir(current_dir).ok()?;
@@ -45,27 +41,48 @@ fn walk_fs_recursive(
         let encoded = encode_path_for_claude(&name);
 
         // Exact match: this is the last path component
-        if encoded == remaining_encoded {
-            let candidate = entry.path().to_string_lossy().to_string();
-            // Round-trip validation
-            let candidate_encoded = encode_path_for_claude(&candidate);
-            if candidate_encoded.strip_prefix('-') == Some(full_target) {
-                return Some(candidate);
-            }
+        if let Some(candidate) =
+            last_component_match(&entry.path(), &encoded, remaining_encoded, full_target)
+        {
+            return Some(candidate);
         }
 
         // Prefix match: more components follow after a `-` separator (which represents `/`)
-        if remaining_encoded.starts_with(&encoded) {
-            let after = &remaining_encoded[encoded.len()..];
-            if let Some(rest) = after.strip_prefix('-') {
-                if let Some(result) = walk_fs_recursive(entry.path().to_str()?, rest, full_target) {
-                    return Some(result);
-                }
+        if let Some(rest) = rest_after_component(remaining_encoded, &encoded) {
+            if let Some(result) = walk_fs_recursive(entry.path().to_str()?, rest, full_target) {
+                return Some(result);
             }
         }
     }
 
     None
+}
+
+/// Whether `path` encodes back to `full_target` (the encoded name without its
+/// leading `-`).
+fn round_trips(path: &str, full_target: &str) -> bool {
+    encode_path_for_claude(path).strip_prefix('-') == Some(full_target)
+}
+
+/// `path` when its last component, encoded as `encoded`, is all that is left
+/// of the target and the whole path round-trips to `full_target`.
+fn last_component_match(
+    path: &Path,
+    encoded: &str,
+    remaining_encoded: &str,
+    full_target: &str,
+) -> Option<String> {
+    if encoded != remaining_encoded {
+        return None;
+    }
+    let candidate = path.to_string_lossy().to_string();
+    round_trips(&candidate, full_target).then_some(candidate)
+}
+
+/// What is left of `remaining_encoded` after the component `encoded` and the
+/// `-` that stands for the `/` after it; `None` when it does not start that way.
+fn rest_after_component<'a>(remaining_encoded: &'a str, encoded: &str) -> Option<&'a str> {
+    remaining_encoded.strip_prefix(encoded)?.strip_prefix('-')
 }
 
 /// Find the Claude project directory from a session file path.
@@ -219,6 +236,59 @@ mod tests {
         assert!(result.is_some());
         let found = result.unwrap();
         assert!(found == dashed.to_string_lossy() || found == nested.to_string_lossy());
+    }
+
+    #[test]
+    fn walk_fs_recursive_when_nothing_remains_then_only_a_round_tripping_dir_is_kept() {
+        assert_eq!(
+            walk_fs_recursive("/a/b c", "", "a-b-c"),
+            Some("/a/b c".to_string())
+        );
+        assert_eq!(walk_fs_recursive("/a/b c", "", "a-b-d"), None);
+    }
+
+    #[test]
+    fn walk_fs_recursive_when_dir_unreadable_then_none() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("gone");
+        assert_eq!(walk_fs_recursive(missing.to_str().unwrap(), "x", "x"), None);
+    }
+
+    #[test]
+    fn walk_fs_for_path_when_no_directory_matches_then_none() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("alpha")).unwrap();
+        let encoded = encode_path_for_claude(dir.path().join("omega").to_str().unwrap());
+        assert_eq!(
+            walk_fs_for_path("/", encoded.strip_prefix('-').unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn rest_after_component_when_component_then_dash_then_rest_after_dash() {
+        assert_eq!(rest_after_component("alpha-beta", "alpha"), Some("beta"));
+        assert_eq!(rest_after_component("alpha--beta", "alpha"), Some("-beta"));
+        assert_eq!(rest_after_component("alphabeta", "alpha"), None);
+        assert_eq!(rest_after_component("alpha", "alpha"), None);
+        assert_eq!(rest_after_component("beta-alpha", "alpha"), None);
+    }
+
+    #[test]
+    fn last_component_match_when_component_is_all_that_remains_then_round_trip_decides() {
+        let path = Path::new("/x/my beta");
+        assert_eq!(
+            last_component_match(path, "my-beta", "my-beta", "x-my-beta"),
+            Some("/x/my beta".to_string())
+        );
+        assert_eq!(
+            last_component_match(path, "my-beta", "my-beta", "y-my-beta"),
+            None
+        );
+        assert_eq!(
+            last_component_match(path, "my-beta", "my-beta-gamma", "x-my-beta-gamma"),
+            None
+        );
     }
 
     #[test]
