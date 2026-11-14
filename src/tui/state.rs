@@ -5349,6 +5349,50 @@ mod tests {
     }
 
     #[test]
+    fn ai_query_with_hits_when_delete_key_removes_text_then_hits_dropped() {
+        for (action, at_home, expected) in [
+            (KeyAction::Backspace, false, "kotlin flo"),
+            (KeyAction::DeleteWordLeft, false, "kotlin "),
+            (KeyAction::Delete, true, "otlin flow"),
+            (KeyAction::DeleteWordRight, true, "flow"),
+        ] {
+            let mut app = ai_app();
+            app.ai.query.set_text("kotlin flow");
+            if at_home {
+                app.ai.query.move_home();
+            }
+            app.ai.hits = Some(vec![found("/p/a.jsonl")]);
+
+            app.handle_action(action.clone());
+
+            assert_eq!(app.ai.query.text(), expected, "{action:?}");
+            assert!(app.ai.hits.is_none(), "{action:?} must drop the hits");
+        }
+    }
+
+    #[test]
+    fn ai_query_with_hits_when_delete_key_has_nothing_to_remove_then_hits_kept() {
+        for (action, at_home) in [
+            (KeyAction::Backspace, true),
+            (KeyAction::DeleteWordLeft, true),
+            (KeyAction::Delete, false),
+            (KeyAction::DeleteWordRight, false),
+        ] {
+            let mut app = ai_app();
+            app.ai.query.set_text("kotlin flow");
+            if at_home {
+                app.ai.query.move_home();
+            }
+            app.ai.hits = Some(vec![found("/p/a.jsonl")]);
+
+            app.handle_action(action.clone());
+
+            assert_eq!(app.ai.query.text(), "kotlin flow", "{action:?}");
+            assert!(app.ai.hits.is_some(), "{action:?} must keep the hits");
+        }
+    }
+
+    #[test]
     fn searching_esc_cancels_and_keeps_query() {
         let mut app = ai_app();
         let (_tx, cancel) = install_agent(&mut app);
