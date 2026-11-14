@@ -329,10 +329,8 @@ pub(super) fn build_codex_resume_command(
 
 /// Resume a Claude Code CLI session using exec.
 pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
-    let (working_dir, resume_arg) = build_resume_command(session_id, file_path)?;
-
-    let claude_path =
-        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
+    let (working_dir, resume_arg, claude_path) =
+        claude_resume_invocation(session_id, file_path, which::which)?;
 
     ccs_debug!(
         "[ccs:resume_cli] claude={} cwd={} --resume {}",
@@ -352,10 +350,8 @@ pub fn resume_cli(session_id: &str, file_path: &str) -> Result<(), String> {
 /// this spawns claude as a child and waits for it to finish, allowing the caller
 /// to continue afterwards (e.g., return to TUI in overlay mode).
 pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String> {
-    let (working_dir, resume_arg) = build_resume_command(session_id, file_path)?;
-
-    let claude_path =
-        which::which("claude").map_err(|_| "Claude binary not found in PATH".to_string())?;
+    let (working_dir, resume_arg, claude_path) =
+        claude_resume_invocation(session_id, file_path, which::which)?;
 
     ccs_debug!(
         "[ccs:resume_cli_child] claude={} cwd={} --resume {}",
@@ -372,6 +368,21 @@ pub fn resume_cli_child(session_id: &str, file_path: &str) -> Result<(), String>
         .current_dir(&working_dir)
         .args(["--resume", &resume_arg]);
     run_child(&mut command, "Claude")
+}
+
+/// Resolve everything needed to launch a Claude resume: the working
+/// directory, the resume argument, and the claude binary that `find` locates.
+fn claude_resume_invocation(
+    session_id: &str,
+    file_path: &str,
+    find: impl FnOnce(&'static str) -> Result<PathBuf, which::Error>,
+) -> Result<(String, String, PathBuf), String> {
+    resume_invocation(
+        build_resume_command(session_id, file_path),
+        "claude",
+        "Claude",
+        find,
+    )
 }
 
 /// Resolve everything needed to launch a Codex resume: the working directory,
@@ -1523,7 +1534,29 @@ mod tests {
         }
     }
 
-    // NOTE: test_resume_cli_child_fails_without_claude_binary was moved to
-    // tests/resume_resolution.rs — it mutates PATH globally and caused flaky
-    // failures in parallel ripgrep tests when run as a unit test.
+    #[test]
+    fn claude_resume_invocation_when_claude_missing_then_error_says_not_found() {
+        let dir = TempDir::new().unwrap();
+        let project_dir = dir.path().join(".claude/projects/-tmp-testproj");
+        fs::create_dir_all(&project_dir).unwrap();
+        let session_file = project_dir.join("child-test.jsonl");
+        fs::write(
+            &session_file,
+            r#"{"type":"user","message":{"role":"user","content":"hi"},"sessionId":"child-test","timestamp":"2025-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let mut asked = None;
+        let invocation =
+            claude_resume_invocation("child-test", session_file.to_str().unwrap(), |program| {
+                asked = Some(program);
+                Err(which::Error::CannotFindBinaryPath)
+            });
+
+        assert_eq!(
+            invocation,
+            Err("Claude binary not found in PATH".to_string())
+        );
+        assert_eq!(asked, Some("claude"));
+    }
 }
