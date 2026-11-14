@@ -843,13 +843,15 @@ mod tests {
     #[test]
     fn update_to_rejects_invalid_latest_version() {
         let exe = std::env::current_exe().unwrap();
-        assert!(update_to(
-            &ReleaseSource::github(),
-            "not-a-version",
-            "ccfullsearch-test",
-            &exe
-        )
-        .is_err());
+        assert!(
+            update_to(
+                &ReleaseSource::github(),
+                "not-a-version",
+                "ccfullsearch-test",
+                &exe
+            )
+            .is_err()
+        );
     }
 
     const TEST_ARTIFACT: &str = "ccfullsearch-test";

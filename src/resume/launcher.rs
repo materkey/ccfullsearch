@@ -1,6 +1,6 @@
 use super::path_codec::{decode_project_path, encode_path_for_claude};
 use crate::session;
-use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
+use crate::session::record::{ContentMode, SessionRecord, parse_content_blocks};
 use std::fs;
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
@@ -441,7 +441,7 @@ pub fn resume_remote_child(
     file_path: &str,
     uuid: Option<&str>,
 ) -> Result<(), String> {
-    use crate::remote::ssh::{ssh_command, SshMode};
+    use crate::remote::ssh::{SshMode, ssh_command};
     let mode = SshMode::Resume {
         session_id,
         file_path,
@@ -481,7 +481,7 @@ pub(super) fn build_opencode_resume_command(
     session_id: &str,
     file_path: &str,
 ) -> Result<(String, String), String> {
-    use crate::session::opencode::{parse_session_path, read_project_worktree, OpencodeSession};
+    use crate::session::opencode::{OpencodeSession, parse_session_path, read_project_worktree};
 
     let path = Path::new(file_path);
     let session = OpencodeSession::from_file(path);

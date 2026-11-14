@@ -792,11 +792,7 @@ fn slash_command(value: &str) -> String {
 pub fn render_text_content(content: &serde_json::Value) -> Option<String> {
     let blocks = parse_content_blocks(content);
     let text = SessionRecord::render_content(&blocks, &ContentMode::TextOnly);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Collapse runs of multiple spaces into single spaces.

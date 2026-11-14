@@ -488,31 +488,39 @@ mod tests {
     fn rollout_name_when_not_a_rollout_then_none() {
         assert!(RolloutName::parse(Path::new("/x/.claude/projects/p/abc.jsonl")).is_none());
         assert!(RolloutName::parse(Path::new("rollout-garbage.jsonl")).is_none());
-        assert!(RolloutName::parse(Path::new(&format!(
-            "rollout-2026-10-26T18-35-27-{ROOT}.txt"
-        )))
-        .is_none());
+        assert!(
+            RolloutName::parse(Path::new(&format!(
+                "rollout-2026-10-26T18-35-27-{ROOT}.txt"
+            )))
+            .is_none()
+        );
         assert!(RolloutName::parse(Path::new("rollout-2026-10-26T18-35-27-.jsonl")).is_none());
     }
 
     #[test]
     fn rollout_name_when_timestamp_not_followed_by_dash_then_none() {
-        assert!(RolloutName::parse(Path::new(&format!(
-            "rollout-2026-10-26T18-35-27_{ROOT}.jsonl"
-        )))
-        .is_none());
+        assert!(
+            RolloutName::parse(Path::new(&format!(
+                "rollout-2026-10-26T18-35-27_{ROOT}.jsonl"
+            )))
+            .is_none()
+        );
     }
 
     #[test]
     fn rollout_name_when_empty_side_of_underscore_then_none() {
-        assert!(RolloutName::parse(Path::new(&format!(
-            "rollout-2026-10-26T18-35-27-_{REVERT}.jsonl"
-        )))
-        .is_none());
-        assert!(RolloutName::parse(Path::new(&format!(
-            "rollout-2026-10-26T18-35-27-{ROOT}_.jsonl"
-        )))
-        .is_none());
+        assert!(
+            RolloutName::parse(Path::new(&format!(
+                "rollout-2026-10-26T18-35-27-_{REVERT}.jsonl"
+            )))
+            .is_none()
+        );
+        assert!(
+            RolloutName::parse(Path::new(&format!(
+                "rollout-2026-10-26T18-35-27-{ROOT}_.jsonl"
+            )))
+            .is_none()
+        );
     }
 
     #[test]

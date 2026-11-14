@@ -6,8 +6,8 @@
 use super::Host;
 use crate::recent::RecentSession;
 use crate::search::{Message, RipgrepMatch, SessionGroup};
-use crate::session::record::MessageRole;
 use crate::session::SessionSource;
+use crate::session::record::MessageRole;
 use crate::tree::{SessionTree, TreeRow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

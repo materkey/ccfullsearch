@@ -1182,14 +1182,18 @@ mod tests {
             Some(ContentBlock::Text(_))
         ));
         // tool + tool_result emitted from a single tool part
-        assert!(messages[1]
-            .content_blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "grep")));
-        assert!(messages[1]
-            .content_blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::ToolResult(_))));
+        assert!(
+            messages[1]
+                .content_blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "grep"))
+        );
+        assert!(
+            messages[1]
+                .content_blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult(_)))
+        );
     }
 
     #[test]
@@ -1274,9 +1278,11 @@ mod tests {
             2,
             "malformed and non-user/assistant rows must be skipped"
         );
-        assert!(messages
-            .iter()
-            .all(|m| m.id != "msg_bad" && m.id != "msg_sys"));
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.id != "msg_bad" && m.id != "msg_sys")
+        );
     }
 
     #[test]
@@ -1343,10 +1349,12 @@ mod tests {
         assert!(hits[0].text.contains("Hello opencode"));
         assert_eq!(hits[0].role, MessageRole::User);
         // Synthetic path is built from the DB path + session id.
-        assert!(hits[0]
-            .session_file
-            .to_string_lossy()
-            .ends_with("#ses_TEST"));
+        assert!(
+            hits[0]
+                .session_file
+                .to_string_lossy()
+                .ends_with("#ses_TEST")
+        );
     }
 
     #[test]

@@ -664,10 +664,12 @@ fn show_opencode_by_uuid() {
     assert_eq!(messages[1]["message_uuid"], "msg_asst1");
     assert_eq!(messages[1]["is_target"], true);
     assert_eq!(messages[1]["parent_uuid"], "msg_user1");
-    assert!(messages[1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("the answer with details"));
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("the answer with details")
+    );
     assert_eq!(messages[2]["message_uuid"], "msg_user2");
 
     assert_eq!(summary["provider"], "Opencode");

@@ -391,7 +391,7 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{wire_search, FakeLink};
+    use super::fake::{FakeLink, wire_search};
     use super::*;
     use crate::remote::client::Reply;
     use crate::tui::App;
@@ -439,11 +439,12 @@ mod tests {
             (selected.host.clone(), selected.session_id.as_str()),
             (Host::Local, "l2")
         );
-        assert!(app
-            .search
-            .groups
-            .iter()
-            .any(|g| g.host == Host::Remote("Z".into()) && g.session_id == "r1"));
+        assert!(
+            app.search
+                .groups
+                .iter()
+                .any(|g| g.host == Host::Remote("Z".into()) && g.session_id == "r1")
+        );
     }
 
     #[test]
@@ -635,11 +636,12 @@ mod tests {
         let mut app = app_with(&link);
         connected(&link, &mut app);
         reply_recent(&link, &mut app, vec![wire_recent("r1", 11)]);
-        assert!(app
-            .recent
-            .filtered
-            .iter()
-            .any(|s| s.host == Host::Remote("Z".into()) && s.session_id == "r1"));
+        assert!(
+            app.recent
+                .filtered
+                .iter()
+                .any(|s| s.host == Host::Remote("Z".into()) && s.session_id == "r1")
+        );
     }
 
     #[test]

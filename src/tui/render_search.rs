@@ -1,20 +1,20 @@
 use crate::recent::RecentSession;
 use crate::search::{
-    extract_context, extract_project_from_path, sanitize_content, Message, RipgrepMatch,
-    SessionGroup,
+    Message, RipgrepMatch, SessionGroup, extract_context, extract_project_from_path,
+    sanitize_content,
 };
-use crate::session::record::MessageRole;
 use crate::session::SessionProvider;
+use crate::session::record::MessageRole;
 use crate::tui::render_ai::{ai_status_span, build_ai_hints, render_ai_hits};
 use crate::tui::render_tree::render_tree_mode;
 use crate::tui::view::AppView;
 use chrono::Local;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use regex::RegexBuilder;
 use std::borrow::Cow;
@@ -1718,8 +1718,8 @@ mod tests {
     use crate::session::SessionSource;
     use crate::tui::App;
     use chrono::{TimeZone, Utc};
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn buffer_contains(
         buffer: &ratatui::buffer::Buffer,
@@ -2306,7 +2306,9 @@ mod tests {
         assert!(
             elapsed < budget,
             "{} scroll events with trickling background updates took {:?}, expected < {:?} — tick()/render path is doing too much work per event",
-            ITERS, elapsed, budget
+            ITERS,
+            elapsed,
+            budget
         );
     }
 
@@ -3300,7 +3302,8 @@ mod tests {
         use chrono::TimeZone;
 
         fn make_session(ts: chrono::DateTime<Utc>, session_id: &str) -> RecentSession {
-            RecentSession { host: crate::remote::Host::Local,
+            RecentSession {
+                host: crate::remote::Host::Local,
                 session_id: session_id.to_string(),
                 file_path: format!(
                     "/Users/test/.codex/sessions/2026/05/03/rollout-2026-05-03T10-43-24-{session_id}.jsonl"

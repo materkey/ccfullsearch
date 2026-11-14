@@ -12,17 +12,17 @@ use crate::cli::{
 use crate::project_match::remote_project_matches;
 use crate::recent::{collect_recent_sessions, detect_session_automation};
 use crate::search::{
-    count_session_messages, extract_project_from_path, group_by_session, search_multiple_paths,
-    Message, SessionGroup, CANCELLED_ERR,
+    CANCELLED_ERR, Message, SessionGroup, count_session_messages, extract_project_from_path,
+    group_by_session, search_multiple_paths,
 };
 use crate::session::record::{ContentMode, SessionRecord};
-use crate::session::{opencode, read_session_cwd, SessionProvider};
+use crate::session::{SessionProvider, opencode, read_session_cwd};
 use crate::tree::SessionTree;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Characters kept on each side of the match in a snippet. Shorter than
 /// `ccs search`: the preview fetches the full text with `show`.
@@ -352,9 +352,11 @@ mod tests {
             &fixtures_dir(),
             "/home/m",
         );
-        assert!(recent
-            .iter()
-            .any(|r| r.file_path.ends_with("linear_session.jsonl")));
+        assert!(
+            recent
+                .iter()
+                .any(|r| r.file_path.ends_with("linear_session.jsonl"))
+        );
     }
 
     #[test]

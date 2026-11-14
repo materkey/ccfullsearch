@@ -1,7 +1,7 @@
 use crate::agent_search::{AgentEvent, AgentSearchHandle, FoundSession};
 use crate::config::AgentSearchConfig;
 use crate::project_match::{normalize_path_for_prefix_check, path_is_within_project};
-use crate::recent::{collect_recent_sessions, detect_session_automation, RecentSession};
+use crate::recent::{RecentSession, collect_recent_sessions, detect_session_automation};
 use crate::remote::client::{
     ClientEvent, ClientTimeouts, HostClient, HostLink, HostState, Reply, Request,
 };
@@ -9,7 +9,7 @@ use crate::remote::config::HostConfig;
 use crate::remote::wire::SearchParams;
 use crate::remote::{Host, SessionRef};
 use crate::resume::encode_path_for_claude;
-use crate::search::{group_by_session, search_multiple_paths, SessionGroup};
+use crate::search::{SessionGroup, group_by_session, search_multiple_paths};
 use crate::session::{SessionProvider, SessionSource};
 use crate::tree::SessionTree;
 use crate::tui::dispatch::{KeyAction, KeyContext};
@@ -17,9 +17,9 @@ use crate::tui::hosts_state::{HostsState, PendingKind, RemoteSearch, ShowKey};
 use crate::tui::search_mode::session_outcome;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -2628,9 +2628,10 @@ mod tests {
         let remote = Host::Remote("Z".to_string());
         app.return_from_resume(Some((&remote, "s1")));
         assert!(app.opened_sessions.contains(&(remote, "s1".to_string())));
-        assert!(!app
-            .opened_sessions
-            .contains(&(Host::Local, "s1".to_string())));
+        assert!(
+            !app.opened_sessions
+                .contains(&(Host::Local, "s1".to_string()))
+        );
     }
 
     #[test]
@@ -3567,7 +3568,7 @@ mod tests {
 
     #[test]
     fn test_ctrl_c_empty_input_should_quit() {
-        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crate::tui::dispatch::{KeyAction, classify_key};
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -3592,7 +3593,7 @@ mod tests {
 
     #[test]
     fn test_ctrl_c_with_input_clears_not_quits() {
-        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crate::tui::dispatch::{KeyAction, classify_key};
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -3624,7 +3625,7 @@ mod tests {
     // blank search screen and then pressed Ctrl+C would have the TUI killed.
     #[test]
     fn test_ctrl_c_in_ai_mode_empty_query_exits_ai_not_quit() {
-        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crate::tui::dispatch::{KeyAction, classify_key};
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -3655,7 +3656,7 @@ mod tests {
     // regular search mode. The ClearInput branch also drops shown hits.
     #[test]
     fn test_ctrl_c_in_ai_mode_nonempty_query_clears_stays_in_ai() {
-        use crate::tui::dispatch::{classify_key, KeyAction};
+        use crate::tui::dispatch::{KeyAction, classify_key};
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut app = App::new(vec!["/test".to_string()]);
@@ -4189,9 +4190,10 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.outcome.is_none());
         assert!(app.needs_full_redraw);
-        assert!(app
-            .opened_sessions
-            .contains(&(Host::Local, "s2".to_string())));
+        assert!(
+            app.opened_sessions
+                .contains(&(Host::Local, "s2".to_string()))
+        );
     }
 
     #[test]

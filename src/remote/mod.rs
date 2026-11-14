@@ -36,7 +36,7 @@ pub fn select_hosts(
             name => {
                 return Err(format!(
                     "unknown host {name} (not in [[hosts]] of config.toml or CCS_HOSTS)"
-                ))
+                ));
             }
         }
     }

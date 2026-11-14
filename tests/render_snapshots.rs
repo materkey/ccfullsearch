@@ -1,10 +1,10 @@
 use ccs::search::{Message, RipgrepMatch, SessionGroup};
 use ccs::session::SessionSource;
 use ccs::tree::SessionTree;
-use ccs::tui::{render, App};
+use ccs::tui::{App, render};
 use chrono::{TimeZone, Utc};
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::fs;
 use std::io::Write as _;
 use tempfile::TempDir;

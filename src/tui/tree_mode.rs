@@ -1,6 +1,6 @@
 use crate::tree::SessionTree;
-use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use crate::tui::App;
+use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use std::sync::mpsc;
 use std::thread;
 
@@ -184,8 +184,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::tui::state::AppOutcome;
     use crate::tui::App;
+    use crate::tui::state::AppOutcome;
     use std::time::{Duration, Instant};
 
     const TIP_TEST_LINES: &str = concat!(

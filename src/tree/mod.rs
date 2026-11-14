@@ -1,7 +1,7 @@
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::remote::Host;
 use crate::session::opencode::{self, OpencodeSession};
-use crate::session::record::{parse_content_blocks, ContentBlock, ContentMode, SessionRecord};
+use crate::session::record::{ContentBlock, ContentMode, SessionRecord, parse_content_blocks};
 use crate::session::{self, SessionSource};
 use chrono::{DateTime, Utc};
 use std::cell::RefCell;
@@ -697,7 +697,7 @@ impl SessionTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
+    use crate::session::record::{ContentMode, SessionRecord, parse_content_blocks};
     use std::io::Write;
     use tempfile::TempDir;
 

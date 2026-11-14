@@ -10,10 +10,10 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::str::Chars;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -958,7 +958,7 @@ fn opencode_project_from_path(path: &str) -> String {
 fn desktop_session_name_from_path(path: &str) -> Option<String> {
     let sessions_idx = path.find("-sessions-")?;
     let after_sessions = &path[sessions_idx + 10..]; // Skip "-sessions-"
-                                                     // Get the name (before the next /)
+    // Get the name (before the next /)
     let name = after_sessions.split('/').next().unwrap_or("");
     if name.is_empty() {
         return None;
@@ -2450,10 +2450,11 @@ mod tests {
             !result.matches.is_empty(),
             "Claude hit must surface despite Opencode failure"
         );
-        assert!(result.matches.iter().any(|m| m
-            .message
-            .as_ref()
-            .is_some_and(|msg| msg.content.contains("findme"))));
+        assert!(result.matches.iter().any(|m| {
+            m.message
+                .as_ref()
+                .is_some_and(|msg| msg.content.contains("findme"))
+        }));
     }
 
     #[test]

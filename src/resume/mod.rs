@@ -5,7 +5,7 @@ pub mod path_codec;
 pub use fork::build_chain_from_tip;
 pub use path_codec::encode_path_for_claude;
 
-use crate::session::{resolve_parent_session, SessionProvider, SessionSource};
+use crate::session::{SessionProvider, SessionSource, resolve_parent_session};
 
 #[doc(hidden)]
 pub fn test_resolve_parent_session(session_id: &str, file_path: &str) -> (String, String) {

@@ -1,7 +1,7 @@
 use crate::recent::RecentSession;
-use crate::search::{extract_project_from_path, RipgrepMatch, SessionGroup};
-use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
+use crate::search::{RipgrepMatch, SessionGroup, extract_project_from_path};
 use crate::tui::App;
+use crate::tui::state::{AppOutcome, PickedSession, ResumeTarget};
 use std::time::Instant;
 
 /// Open (or pick) a whole session at its latest point.
@@ -317,11 +317,11 @@ mod tests {
     use crate::recent::RecentSession;
     use crate::search::{RipgrepMatch, SessionGroup};
     use crate::session::SessionSource;
-    use crate::tui::state::{AppOutcome, DEBOUNCE_MS};
     use crate::tui::App;
+    use crate::tui::state::{AppOutcome, DEBOUNCE_MS};
     use chrono::Utc;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
     fn make_recent_session(id: &str, project: &str, summary: &str) -> RecentSession {

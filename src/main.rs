@@ -4,12 +4,12 @@ use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
     },
 };
 use ratatui::prelude::*;
-use std::io::{self, stdout, Write};
+use std::io::{self, Write, stdout};
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
@@ -901,8 +901,8 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
-    fn successful_resume_when_deciding_next_step_then_picker_returns_in_overlay_or_after_quick_exit(
-    ) {
+    fn successful_resume_when_deciding_next_step_then_picker_returns_in_overlay_or_after_quick_exit()
+     {
         assert!(picker_follows_resume(Ok(()), true, true, false));
         assert!(picker_follows_resume(Ok(()), true, false, true));
         assert!(!picker_follows_resume(Ok(()), true, false, false));
@@ -1094,9 +1094,10 @@ mod tests {
             "s1"
         ));
         assert!(!app.should_quit);
-        assert!(app
-            .opened_sessions
-            .contains(&(ccs::remote::Host::Local, "s1".to_string())));
+        assert!(
+            app.opened_sessions
+                .contains(&(ccs::remote::Host::Local, "s1".to_string()))
+        );
     }
 
     #[test]

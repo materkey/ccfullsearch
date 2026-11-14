@@ -4,7 +4,7 @@ use super::server;
 use super::wire::{WireHello, WireRequest, WireResponse};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;

@@ -16,7 +16,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::config::AgentSearchConfig;
-use crate::recent::{extract_summary, RecentSession};
+use crate::recent::{RecentSession, extract_summary};
 
 pub const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
 pub const MAX_HITS: usize = 5;
@@ -642,13 +642,15 @@ mod tests {
         ] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["--model", "claude-haiku-5-5"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--model", "claude-haiku-5-5"])
+        );
         assert!(args.windows(2).any(|w| w == ["--setting-sources", ""]));
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["--output-format", "stream-json"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--output-format", "stream-json"])
+        );
         assert!(args.windows(2).any(|w| w == ["--tools", "Bash"]));
         assert!(args.windows(3).any(|w| w
             == [
@@ -656,9 +658,10 @@ mod tests {
                 "Bash(/bin/ccs search:*)",
                 "Bash(/bin/ccs show:*)"
             ]));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--system-prompt" && w[1] == system_prompt(Path::new("/bin/ccs"))));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--system-prompt" && w[1] == system_prompt(Path::new("/bin/ccs")))
+        );
         assert!(!args.iter().any(|a| a == "--effort" || a == "--bare"));
     }
 

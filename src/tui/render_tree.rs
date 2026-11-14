@@ -1,14 +1,14 @@
 use crate::search::sanitize_content;
 use crate::tree::TreeRow;
-use crate::tui::render_search::{build_help_line, clear_area, truncate_to_width, HintItem, DIM_FG};
+use crate::tui::render_search::{DIM_FG, HintItem, build_help_line, clear_area, truncate_to_width};
 use crate::tui::view::AppView;
 use chrono::Local;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 pub(crate) fn render_tree_mode(frame: &mut Frame, app: &AppView) {
@@ -322,10 +322,10 @@ fn render_tree_preview(frame: &mut Frame, app: &AppView, area: ratatui::layout::
 #[cfg(test)]
 mod tests {
     use crate::tree::SessionTree;
-    use crate::tui::render_search::render;
     use crate::tui::App;
-    use ratatui::backend::TestBackend;
+    use crate::tui::render_search::render;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::io::Write as _;
     use tempfile::TempDir;
 

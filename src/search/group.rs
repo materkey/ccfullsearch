@@ -745,8 +745,8 @@ mod tests {
     }
 
     #[test]
-    fn count_session_messages_when_codex_has_developer_and_tool_items_then_only_user_and_assistant_count(
-    ) {
+    fn count_session_messages_when_codex_has_developer_and_tool_items_then_only_user_and_assistant_count()
+     {
         use tempfile::NamedTempFile;
 
         let mut f = NamedTempFile::new().unwrap();

@@ -251,14 +251,17 @@ fn search_finds_codex_response_items() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(rows.iter().any(|row| row["provider"] == "Codex"));
-    assert!(rows
-        .iter()
-        .any(|row| row["session_id"] == "019f0000-0000-7000-8000-000000000001"));
+    assert!(
+        rows.iter()
+            .any(|row| row["session_id"] == "019f0000-0000-7000-8000-000000000001")
+    );
     assert!(rows.iter().any(|row| row["project"] == "codex-demo"));
-    assert!(rows.iter().any(|row| row["content"]
-        .as_str()
-        .unwrap_or("")
-        .contains("codex needle")));
+    assert!(rows.iter().any(|row| {
+        row["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("codex needle")
+    }));
     // Pins line_number semantics for Codex rollouts: the first user
     // response_item sits on the file's 2nd line, after session_meta.
     assert!(
@@ -495,10 +498,12 @@ fn search_resolves_codex_subagent_hits_to_parent_session() {
     );
     assert_eq!(rows[0]["file_path"], child_path.to_string_lossy().as_ref());
     assert_eq!(rows[0]["line_number"], 2);
-    assert!(rows[0]["content"]
-        .as_str()
-        .unwrap_or("")
-        .contains("Codex child needle"));
+    assert!(
+        rows[0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Codex child needle")
+    );
 }
 
 #[test]

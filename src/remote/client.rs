@@ -3,10 +3,10 @@
 //! `poll` it and get back what changed.
 
 use super::config::HostConfig;
-use super::ssh::{ssh_command, SshMode};
+use super::ssh::{SshMode, ssh_command};
 use super::wire::{
-    RecentParams, SearchParams, ShowParams, TreeParams, WireCancel, WireHello, WireRecent,
-    WireRequest, WireResponse, WireSearch, WireShow, WireTree, PROTOCOL_VERSION,
+    PROTOCOL_VERSION, RecentParams, SearchParams, ShowParams, TreeParams, WireCancel, WireHello,
+    WireRecent, WireRequest, WireResponse, WireSearch, WireShow, WireTree,
 };
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};

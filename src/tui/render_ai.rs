@@ -1,15 +1,15 @@
 //! Ctrl+G agent search: results list, status line and key hints.
 
 use crate::tui::render_search::{
-    recent_session_header_item, truncate_to_width, HintItem, DIM_FG, PREVIEW_CONTENT_FG,
-    SELECTION_BG,
+    DIM_FG, HintItem, PREVIEW_CONTENT_FG, SELECTION_BG, recent_session_header_item,
+    truncate_to_width,
 };
 use crate::tui::view::AppView;
 use ratatui::{
+    Frame,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
-    Frame,
 };
 
 const WHY_PREFIX: &str = "     ↳ ";
@@ -176,7 +176,7 @@ mod tests {
     use crate::session::SessionSource;
     use crate::tui::App;
     use chrono::Utc;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn hit(id: &str, why: &str) -> FoundSession {
         FoundSession {

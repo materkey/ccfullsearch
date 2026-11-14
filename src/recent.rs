@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::dag::{DisplayFilter, SessionDag, TipStrategy};
 use crate::remote::{Host, SessionRef};
 use crate::search::{count_session_messages, extract_project_from_path};
-use crate::session::opencode::{self, opencode_database_path, OpencodeSessionSummary};
+use crate::session::opencode::{self, OpencodeSessionSummary, opencode_database_path};
 use crate::session::record::{ContentBlock, ContentMode, MessageRole, SessionRecord};
 use crate::session::{self, SessionProvider, SessionSource};
 
@@ -1365,7 +1365,7 @@ fn dedup_sort_truncate_sessions(sessions: Vec<RecentSession>, limit: usize) -> V
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use filetime::{set_file_mtime, FileTime};
+    use filetime::{FileTime, set_file_mtime};
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -1601,11 +1601,12 @@ mod tests {
         // The continuation is written after the base.
         filetime::set_file_mtime(&cont, filetime::FileTime::now()).unwrap();
 
-        let paths = vec![dir
-            .path()
-            .join(".codex/sessions")
-            .to_string_lossy()
-            .to_string()];
+        let paths = vec![
+            dir.path()
+                .join(".codex/sessions")
+                .to_string_lossy()
+                .to_string(),
+        ];
         let sessions = collect_recent_sessions(&paths, 10);
         assert_eq!(sessions.len(), 1, "{sessions:?}");
         assert_eq!(sessions[0].file_path, cont.to_string_lossy());

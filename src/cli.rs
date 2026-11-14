@@ -1,18 +1,18 @@
 use crate::remote::client::{Reply, Request};
-use crate::remote::oneshot::{query_hosts, HostOutcome};
+use crate::remote::oneshot::{HostOutcome, query_hosts};
 use crate::remote::wire::{RecentParams, SearchParams};
 use crate::remote::{Host, HostSelection};
 use crate::search::{
-    extract_context, extract_context_around_span, extract_project_from_path, group_by_session,
-    search_multiple_paths, Message, SessionGroup,
+    Message, SessionGroup, extract_context, extract_context_around_span, extract_project_from_path,
+    group_by_session, search_multiple_paths,
 };
-use crate::session::{collect_session_jsonl_files, SessionProvider, SessionSource};
+use crate::session::{SessionProvider, SessionSource, collect_session_jsonl_files};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Serialize)]
 struct CliSearchResult {

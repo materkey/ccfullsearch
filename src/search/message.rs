@@ -81,7 +81,7 @@ impl Message {
     /// Extract text content from message content blocks
     /// Handles both array format [{"type":"text","text":"..."}] and plain string format
     pub fn extract_content(raw: &serde_json::Value) -> String {
-        use crate::session::record::{parse_content_blocks, ContentMode, SessionRecord};
+        use crate::session::record::{ContentMode, SessionRecord, parse_content_blocks};
         let blocks = parse_content_blocks(raw);
         SessionRecord::render_content(&blocks, &ContentMode::Full)
     }

@@ -687,8 +687,7 @@ mod tests {
 
     #[test]
     fn test_extract_codex_session_id_from_rollout_path() {
-        let path =
-            "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl";
+        let path = "/Users/user/.codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-019f0000-0000-7000-8000-000000000001.jsonl";
         assert_eq!(
             extract_codex_session_id_from_path(path),
             Some("019f0000-0000-7000-8000-000000000001".to_string())
@@ -874,8 +873,7 @@ mod tests {
 
     #[test]
     fn test_detect_automation_priority_recog_over_embedded_markers() {
-        let content =
-            "<!-- ccs-automation:recog task=title -->\nTranscript mentions <<<RALPHEX:ALL_TASKS_DONE>>>";
+        let content = "<!-- ccs-automation:recog task=title -->\nTranscript mentions <<<RALPHEX:ALL_TASKS_DONE>>>";
         assert_eq!(detect_automation(content), Some("recog"));
     }
 
@@ -1055,11 +1053,12 @@ mod tests {
     fn find_session_file_when_thread_reverted_then_current_rollout() {
         let dir = tempfile::TempDir::new().unwrap();
         let (_, cont) = write_codex_revert_pair(dir.path());
-        let paths = vec![dir
-            .path()
-            .join(".codex/sessions")
-            .to_string_lossy()
-            .to_string()];
+        let paths = vec![
+            dir.path()
+                .join(".codex/sessions")
+                .to_string_lossy()
+                .to_string(),
+        ];
         assert_eq!(
             find_session_file_in_paths(THREAD, &paths),
             Some(cont.to_string_lossy().to_string())
@@ -1112,11 +1111,12 @@ mod tests {
             "",
         )
         .unwrap();
-        let paths = vec![dir
-            .path()
-            .join(".codex/sessions")
-            .to_string_lossy()
-            .to_string()];
+        let paths = vec![
+            dir.path()
+                .join(".codex/sessions")
+                .to_string_lossy()
+                .to_string(),
+        ];
 
         assert_eq!(
             find_session_file_in_paths(THREAD, &paths),
