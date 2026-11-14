@@ -133,10 +133,10 @@ fn read_session_id_from_file(file_path: &str) -> Option<String> {
     let file = std::fs::File::open(file_path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().take(50).flatten() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(sid) = ccs::session::extract_session_id(&json) {
-                return Some(sid);
-            }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line)
+            && let Some(sid) = ccs::session::extract_session_id(&json)
+        {
+            return Some(sid);
         }
     }
     None

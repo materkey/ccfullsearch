@@ -558,10 +558,10 @@ impl JsonlTreeBuilder {
 
     /// Capture session_id from the first record that carries one.
     fn capture_session_id(&mut self, json: &serde_json::Value) {
-        if self.session_id.is_empty() {
-            if let Some(sid) = session::extract_session_id(json) {
-                self.session_id = sid;
-            }
+        if self.session_id.is_empty()
+            && let Some(sid) = session::extract_session_id(json)
+        {
+            self.session_id = sid;
         }
     }
 }

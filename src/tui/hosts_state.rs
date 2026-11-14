@@ -203,10 +203,10 @@ impl HostsState {
             if let Some(link) = self.links.iter_mut().find(|l| l.name() == name) {
                 link.cancel(id);
             }
-            if matches!(kind, Some(PendingKind::Search { .. })) {
-                if let Some(status) = self.status.get_mut(&name) {
-                    status.waiting = false;
-                }
+            if matches!(kind, Some(PendingKind::Search { .. }))
+                && let Some(status) = self.status.get_mut(&name)
+            {
+                status.waiting = false;
             }
         }
     }

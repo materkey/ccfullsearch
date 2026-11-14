@@ -507,10 +507,10 @@ fn watchdog_loop(cancel: &AtomicBool, done: &(Mutex<bool>, Condvar), child: &Mut
 /// Kill the child (if still present) without taking it out of the mutex, so
 /// the main thread can still reap it via `take_child` + `wait()`.
 fn kill_locked_child(child: &Mutex<Option<Child>>) {
-    if let Ok(mut guard) = child.lock() {
-        if let Some(c) = guard.as_mut() {
-            let _ = c.kill();
-        }
+    if let Ok(mut guard) = child.lock()
+        && let Some(c) = guard.as_mut()
+    {
+        let _ = c.kill();
     }
 }
 
@@ -617,11 +617,11 @@ impl<'a> MatchProcessor<'a> {
         }
         // Post-filter: only keep matches where the MESSAGE CONTENT actually contains the query
         // This filters out false positives where query matched file path or metadata
-        if let Some(ref msg) = m.message {
-            if self.content_matches(&msg.content) {
-                self.point_at_current_rollout(&mut m);
-                self.results.push(m);
-            }
+        if let Some(ref msg) = m.message
+            && self.content_matches(&msg.content)
+        {
+            self.point_at_current_rollout(&mut m);
+            self.results.push(m);
         }
     }
 
@@ -826,10 +826,10 @@ fn is_agent_or_subagent_path(path: &str) -> bool {
     if path.contains("/subagents/") {
         return true;
     }
-    if let Some(filename) = path.rsplit('/').next() {
-        if filename.starts_with("agent-") {
-            return true;
-        }
+    if let Some(filename) = path.rsplit('/').next()
+        && filename.starts_with("agent-")
+    {
+        return true;
     }
     false
 }
@@ -884,15 +884,14 @@ fn decode_dir_name_short(dir_name: &str) -> String {
     let full_path = format!("/{}", decoded);
 
     // Try to shorten home directory prefix to ~
-    if let Some(home) = dirs::home_dir() {
-        if let Some(home_str) = home.to_str() {
-            if let Some(rest) = full_path.strip_prefix(home_str) {
-                if rest.is_empty() {
-                    return "~".to_string();
-                }
-                return format!("~{}", rest);
-            }
+    if let Some(home) = dirs::home_dir()
+        && let Some(home_str) = home.to_str()
+        && let Some(rest) = full_path.strip_prefix(home_str)
+    {
+        if rest.is_empty() {
+            return "~".to_string();
         }
+        return format!("~{}", rest);
     }
 
     full_path
@@ -903,10 +902,10 @@ fn decode_dir_name_short(dir_name: &str) -> String {
 /// Desktop format: .../local-agent-mode-sessions/.../local_xxx/.claude/projects/-sessions-cool-name/xxx.jsonl
 /// Desktop audit: .../local-agent-mode-sessions/.../local_xxx/audit.jsonl
 pub fn extract_project_from_path(path: &str) -> String {
-    if SessionProvider::from_path(path) == SessionProvider::Codex {
-        if let Some(project) = read_codex_session_project(path) {
-            return project;
-        }
+    if SessionProvider::from_path(path) == SessionProvider::Codex
+        && let Some(project) = read_codex_session_project(path)
+    {
+        return project;
     }
 
     if SessionProvider::from_path(path) == SessionProvider::Opencode {
@@ -939,10 +938,10 @@ pub fn extract_project_from_path(path: &str) -> String {
 /// Opencode synthetic path: `<db>#<session_id>`. Resolve through the DB
 /// so the project label matches what `list_sessions_for_recent` / recent uses.
 fn opencode_project_from_path(path: &str) -> String {
-    if let Ok(cache) = OPENCODE_PROJECT_CACHE.lock() {
-        if let Some(hit) = cache.get(path) {
-            return hit.clone();
-        }
+    if let Ok(cache) = OPENCODE_PROJECT_CACHE.lock()
+        && let Some(hit) = cache.get(path)
+    {
+        return hit.clone();
     }
     if let Some(resolved) = resolve_opencode_project_label(path) {
         if let Ok(mut cache) = OPENCODE_PROJECT_CACHE.lock() {
@@ -1024,10 +1023,10 @@ fn resolve_opencode_project_label(path: &str) -> Option<String> {
 }
 
 fn read_codex_session_project(path: &str) -> Option<String> {
-    if let Ok(cache) = CODEX_PROJECT_CACHE.lock() {
-        if let Some(cached) = cache.get(path) {
-            return cached.clone();
-        }
+    if let Ok(cache) = CODEX_PROJECT_CACHE.lock()
+        && let Some(cached) = cache.get(path)
+    {
+        return cached.clone();
     }
 
     let project = session::read_codex_session_cwd(path).map(|cwd| project_label_from_cwd(&cwd));
@@ -1041,10 +1040,10 @@ fn read_codex_session_project(path: &str) -> Option<String> {
 
 fn project_label_from_cwd(cwd: &str) -> String {
     let path = std::path::Path::new(cwd);
-    if let Some(home) = dirs::home_dir() {
-        if path == home {
-            return "~".to_string();
-        }
+    if let Some(home) = dirs::home_dir()
+        && path == home
+    {
+        return "~".to_string();
     }
 
     path.file_name()
@@ -1057,10 +1056,10 @@ fn project_label_from_cwd(cwd: &str) -> String {
 /// Read Desktop session title from the sibling JSON metadata file (cached).
 /// Path: .../local_xxx/audit.jsonl -> .../local_xxx.json
 fn read_desktop_session_title(audit_path: &str) -> Option<String> {
-    if let Ok(cache) = DESKTOP_TITLE_CACHE.lock() {
-        if let Some(cached) = cache.get(audit_path) {
-            return cached.clone();
-        }
+    if let Ok(cache) = DESKTOP_TITLE_CACHE.lock()
+        && let Some(cached) = cache.get(audit_path)
+    {
+        return cached.clone();
     }
 
     let result = read_desktop_session_title_uncached(audit_path);

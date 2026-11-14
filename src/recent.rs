@@ -196,10 +196,10 @@ fn record_automation(result: &mut ScanResult, json: &serde_json::Value) {
     if result.automation.is_some() {
         return;
     }
-    if let Some(text) = extract_text_for_automation(json) {
-        if let Some(tool) = session::detect_automation(&text) {
-            result.automation = Some(tool.to_string());
-        }
+    if let Some(text) = extract_text_for_automation(json)
+        && let Some(tool) = session::detect_automation(&text)
+    {
+        result.automation = Some(tool.to_string());
     }
 }
 
@@ -208,10 +208,10 @@ fn record_first_user_message(result: &mut ScanResult, json: &serde_json::Value) 
     if result.first_user_message.is_some() {
         return;
     }
-    if let Some(text) = extract_non_meta_user_text(json) {
-        if is_real_user_prompt(&text) {
-            result.first_user_message = Some(truncate_summary(&text, 100));
-        }
+    if let Some(text) = extract_non_meta_user_text(json)
+        && is_real_user_prompt(&text)
+    {
+        result.first_user_message = Some(truncate_summary(&text, 100));
     }
 }
 
@@ -546,10 +546,10 @@ fn apply_middle_record(
         result.session_id = session::extract_session_id(json);
     }
 
-    if still.branch {
-        if let Some(branch) = session::extract_branch(json) {
-            result.branch = Some(branch);
-        }
+    if still.branch
+        && let Some(branch) = session::extract_branch(json)
+    {
+        result.branch = Some(branch);
     }
 
     if hints.summary {

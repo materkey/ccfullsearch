@@ -1,7 +1,7 @@
 [package]
 name = "ccfullsearch"
 version = "0.18.1"
-edition = "2021"
+edition = "2024"
 description = "A TUI and CLI tool for searching and browsing Claude Code and Claude Desktop session history"
 license = "MIT"
 repository = "https://github.com/materkey/ccfullsearch"

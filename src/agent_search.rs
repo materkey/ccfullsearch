@@ -66,10 +66,10 @@ impl AgentSearchHandle {
     /// right away, so a drop just before ccs exits does not orphan it.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
-        if let Some(child) = &self.child {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
+        if let Some(child) = &self.child
+            && let Ok(mut child) = child.lock()
+        {
+            let _ = child.kill();
         }
     }
 }

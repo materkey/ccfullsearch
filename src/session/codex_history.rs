@@ -268,13 +268,13 @@ pub fn resolve_segments(path: &Path) -> Vec<Segment> {
 }
 
 /// All lines of the history of `path`, root first.
-pub fn history_lines(path: &Path) -> impl Iterator<Item = HistoryLine> {
+pub fn history_lines(path: &Path) -> impl Iterator<Item = HistoryLine> + use<> {
     lines_of_segments(resolve_segments(path))
 }
 
 /// Lines of one whole file, read the same way as a history: a line that is not
 /// valid UTF-8 is kept lossily.
-pub fn file_lines(path: &Path) -> impl Iterator<Item = HistoryLine> {
+pub fn file_lines(path: &Path) -> impl Iterator<Item = HistoryLine> + use<> {
     lines_of_segments(vec![Segment {
         path: path.to_path_buf(),
         end_byte: None,

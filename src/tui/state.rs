@@ -286,10 +286,9 @@ fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
     if let Some(default_codex_home) = dirs::home_dir()
         .and_then(|home| home.to_str().map(|s| format!("{s}/.codex")))
         .map(|home| normalize_path_for_prefix_check(&home))
+        && search_path == default_codex_home
     {
-        if search_path == default_codex_home {
-            return true;
-        }
+        return true;
     }
 
     let Ok(codex_home) = std::env::var("CODEX_HOME") else {
@@ -470,22 +469,22 @@ impl RecentState {
         let mut global_loaded = false;
         let mut project_loaded = false;
 
-        if let Some(ref rx) = self.load_rx {
-            if let Ok(sessions) = rx.try_recv() {
-                self.all = sessions;
-                self.loading = false;
-                self.load_rx = None;
-                global_loaded = true;
-            }
+        if let Some(ref rx) = self.load_rx
+            && let Ok(sessions) = rx.try_recv()
+        {
+            self.all = sessions;
+            self.loading = false;
+            self.load_rx = None;
+            global_loaded = true;
         }
 
-        if let Some(ref rx) = self.project_load_rx {
-            if let Ok(sessions) = rx.try_recv() {
-                self.project = Some(sessions);
-                self.project_loading = false;
-                self.project_load_rx = None;
-                project_loaded = true;
-            }
+        if let Some(ref rx) = self.project_load_rx
+            && let Ok(sessions) = rx.try_recv()
+        {
+            self.project = Some(sessions);
+            self.project_loading = false;
+            self.project_load_rx = None;
+            project_loaded = true;
         }
 
         (global_loaded, project_loaded)
@@ -2037,10 +2036,11 @@ impl App {
         let (session, ShowKey::Uuid(uuid)) = target else {
             return;
         };
-        if let Some(t) = self.tree.session_tree.as_ref() {
-            if t.host == session.host && t.file_path == session.file_path {
-                t.insert_cached_content(&uuid, text);
-            }
+        if let Some(t) = self.tree.session_tree.as_ref()
+            && t.host == session.host
+            && t.file_path == session.file_path
+        {
+            t.insert_cached_content(&uuid, text);
         }
     }
 
@@ -2224,15 +2224,14 @@ impl App {
         );
         self.recent
             .merge_remote(&self.hosts.filter, &self.automation_filter);
-        if let Some((host, session_id)) = anchor {
-            if let Some(i) = self
+        if let Some((host, session_id)) = anchor
+            && let Some(i) = self
                 .recent
                 .filtered
                 .iter()
                 .position(|s| s.host == host && s.session_id == session_id)
-            {
-                self.recent.cursor = i;
-            }
+        {
+            self.recent.cursor = i;
         }
     }
 

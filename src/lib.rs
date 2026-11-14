@@ -122,10 +122,10 @@ fn add_codex_paths(
         .unwrap_or_else(|| home.join(".codex"));
     for subdir in session::CODEX_SESSION_SUBDIRS {
         let path = codex_base.join(subdir);
-        if path.exists() {
-            if let Some(p) = path.to_str().map(|s| s.to_string()) {
-                search_paths.push(p);
-            }
+        if path.exists()
+            && let Some(p) = path.to_str().map(|s| s.to_string())
+        {
+            search_paths.push(p);
         }
     }
 }
@@ -134,28 +134,28 @@ fn add_codex_paths(
 fn add_desktop_paths(search_paths: &mut Vec<String>, home: &std::path::Path) {
     // Claude Desktop sessions (macOS)
     let macos_desktop = home.join("Library/Application Support/Claude/local-agent-mode-sessions");
-    if macos_desktop.exists() {
-        if let Some(p) = macos_desktop.to_str().map(|s| s.to_string()) {
-            search_paths.push(p);
-        }
+    if macos_desktop.exists()
+        && let Some(p) = macos_desktop.to_str().map(|s| s.to_string())
+    {
+        search_paths.push(p);
     }
 
     // Claude Desktop sessions (Linux)
     let linux_desktop = home.join(".config/Claude/local-agent-mode-sessions");
-    if linux_desktop.exists() {
-        if let Some(p) = linux_desktop.to_str().map(|s| s.to_string()) {
-            search_paths.push(p);
-        }
+    if linux_desktop.exists()
+        && let Some(p) = linux_desktop.to_str().map(|s| s.to_string())
+    {
+        search_paths.push(p);
     }
 }
 
 /// Opencode SQLite database. The search layer dispatches paths
 /// ending in `opencode.db` to a SQL-based scanner instead of ripgrep.
 fn add_opencode_path(search_paths: &mut Vec<String>) {
-    if let Some(db) = session::opencode::opencode_database_path() {
-        if let Some(p) = db.to_str().map(|s| s.to_string()) {
-            search_paths.push(p);
-        }
+    if let Some(db) = session::opencode::opencode_database_path()
+        && let Some(p) = db.to_str().map(|s| s.to_string())
+    {
+        search_paths.push(p);
     }
 }
 

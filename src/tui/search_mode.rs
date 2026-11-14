@@ -142,14 +142,12 @@ impl App {
             if let Some(group) = self.search.groups.get(self.search.group_cursor) {
                 let key = group.session_ref();
                 // Remote chains come with the search reply; only local files are read.
-                if let Some(fp) = key.local_path().map(str::to_string) {
-                    if let std::collections::hash_map::Entry::Vacant(e) =
+                if let Some(fp) = key.local_path().map(str::to_string)
+                    && let std::collections::hash_map::Entry::Vacant(e) =
                         self.search.latest_chains.entry(key)
-                    {
-                        if let Some(chain) = crate::resume::build_chain_from_tip(&fp) {
-                            e.insert(chain);
-                        }
-                    }
+                    && let Some(chain) = crate::resume::build_chain_from_tip(&fp)
+                {
+                    e.insert(chain);
                 }
             }
         }

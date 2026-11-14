@@ -48,10 +48,10 @@ fn walk_fs_recursive(
         }
 
         // Prefix match: more components follow after a `-` separator (which represents `/`)
-        if let Some(rest) = rest_after_component(remaining_encoded, &encoded) {
-            if let Some(result) = walk_fs_recursive(entry.path().to_str()?, rest, full_target) {
-                return Some(result);
-            }
+        if let Some(rest) = rest_after_component(remaining_encoded, &encoded)
+            && let Some(result) = walk_fs_recursive(entry.path().to_str()?, rest, full_target)
+        {
+            return Some(result);
         }
     }
 
@@ -93,10 +93,10 @@ fn find_project_dir_name(file_path: &str) -> Option<String> {
     let path = Path::new(file_path);
     // Walk up ancestors to find the directory directly under .claude/projects/
     for ancestor in path.ancestors() {
-        if let Some(parent) = ancestor.parent() {
-            if parent.ends_with(".claude/projects") {
-                return ancestor.file_name()?.to_str().map(|s| s.to_string());
-            }
+        if let Some(parent) = ancestor.parent()
+            && parent.ends_with(".claude/projects")
+        {
+            return ancestor.file_name()?.to_str().map(|s| s.to_string());
         }
     }
     // Fallback: use immediate parent (original behavior)
@@ -138,10 +138,10 @@ pub fn decode_project_path(file_path: &str) -> Option<String> {
 
     // Strategy 1: Try "-projects-" marker decode (cheap, deterministic)
     let marker_candidate = decode_projects_marker_path(dir_name);
-    if let Some(ref candidate) = marker_candidate {
-        if Path::new(candidate).exists() {
-            return Some(candidate.clone());
-        }
+    if let Some(ref candidate) = marker_candidate
+        && Path::new(candidate).exists()
+    {
+        return Some(candidate.clone());
     }
 
     // Strategy 2: Try naive dash-to-slash decode (cheap, deterministic)
@@ -150,10 +150,10 @@ pub fn decode_project_path(file_path: &str) -> Option<String> {
     // Strategy 3: Walk the filesystem to find the exact matching path for ambiguous
     // encodings like spaces, parentheses, or dots that all collapse to '-'.
     let remaining = dir_name.strip_prefix('-').unwrap_or(dir_name);
-    if !remaining.is_empty() {
-        if let Some(found) = walk_fs_for_path("/", remaining) {
-            return Some(found);
-        }
+    if !remaining.is_empty()
+        && let Some(found) = walk_fs_for_path("/", remaining)
+    {
+        return Some(found);
     }
 
     marker_candidate.or(Some(naive_candidate))

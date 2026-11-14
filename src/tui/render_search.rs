@@ -1622,10 +1622,11 @@ fn find_case_insensitive_match(
         let match_start = lower_start_map.get(lower_match_start).copied().flatten();
         let match_end = lower_end_map.get(lower_match_end).copied().flatten();
 
-        if let (Some(match_start), Some(match_end)) = (match_start, match_end) {
-            if text.is_char_boundary(match_start) && text.is_char_boundary(match_end) {
-                return Some((match_start, match_end, lower_match_end));
-            }
+        if let (Some(match_start), Some(match_end)) = (match_start, match_end)
+            && text.is_char_boundary(match_start)
+            && text.is_char_boundary(match_end)
+        {
+            return Some((match_start, match_end, lower_match_end));
         }
 
         let next_char = text_lower[lower_match_start..].chars().next()?;

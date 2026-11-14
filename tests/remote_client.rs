@@ -14,14 +14,21 @@ fn setup_env() {
 }
 
 fn set_env() {
-    std::env::set_var(
-        "CCS_SSH",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-ssh.sh"),
-    );
-    std::env::set_var(
-        "CCFS_SEARCH_PATH",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"),
-    );
+    // SAFETY: not fully met. `set_var` must not run while another thread reads
+    // the environment. Every test spawns its child through `client`, which
+    // waits on the `Once`, so no child starts before both writes are done; but
+    // a test thread that has not reached `client` yet may still read the
+    // environment (the temp dir lookup). The writes happen once per test binary.
+    unsafe {
+        std::env::set_var(
+            "CCS_SSH",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-ssh.sh"),
+        );
+        std::env::set_var(
+            "CCFS_SEARCH_PATH",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"),
+        );
+    }
 }
 
 /// A stand-in for `ccs` on the remote side: a shell script run by fake ssh.

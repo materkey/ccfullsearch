@@ -62,12 +62,12 @@ pub fn opencode_storage_root() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            let path = PathBuf::from(xdg).join("opencode");
-            if path.exists() {
-                return Some(path);
-            }
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
+        && !xdg.is_empty()
+    {
+        let path = PathBuf::from(xdg).join("opencode");
+        if path.exists() {
+            return Some(path);
         }
     }
     let home = dirs::home_dir()?;

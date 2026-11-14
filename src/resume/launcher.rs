@@ -239,10 +239,8 @@ pub(super) fn prepare_resume(session_id: &str, file_path: &str) -> Result<String
         .map(|d| is_session_in_index(d, session_id))
         .unwrap_or(false);
 
-    if !in_index {
-        if let Some(ref a) = analysis {
-            ensure_session_in_index(session_id, file_path, a);
-        }
+    if !in_index && let Some(ref a) = analysis {
+        ensure_session_in_index(session_id, file_path, a);
     }
 
     Ok(session_id.to_string())

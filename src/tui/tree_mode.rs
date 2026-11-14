@@ -83,13 +83,13 @@ impl App {
     }
 
     pub fn on_down_tree(&mut self) {
-        if let Some(ref tree) = self.tree.session_tree {
-            if self.tree.tree_cursor < tree.rows.len().saturating_sub(1) {
-                self.tree.tree_cursor += 1;
-                self.adjust_tree_scroll();
-                if self.preview_mode {
-                    self.needs_full_redraw = true;
-                }
+        if let Some(ref tree) = self.tree.session_tree
+            && self.tree.tree_cursor < tree.rows.len().saturating_sub(1)
+        {
+            self.tree.tree_cursor += 1;
+            self.adjust_tree_scroll();
+            if self.preview_mode {
+                self.needs_full_redraw = true;
             }
         }
     }
@@ -133,42 +133,42 @@ impl App {
             return;
         }
 
-        if let Some(ref tree) = self.tree.session_tree {
-            if let Some(row) = tree.rows.get(self.tree.tree_cursor) {
-                if self.picker_mode {
-                    let project = tree.project();
-                    self.outcome = Some(AppOutcome::Pick(PickedSession {
-                        host: tree.host.clone(),
-                        session_id: tree.session_id.clone(),
-                        file_path: tree.file_path.clone(),
-                        source: tree.source,
-                        project,
-                        message_uuid: Some(row.uuid.clone()),
-                    }));
-                } else {
-                    // The tip continues as is. Its uuid would fork once the
-                    // session grew after the tree was loaded (a quick `/exit`
-                    // appends records), see `fork::should_fork_for_resume`.
-                    let on_tip = tree.tip_uuid.as_deref() == Some(row.uuid.as_str());
-                    self.outcome = Some(AppOutcome::Resume(ResumeTarget {
-                        host: tree.host.clone(),
-                        session_id: tree.session_id.clone(),
-                        file_path: tree.file_path.clone(),
-                        source: tree.source,
-                        uuid: (!on_tip).then(|| row.uuid.clone()),
-                    }));
-                }
-                self.should_quit = true;
+        if let Some(ref tree) = self.tree.session_tree
+            && let Some(row) = tree.rows.get(self.tree.tree_cursor)
+        {
+            if self.picker_mode {
+                let project = tree.project();
+                self.outcome = Some(AppOutcome::Pick(PickedSession {
+                    host: tree.host.clone(),
+                    session_id: tree.session_id.clone(),
+                    file_path: tree.file_path.clone(),
+                    source: tree.source,
+                    project,
+                    message_uuid: Some(row.uuid.clone()),
+                }));
+            } else {
+                // The tip continues as is. Its uuid would fork once the
+                // session grew after the tree was loaded (a quick `/exit`
+                // appends records), see `fork::should_fork_for_resume`.
+                let on_tip = tree.tip_uuid.as_deref() == Some(row.uuid.as_str());
+                self.outcome = Some(AppOutcome::Resume(ResumeTarget {
+                    host: tree.host.clone(),
+                    session_id: tree.session_id.clone(),
+                    file_path: tree.file_path.clone(),
+                    source: tree.source,
+                    uuid: (!on_tip).then(|| row.uuid.clone()),
+                }));
             }
+            self.should_quit = true;
         }
     }
 
     pub fn on_tab_tree(&mut self) {
-        if let Some(ref tree) = self.tree.session_tree {
-            if !tree.rows.is_empty() {
-                self.preview_mode = !self.preview_mode;
-                self.needs_full_redraw = true;
-            }
+        if let Some(ref tree) = self.tree.session_tree
+            && !tree.rows.is_empty()
+        {
+            self.preview_mode = !self.preview_mode;
+            self.needs_full_redraw = true;
         }
     }
 

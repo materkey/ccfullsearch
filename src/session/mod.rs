@@ -534,35 +534,34 @@ pub fn resolve_parent_session_with(
     }
 
     // Case 2: subagent file under .../session-id/subagents/
-    if let Some(parent) = path.parent() {
-        if parent.file_name().and_then(|n| n.to_str()) == Some("subagents") {
-            if let Some(session_dir) = parent.parent() {
-                let parent_jsonl = session_dir.with_extension("jsonl");
-                if parent_jsonl.exists() {
-                    let dir_name = session_dir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(session_id);
-                    return (
-                        dir_name.to_string(),
-                        parent_jsonl.to_string_lossy().to_string(),
-                    );
-                }
-            }
+    if let Some(parent) = path.parent()
+        && parent.file_name().and_then(|n| n.to_str()) == Some("subagents")
+        && let Some(session_dir) = parent.parent()
+    {
+        let parent_jsonl = session_dir.with_extension("jsonl");
+        if parent_jsonl.exists() {
+            let dir_name = session_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(session_id);
+            return (
+                dir_name.to_string(),
+                parent_jsonl.to_string_lossy().to_string(),
+            );
         }
     }
 
     // Case 3: filename stem doesn't match session_id — find the correct file
     let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if file_stem != session_id {
-        if let Some(parent_dir) = path.parent() {
-            let correct_file = parent_dir.join(format!("{}.jsonl", session_id));
-            if correct_file.exists() {
-                return (
-                    session_id.to_string(),
-                    correct_file.to_string_lossy().to_string(),
-                );
-            }
+    if file_stem != session_id
+        && let Some(parent_dir) = path.parent()
+    {
+        let correct_file = parent_dir.join(format!("{}.jsonl", session_id));
+        if correct_file.exists() {
+            return (
+                session_id.to_string(),
+                correct_file.to_string_lossy().to_string(),
+            );
         }
     }
 
