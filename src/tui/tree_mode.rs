@@ -113,8 +113,8 @@ impl App {
     pub fn on_right_tree(&mut self) {
         // Jump to next branch point
         if let Some(ref tree) = self.tree.session_tree {
-            for i in (self.tree.tree_cursor + 1)..tree.rows.len() {
-                if tree.rows[i].is_branch_point {
+            for (i, row) in tree.rows.iter().enumerate().skip(self.tree.tree_cursor + 1) {
+                if row.is_branch_point {
                     self.tree.tree_cursor = i;
                     self.adjust_tree_scroll();
                     if self.preview_mode {

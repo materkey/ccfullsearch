@@ -124,8 +124,7 @@ fn render_tree(frame: &mut Frame, app: &AppView, area: ratatui::layout::Rect) {
 
     let mut items: Vec<ListItem> = Vec::new();
 
-    for i in start..end {
-        let row = &tree.rows[i];
+    for (i, row) in tree.rows.iter().enumerate().take(end).skip(start) {
         let is_selected = i == app.tree.tree_cursor;
         items.push(build_tree_row_item(row, is_selected, area.width as usize));
     }
