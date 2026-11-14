@@ -279,6 +279,16 @@ fn search_path_is_standard_codex_scope(search_path: &str) -> bool {
 }
 
 fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
+    codex_cwd_scope_supported(search_path, || std::env::var("CODEX_HOME").ok())
+}
+
+/// [`search_path_supports_codex_cwd_scope`] with the value of `CODEX_HOME`
+/// supplied by the caller; it is asked for only when the path is not a
+/// standard Codex scope.
+fn codex_cwd_scope_supported(
+    search_path: &str,
+    codex_home: impl FnOnce() -> Option<String>,
+) -> bool {
     let search_path = normalize_path_for_prefix_check(search_path);
     if search_path_is_standard_codex_scope(&search_path) {
         return true;
@@ -291,7 +301,7 @@ fn search_path_supports_codex_cwd_scope(search_path: &str) -> bool {
         return true;
     }
 
-    let Ok(codex_home) = std::env::var("CODEX_HOME") else {
+    let Some(codex_home) = codex_home() else {
         return false;
     };
     let codex_home = normalize_path_for_prefix_check(&codex_home);
@@ -3174,25 +3184,13 @@ mod tests {
 
     #[test]
     fn test_search_path_supports_custom_codex_home_scope() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-        let prev_codex = std::env::var("CODEX_HOME").ok();
-        unsafe { std::env::set_var("CODEX_HOME", "/tmp/custom-codex") };
+        let supported =
+            |path| codex_cwd_scope_supported(path, || Some("/tmp/custom-codex".to_string()));
 
-        assert!(search_path_supports_codex_cwd_scope("/tmp/custom-codex"));
-        assert!(search_path_supports_codex_cwd_scope(
-            "/tmp/custom-codex/sessions/2026/05/01"
-        ));
-        assert!(search_path_supports_codex_cwd_scope(
-            "/tmp/custom-codex/archived_sessions"
-        ));
-        assert!(!search_path_supports_codex_cwd_scope(
-            "/tmp/custom-codexish/sessions"
-        ));
-
-        unsafe { std::env::remove_var("CODEX_HOME") };
-        if let Some(v) = prev_codex {
-            unsafe { std::env::set_var("CODEX_HOME", v) };
-        }
+        assert!(supported("/tmp/custom-codex"));
+        assert!(supported("/tmp/custom-codex/sessions/2026/05/01"));
+        assert!(supported("/tmp/custom-codex/archived_sessions"));
+        assert!(!supported("/tmp/custom-codexish/sessions"));
     }
 
     fn make_session_with_cwd(file_path: &str, cwd: Option<&str>) -> RecentSession {

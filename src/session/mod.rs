@@ -54,17 +54,20 @@ pub enum SessionProvider {
 impl SessionProvider {
     /// Detect the session provider from the transcript path.
     pub fn from_path(path: &str) -> Self {
+        Self::from_path_with(path, || std::env::var("CODEX_HOME").ok())
+    }
+
+    /// [`Self::from_path`] with the value of `CODEX_HOME` supplied by the
+    /// caller; it is asked for only when the path is not under `~/.codex`.
+    fn from_path_with(path: &str, codex_home: impl FnOnce() -> Option<String>) -> Self {
         if opencode::is_opencode_session_path(path) {
             return SessionProvider::Opencode;
         }
         let normalized = normalize_session_path(path);
         let is_codex = normalized.contains("/.codex/sessions/")
             || normalized.contains("/.codex/archived_sessions/")
-            || std::env::var("CODEX_HOME")
-                .ok()
-                .as_deref()
-                .map(|codex_home| path_is_under_codex_home(&normalized, codex_home))
-                .unwrap_or(false);
+            || codex_home()
+                .is_some_and(|codex_home| path_is_under_codex_home(&normalized, &codex_home));
         if is_codex {
             SessionProvider::Codex
         } else {
@@ -650,32 +653,18 @@ mod tests {
 
     #[test]
     fn test_session_provider_from_custom_codex_home_path() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-        let prev_codex = std::env::var("CODEX_HOME").ok();
-        unsafe { std::env::set_var("CODEX_HOME", "/Users/user/custom-codex") };
+        let from_path = |path| {
+            SessionProvider::from_path_with(path, || Some("/Users/user/custom-codex".to_string()))
+        };
 
         let session_path = "/Users/user/custom-codex/sessions/2026/05/01/rollout-2026-05-01T12-00-00-session.jsonl";
         let archived_path =
             "/Users/user/custom-codex/archived_sessions/rollout-2026-05-01T12-00-00-session.jsonl";
         let sibling_path = "/Users/user/custom-codexish/sessions/2026/05/01/rollout-2026-05-01T12-00-00-session.jsonl";
 
-        assert_eq!(
-            SessionProvider::from_path(session_path),
-            SessionProvider::Codex
-        );
-        assert_eq!(
-            SessionProvider::from_path(archived_path),
-            SessionProvider::Codex
-        );
-        assert_eq!(
-            SessionProvider::from_path(sibling_path),
-            SessionProvider::Claude
-        );
-
-        unsafe { std::env::remove_var("CODEX_HOME") };
-        if let Some(v) = prev_codex {
-            unsafe { std::env::set_var("CODEX_HOME", v) };
-        }
+        assert_eq!(from_path(session_path), SessionProvider::Codex);
+        assert_eq!(from_path(archived_path), SessionProvider::Codex);
+        assert_eq!(from_path(sibling_path), SessionProvider::Claude);
     }
 
     #[test]
