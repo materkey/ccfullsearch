@@ -122,9 +122,13 @@ struct Connection {
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
+/// Builds the command that reaches a host and runs `mode` there.
+pub type Launch = fn(&HostConfig, &SshMode) -> Command;
+
 pub struct HostClient {
     config: HostConfig,
     timeouts: ClientTimeouts,
+    launch: Launch,
     state: HostState,
     conn: Option<Connection>,
     down_since: Option<Instant>,
@@ -137,9 +141,17 @@ pub struct HostClient {
 
 impl HostClient {
     pub fn spawn(config: HostConfig, timeouts: ClientTimeouts) -> Self {
+        Self::spawn_with(config, timeouts, ssh_command)
+    }
+
+    /// [`Self::spawn`] with the host reached through `launch` instead of
+    /// ssh. Tests pass a stand-in here, so they need not point `CCS_SSH` at
+    /// it for the whole process.
+    pub fn spawn_with(config: HostConfig, timeouts: ClientTimeouts, launch: Launch) -> Self {
         let mut client = Self {
             config,
             timeouts,
+            launch,
             state: HostState::Connecting,
             conn: None,
             down_since: None,
@@ -155,7 +167,7 @@ impl HostClient {
 
     fn connect(&mut self, now: Instant, events: &mut Vec<ClientEvent>) {
         self.close();
-        let mut command = ssh_command(&self.config, &SshMode::Serve);
+        let mut command = (self.launch)(&self.config, &SshMode::Serve);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -561,6 +573,7 @@ mod tests {
                 ccs_path: "ccs".into(),
             },
             timeouts: ClientTimeouts::default(),
+            launch: ssh_command,
             state: HostState::Ready,
             conn: Some(conn),
             down_since: None,

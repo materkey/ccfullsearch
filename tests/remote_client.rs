@@ -2,33 +2,25 @@ use ccs::remote::client::{
     ClientEvent, ClientTimeouts, HostClient, HostLink, HostState, Reply, Request,
 };
 use ccs::remote::config::HostConfig;
+use ccs::remote::ssh::{SshMode, ssh_args};
 use ccs::remote::wire::{SearchParams, ShowParams, TreeParams};
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Set once: `set_var` while other test threads spawn processes races
-/// their environment reads, and a child could start the real ssh.
-fn setup_env() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(set_env);
-}
-
-fn set_env() {
-    // SAFETY: not fully met. `set_var` must not run while another thread reads
-    // the environment. Every test spawns its child through `client`, which
-    // waits on the `Once`, so no child starts before both writes are done; but
-    // a test thread that has not reached `client` yet may still read the
-    // environment (the temp dir lookup). The writes happen once per test binary.
-    unsafe {
-        std::env::set_var(
-            "CCS_SSH",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-ssh.sh"),
-        );
-        std::env::set_var(
-            "CCFS_SEARCH_PATH",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"),
-        );
-    }
+/// Stand-in for `ssh_command`: the remote command runs here through
+/// fake-ssh.sh, with the fixtures as its search path. Both are set on the
+/// child alone, the test process keeps its environment.
+fn fake_ssh_command(host: &HostConfig, mode: &SshMode) -> Command {
+    let mut command = Command::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/fake-ssh.sh"
+    ));
+    command.args(ssh_args(host, mode)).env(
+        "CCFS_SEARCH_PATH",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"),
+    );
+    command
 }
 
 /// A stand-in for `ccs` on the remote side: a shell script run by fake ssh.
@@ -40,13 +32,13 @@ fn script(dir: &tempfile::TempDir, body: &str) -> String {
 }
 
 fn client(ccs_path: &str, timeouts: ClientTimeouts) -> HostClient {
-    setup_env();
-    HostClient::spawn(
+    HostClient::spawn_with(
         HostConfig {
             name: "fake".into(),
             ccs_path: ccs_path.into(),
         },
         timeouts,
+        fake_ssh_command,
     )
 }
 
