@@ -56,13 +56,27 @@ const PATH_FRAGMENT_SEP: &str = "#";
 /// 3. `~/.local/share/opencode` (Linux/XDG default)
 /// 4. `~/Library/Application Support/opencode` (macOS)
 pub fn opencode_storage_root() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("OPENCODE_DATA") {
+    storage_root_from(
+        std::env::var("OPENCODE_DATA").ok(),
+        std::env::var("XDG_DATA_HOME").ok(),
+        dirs::home_dir(),
+    )
+}
+
+/// [`opencode_storage_root`] with the two variables and the home directory
+/// supplied by the caller.
+fn storage_root_from(
+    opencode_data: Option<String>,
+    xdg_data_home: Option<String>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(custom) = opencode_data {
         let path = PathBuf::from(custom);
         if path.exists() {
             return Some(path);
         }
     }
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
+    if let Some(xdg) = xdg_data_home
         && !xdg.is_empty()
     {
         let path = PathBuf::from(xdg).join("opencode");
@@ -70,7 +84,7 @@ pub fn opencode_storage_root() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let home = dirs::home_dir()?;
+    let home = home?;
     let candidates = [
         home.join(".local/share/opencode"),
         home.join("Library/Application Support/opencode"),
@@ -1086,21 +1100,18 @@ mod tests {
         assert!(parse_session_path("/not/even/a/db.jsonl#abc").is_none());
     }
 
+    fn path_string(path: &Path) -> String {
+        path.to_str().unwrap().to_string()
+    }
+
     #[test]
     fn test_storage_root_honours_xdg_data_home() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-        let _env_guard = crate::EnvGuard::new(&["OPENCODE_DATA", "XDG_DATA_HOME"]);
-
-        // SAFETY: tests run single-threaded behind TEST_ENV_MUTEX.
-        unsafe { std::env::remove_var("OPENCODE_DATA") };
-
         let tmp = TempDir::new().unwrap();
         let opencode_dir = tmp.path().join("opencode");
         std::fs::create_dir_all(&opencode_dir).unwrap();
         std::fs::write(opencode_dir.join("opencode.db"), b"").unwrap();
 
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let resolved = opencode_storage_root();
+        let resolved = storage_root_from(None, Some(path_string(tmp.path())), None);
         assert_eq!(
             resolved.as_deref(),
             Some(opencode_dir.as_path()),
@@ -1110,9 +1121,6 @@ mod tests {
 
     #[test]
     fn test_storage_root_opencode_data_wins_over_xdg() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-        let _env_guard = crate::EnvGuard::new(&["OPENCODE_DATA", "XDG_DATA_HOME"]);
-
         let xdg_tmp = TempDir::new().unwrap();
         let xdg_opencode = xdg_tmp.path().join("opencode");
         std::fs::create_dir_all(&xdg_opencode).unwrap();
@@ -1121,13 +1129,11 @@ mod tests {
         let oc_tmp = TempDir::new().unwrap();
         std::fs::write(oc_tmp.path().join("opencode.db"), b"").unwrap();
 
-        // SAFETY: tests run single-threaded behind TEST_ENV_MUTEX.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", xdg_tmp.path());
-            std::env::set_var("OPENCODE_DATA", oc_tmp.path());
-        }
-
-        let resolved = opencode_storage_root();
+        let resolved = storage_root_from(
+            Some(path_string(oc_tmp.path())),
+            Some(path_string(xdg_tmp.path())),
+            None,
+        );
         assert_eq!(
             resolved.as_deref(),
             Some(oc_tmp.path()),

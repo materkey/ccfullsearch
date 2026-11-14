@@ -165,6 +165,27 @@ fn show_when_opencode_session_id_then_synthetic_path() {
 }
 
 #[test]
+fn show_when_opencode_session_only_in_default_db_then_synthetic_path() {
+    // The search path names no database, so the lookup falls back to the
+    // default one, which OPENCODE_DATA points at for the child.
+    let (_dir, synthetic_path) = setup_opencode_db_fixture();
+    let db = std::path::Path::new(synthetic_path.split('#').next().unwrap());
+    let unrelated = TempDir::new().unwrap();
+
+    let output = Command::cargo_bin("ccs")
+        .unwrap()
+        .args(["show", "ses_SHOW1", "--uuid", "msg_asst1"])
+        .env("CCFS_SEARCH_PATH", unrelated.path())
+        .env("OPENCODE_DATA", db.parent().unwrap())
+        .env_remove("XDG_DATA_HOME")
+        .env("CCS_HOSTS", "")
+        .output()
+        .unwrap();
+
+    assert_eq!(summary_of(&output)["file_path"], synthetic_path);
+}
+
+#[test]
 fn show_when_session_id_unknown_then_error_names_it() {
     let dir = TempDir::new().unwrap();
 

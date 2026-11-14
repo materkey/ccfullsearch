@@ -1541,36 +1541,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_session_file_in_paths_falls_back_to_default_opencode_db() {
-        // When search_paths contains no explicit opencode.db entry, lookup
-        // must fall back to the default database (resolved via
-        // `OPENCODE_DATA` here for test isolation).
-        use tempfile::TempDir;
-
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-        let _env_guard = crate::EnvGuard::new(&["OPENCODE_DATA", "XDG_DATA_HOME"]);
-
-        // SAFETY: tests run single-threaded behind TEST_ENV_MUTEX.
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
-
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("opencode.db");
-        build_opencode_db_with_session(&db, "ses_default");
-        unsafe { std::env::set_var("OPENCODE_DATA", dir.path()) };
-
-        // search_paths has no `.db` entry — must trigger the default-DB path.
-        let unrelated = TempDir::new().unwrap();
-        let found = find_session_file_in_paths(
-            "ses_default",
-            &[unrelated.path().to_string_lossy().into_owned()],
-        );
-        assert_eq!(
-            found,
-            Some(opencode::synthetic_session_path(&db, "ses_default"))
-        );
-    }
-
-    #[test]
     fn find_session_file_in_paths_when_rollout_name_lies_outside_codex_dirs_then_none() {
         let dir = tempfile::TempDir::new().unwrap();
         let project = dir.path().join("projects").join("-p");

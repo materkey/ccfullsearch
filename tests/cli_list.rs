@@ -381,6 +381,38 @@ fn list_when_codex_home_set_then_its_sessions_are_codex() {
 }
 
 #[test]
+fn list_when_xdg_data_home_set_then_opencode_sessions_come_from_it() {
+    let home = TempDir::new().unwrap();
+    let fixture = setup_opencode_db_fixture();
+    let xdg = TempDir::new().unwrap();
+    let opencode_dir = xdg.path().join("opencode");
+    fs::create_dir_all(&opencode_dir).unwrap();
+    fs::rename(
+        fixture.path().join("opencode.db"),
+        opencode_dir.join("opencode.db"),
+    )
+    .unwrap();
+
+    let rows = list_rows_with_env(home.path(), &[("XDG_DATA_HOME", xdg.path())]);
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["provider"], "Opencode");
+    assert_eq!(rows[0]["session_id"], "ses_INTEG1");
+}
+
+#[test]
+fn list_when_opencode_data_set_then_opencode_sessions_come_from_it() {
+    let home = TempDir::new().unwrap();
+    let fixture = setup_opencode_db_fixture();
+
+    let rows = list_rows_with_env(home.path(), &[("OPENCODE_DATA", fixture.path())]);
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["provider"], "Opencode");
+    assert_eq!(rows[0]["session_id"], "ses_INTEG1");
+}
+
+#[test]
 fn list_when_codex_thread_reverted_then_one_row_with_full_history() {
     let dir = TempDir::new().unwrap();
     let (_, cont) = common::codex::revert_pair(dir.path());
