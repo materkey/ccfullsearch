@@ -2700,17 +2700,13 @@ mod tests {
         const DEFAULT_PIPE_BUF: usize = 64 * 1024;
         #[cfg(target_os = "linux")]
         {
-            use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-            // SAFETY: `pipe2` writes two valid file descriptors into `fds`
-            // on success. We immediately wrap them in `OwnedFd` so they
-            // are closed on drop even if `fcntl` fails.
-            let mut fds: [libc::c_int; 2] = [0; 2];
-            let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-            if rc != 0 {
+            use std::os::fd::AsRawFd;
+            // Both ends are closed on drop, also when `fcntl` fails.
+            let Ok((_read, write)) = std::io::pipe() else {
                 return DEFAULT_PIPE_BUF;
-            }
-            let _read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-            let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            };
+            // SAFETY: `write` stays open for the whole call, and
+            // `F_GETPIPE_SZ` takes no pointer argument.
             let size = unsafe { libc::fcntl(write.as_raw_fd(), libc::F_GETPIPE_SZ) };
             if size > 0 {
                 size as usize
