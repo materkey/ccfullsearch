@@ -175,105 +175,52 @@ fn add_fallback_path(search_paths: &mut Vec<String>, home: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+
+    // These tests call the parameterized helpers, so they don't touch the
+    // process environment. That `get_search_paths` reads the right variables
+    // is checked through a child `ccs` in tests/cli_list.rs.
 
     #[test]
-    fn test_search_paths_respects_claude_config_dir() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
+    fn test_build_search_paths_respects_claude_config_dir() {
+        let home = tempfile::TempDir::new().unwrap();
+        let config_dir = home.path().join("custom-claude");
 
-        // Save and clear potentially interfering env vars
-        let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
-        let prev_config = env::var("CLAUDE_CONFIG_DIR").ok();
-        unsafe { env::remove_var("CCFS_SEARCH_PATH") };
-
-        let tmp = std::env::temp_dir().join("ccfs_test_config_dir");
-        unsafe { env::set_var("CLAUDE_CONFIG_DIR", tmp.to_str().unwrap()) };
-
-        let paths = get_search_paths();
+        let paths = build_search_paths(
+            None,
+            Some(config_dir.to_str().unwrap().to_string()),
+            None,
+            Some(home.path().to_path_buf()),
+        );
 
         // Should use CLAUDE_CONFIG_DIR as base for projects/
-        let expected_suffix = tmp.join("projects");
+        let expected = config_dir.join("projects");
         assert!(
-            paths.iter().any(|p| p == expected_suffix.to_str().unwrap()),
-            "Expected path containing {:?}, got {:?}",
-            expected_suffix,
+            paths.iter().any(|p| p == expected.to_str().unwrap()),
+            "Expected {:?} in {:?}",
+            expected,
             paths
         );
-
-        // Restore env
-        unsafe { env::remove_var("CLAUDE_CONFIG_DIR") };
-        if let Some(v) = prev_config {
-            unsafe { env::set_var("CLAUDE_CONFIG_DIR", v) };
-        }
-        if let Some(v) = prev_ccfs {
-            unsafe { env::set_var("CCFS_SEARCH_PATH", v) };
-        }
     }
 
     #[test]
-    fn test_search_paths_default_without_env() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-
-        // Save and clear potentially interfering env vars
-        let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
-        let prev_config = env::var("CLAUDE_CONFIG_DIR").ok();
-        unsafe { env::remove_var("CCFS_SEARCH_PATH") };
-        unsafe { env::remove_var("CLAUDE_CONFIG_DIR") };
-
-        let paths = get_search_paths();
-
-        // Should contain ~/.claude/projects (the default)
-        assert!(
-            paths.iter().any(|p| p.ends_with(".claude/projects")),
-            "Expected a path ending with .claude/projects, got {:?}",
-            paths
-        );
-
-        // Restore env
-        if let Some(v) = prev_config {
-            unsafe { env::set_var("CLAUDE_CONFIG_DIR", v) };
-        }
-        if let Some(v) = prev_ccfs {
-            unsafe { env::set_var("CCFS_SEARCH_PATH", v) };
-        }
-    }
-
-    #[test]
-    fn test_search_paths_includes_codex_home_sessions() {
-        let _lock = crate::TEST_ENV_MUTEX.lock().unwrap();
-
-        let prev_ccfs = env::var("CCFS_SEARCH_PATH").ok();
-        let prev_config = env::var("CLAUDE_CONFIG_DIR").ok();
-        let prev_codex = env::var("CODEX_HOME").ok();
-        unsafe { env::remove_var("CCFS_SEARCH_PATH") };
-        unsafe { env::remove_var("CLAUDE_CONFIG_DIR") };
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let sessions = tmp.path().join("sessions");
-        let archived = tmp.path().join("archived_sessions");
+    fn test_build_search_paths_includes_codex_home_sessions() {
+        let home = tempfile::TempDir::new().unwrap();
+        let codex = tempfile::TempDir::new().unwrap();
+        let sessions = codex.path().join("sessions");
+        let archived = codex.path().join("archived_sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::create_dir_all(&archived).unwrap();
-        unsafe { env::set_var("CODEX_HOME", tmp.path()) };
 
-        let paths = get_search_paths();
+        let paths = build_search_paths(
+            None,
+            None,
+            Some(codex.path().to_str().unwrap().to_string()),
+            Some(home.path().to_path_buf()),
+        );
 
         assert!(paths.iter().any(|p| p == sessions.to_str().unwrap()));
         assert!(paths.iter().any(|p| p == archived.to_str().unwrap()));
-
-        unsafe { env::remove_var("CODEX_HOME") };
-        if let Some(v) = prev_codex {
-            unsafe { env::set_var("CODEX_HOME", v) };
-        }
-        if let Some(v) = prev_config {
-            unsafe { env::set_var("CLAUDE_CONFIG_DIR", v) };
-        }
-        if let Some(v) = prev_ccfs {
-            unsafe { env::set_var("CCFS_SEARCH_PATH", v) };
-        }
     }
-
-    // The tests below call the parameterized helpers directly, so they don't
-    // touch the process environment and don't need TEST_ENV_MUTEX.
 
     #[test]
     fn test_build_search_paths_custom_path_wins() {

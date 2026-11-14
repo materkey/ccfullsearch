@@ -309,6 +309,77 @@ fn list_rows(search_path: &std::path::Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// `ccs list` in an environment where only `vars` say where sessions live:
+/// the home directory is `home` and every other override is unset. The
+/// variables go to the child alone, the test process keeps its own.
+fn list_rows_with_env(
+    home: &std::path::Path,
+    vars: &[(&str, &std::path::Path)],
+) -> Vec<serde_json::Value> {
+    let mut command = Command::cargo_bin("ccs").unwrap();
+    command
+        .args(["list"])
+        .env("HOME", home)
+        .env("CCS_HOSTS", "");
+    for key in [
+        "CCFS_SEARCH_PATH",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "OPENCODE_DATA",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, value) in vars {
+        command.env(key, value);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "list should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_when_claude_config_dir_set_then_sessions_come_from_it() {
+    let home = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let project = config.path().join("projects/-test-project-alpha");
+    fs::create_dir_all(&project).unwrap();
+    let session = project.join("session.jsonl");
+    fs::copy("tests/fixtures/linear_session.jsonl", &session).unwrap();
+
+    let rows = list_rows_with_env(home.path(), &[("CLAUDE_CONFIG_DIR", config.path())]);
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["provider"], "Claude");
+    assert_eq!(rows[0]["file_path"], session.to_str().unwrap());
+}
+
+#[test]
+fn list_when_codex_home_set_then_its_sessions_are_codex() {
+    let home = TempDir::new().unwrap();
+    let codex = TempDir::new().unwrap();
+    let day = codex.path().join("sessions/2026/05/01");
+    fs::create_dir_all(&day).unwrap();
+    let rollout =
+        day.join("rollout-2026-05-01T10-00-00-019f0000-0000-7000-8000-000000000001.jsonl");
+    fs::copy("tests/fixtures/codex_session.jsonl", &rollout).unwrap();
+
+    let rows = list_rows_with_env(home.path(), &[("CODEX_HOME", codex.path())]);
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["provider"], "Codex");
+    assert_eq!(rows[0]["file_path"], rollout.to_str().unwrap());
+}
+
 #[test]
 fn list_when_codex_thread_reverted_then_one_row_with_full_history() {
     let dir = TempDir::new().unwrap();
