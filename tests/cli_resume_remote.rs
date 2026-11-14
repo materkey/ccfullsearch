@@ -72,3 +72,33 @@ fn resume_here_when_agent_missing_then_exit_1_without_prompt() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("Press Enter"), "{stderr}");
 }
+
+#[test]
+fn resume_here_when_claude_not_in_path_then_error_says_not_found() {
+    // PATH is replaced for the child only: an empty directory, so the real
+    // lookup of `claude` has nothing to find.
+    let dir = tempfile::TempDir::new().unwrap();
+    let project = dir.path().join(".claude/projects/-tmp-testproj");
+    std::fs::create_dir_all(&project).unwrap();
+    let session = project.join("child-test.jsonl");
+    std::fs::write(
+        &session,
+        r#"{"type":"user","message":{"role":"user","content":"hi"},"sessionId":"child-test","timestamp":"2025-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let empty = tempfile::TempDir::new().unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_ccs"))
+        .args(["resume", "--file", session.to_str().unwrap()])
+        .env("PATH", empty.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Claude binary not found in PATH"),
+        "{stderr}"
+    );
+}
